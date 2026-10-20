@@ -148,6 +148,21 @@ The tests cover:
 - schema migrations
 - indicators vs. reference implementations, cost schedule, expiry rules, every engine fill/exit rule, metrics, backtest API
 
+## Testing paper trading and restart safety locally
+
+Run these from `backend/` with the venv active. The first two need no market hours or broker login.
+
+1. **Automated (covers the mid-trade restart).** `python -m pytest -q tests/test_paper_persistence.py` replays a full day, "crashes" with a trade open, restarts over the same database and checks the trade still exits and is journalled once. It also covers the kill switch, stale-day state and stop/start. The whole suite is `python -m pytest -q` (about 2 minutes).
+2. **Kill switch survives a restart (manual).**
+   1. Start the API (`uvicorn trader.api.main:app`) and the web app (`npm run dev` in `web/`), open the Paper tab.
+   2. Press the KILL SWITCH button, or `curl -X POST localhost:8000/paper/kill -H "content-type: application/json" -d "{\"reason\":\"restart test\"}"`.
+   3. Stop the API with Ctrl+C and start it again.
+   4. `curl localhost:8000/paper/status`: `risk.kill_switch.active` must be `true` with your reason, and `restore.status` must be `restored`.
+   5. Clear it with `POST /paper/kill/reset`, restart once more, and confirm it stays off.
+3. **A rehearsal of stored days** (needs backfilled history): `python -m trader.scripts.paper_rehearsal --underlying NIFTY --start 2026-10-12 --end 2026-10-19`. Replay never saves or restores state, by design.
+4. **Open position across a restart (manual, market hours only).** Entries are refused outside 09:15-15:30 IST even on the simulator, so this can only be done in a live session. Set `PAPER_AUTOSTART=true`, run with `MARKET_DATA_PROVIDER=simulated` (or `fyers`), wait for `GET /paper/positions` to show an OPEN position, then Ctrl+C and restart the API. Expect `restore.status: restored`, the same position (same `correlation_id`, stop and target) in `/paper/positions`, a `position.restored` row in `/paper/events`, and later a journal row under that same id. The simulator may not produce a signal on a given day, in which case rely on step 1.
+5. **Stale state.** Restart the API on a later trading day than the one that saved a snapshot: `restore.status` is `stale`, the abandoned positions are listed, nothing is resumed.
+
 ## API
 
 | Endpoint | Purpose |
