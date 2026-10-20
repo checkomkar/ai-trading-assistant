@@ -2102,7 +2102,7 @@ Each milestone is a shippable state with an explicit definition of done. Do not 
 | M3 | Research Engine | 5, 6, 7, 8 | B | ✅ Running on 1 year of real data (§21); contract-note cost check pending |
 | M3b | Custom Strategy Builder (natural language) | 7 (extended), §19 | B | ✅ Built; live translator test needs an Anthropic key (§21) |
 | M4 | Paper Trading | 9, 10, 11 | C | 🚧 Built; 20-day unattended run pending (§22) |
-| M5 | Controlled Live Trading | 12, 20 (monitoring + alerts) | F | Planned |
+| M5 | Controlled Live Trading (owner's own Fyers account, design in "M5 design" below) | 12, 20 (monitoring + alerts) | F | Planned |
 | M6 | ML Signals & Regimes | 13, 14, 15 | D | Planned |
 | M7 | AI Research Assistant & Analyst | 16, 17 | E | Planned |
 | M8 | Strategy Discovery & Advanced Options | 18, 19 | E | Planned |
@@ -2173,7 +2173,7 @@ DoD:
 **Goal:** micro-live execution with hard safety rails.
 
 Scope:
-- Live broker adapter (Phase 12), with the broker chosen at this point; Fyers is the default candidate.
+- Live broker adapter (Phase 12). **Decided 2026-10-21: Fyers, on the owner's own personal account** (not Shoonya as §12.2 first assumed). Design below.
 - Static IP hosting per SEBI rules.
 - `LIVE_DATA + PAPER_EXECUTION` dry run.
 - Micro-live hard limits.
@@ -2184,6 +2184,65 @@ DoD:
 - 10 trading days of micro-live trading (1 lot, at most 2 trades per day) with zero reconciliation mismatches.
 - Kill switch tested live.
 - Alerts tested end to end.
+
+## M5 design: automated live trading on the owner's own Fyers account
+
+**Decision (owner, 2026-10-21):** once a strategy has been backtested and paper-traded, run it live on the owner's personal Fyers account with a small amount the owner can afford to lose. Own account, own money, own credentials; nothing is pooled and nothing is offered to others (SaaS stays research and paper only, §23 if present). This is the owner's decision to take risk. The system's job is to *limit* loss and never to promise profit: the only strategy tested so far failed out-of-sample (§21.2).
+
+### M5.1 Rules that do not change
+- **No LLM output reaches an order.** A custom strategy is a validated `StrategySpec` interpreted by deterministic code (§19); the LLM only translates text into a spec that a person reviews. `trader/ai` still may not import `execution`, `risk` or `brokers`.
+- **One path to the broker:** closed bar -> strategy signal -> `RiskEngine.check` -> `Broker`. Strategies cannot place orders or change limits.
+- **Make the bypass impossible, not merely forbidden.** Entry orders take an `ApprovedOrder` that only `RiskEngine.check` can construct (an approved decision bound to the exact intent: instrument, quantity, price band, correlation id, expiry of a few seconds). `LiveBroker.place_order` rejects anything else, and a test asserts no other constructor exists. Exits are `reduce_only` and are never blocked.
+- **The broker is the source of truth.** On any disagreement between our state and Fyers, Fyers wins and trading halts (M5.4).
+- **Paper and live share the code.** The same `PaperRunner` logic drives both; only the `Broker` implementation differs (`PaperBroker` vs `FyersBroker`), so what was paper-tested is what runs.
+
+### M5.2 Promotion gates: what must be true before any real order
+A strategy is eligible for live only when all hold, and the Paper tab shows which are met:
+1. Backtested on real data over at least a year, **including an out-of-sample period not used to tune it**, with costs included. A strategy that fails out-of-sample (as Momentum #1 did, §21.2) is not eligible however good in-sample looks.
+2. Real option prices for the days that matter (§20.1), or a documented reason synthetic is acceptable. Synthetic results are an upper bound.
+3. Paper-traded for at least 20 market days on live data without unhandled errors (the M4 DoD, §22.4), with paper P&L within an agreed tolerance of a backtest on the same days.
+4. The owner has set the **loss budget** (M5.3) and written it down.
+5. The kill switch, reconciliation halt and alerts have each been triggered deliberately and seen to work (M5 DoD).
+
+### M5.3 Live limits (all enforced by `RiskEngine`, all stricter than paper)
+- **Separate `LIVE_RISK_*` settings.** Each must be less than or equal to the paper value and to a hard ceiling compiled into the code that the `.env` cannot exceed. Raising a ceiling needs a code change and a PR, deliberately slower than editing a file.
+- **Loss budget (owner's number, not ours):** a maximum total loss for the live account, a maximum loss per week, and a maximum per day. Reaching any one stops live trading and flattens; it re-arms only by an explicit owner action.
+- **Starting shape** (M5 DoD): 1 lot, at most 2 trades a day, one position at a time, entries only in a configured window (for example no new entries in the last 30 minutes), daily loss well below the paper limit. Widen only after clean days, one change at a time.
+- **Capital is whatever is in the Fyers account.** Keep only the intended amount there; the system also caps premium exposure to the live budget, so extra balance is never at risk through us.
+
+### M5.4 Execution and reconciliation
+- **`FyersBroker` implements `Broker`** (§12.1) over Fyers' order API using the owner's app credentials and daily token (§17.2). Idempotent on `client_order_id` (sent as the order tag), so a retry after a timeout can never double-place.
+- **Order type:** option liquidity is thin and spreads are wide. Entries use a **marketable limit** at the live ask plus a small, configured slippage cap, never an open-ended market order, and are cancelled if unfilled after a few seconds. Exits prefer certainty over price: if a limit exit does not fill quickly it escalates (tighter, then market) because staying in a losing option is worse than slippage. Exact order types allowed for options, freeze quantity and price bands are checked against Fyers' current rules at build time, not assumed here.
+- **Order lifecycle:** place, confirm via order updates and polling, handle partial fill, rejection (margin, price band, freeze quantity), cancel and timeout. Every state change is an audit event under the trade's `correlation_id` with the raw broker response (secrets redacted).
+- **Reconciliation:** at start-up, then continuously every few seconds, compare internal orders and positions with Fyers. Any mismatch (unknown position, quantity differs, an order we did not place) trips the kill switch, stops entries and alerts. On restart after a crash the runner adopts what Fyers says is open (§22.5 persistence is the second source, never the first).
+- **Where stops live.** A software stop only works while our process runs. Decision needed before live: either (a) place a protective exchange-side stop order with every entry, accepting its own risks (triggers on a thin quote, double exit), or (b) rely on a watchdog that flattens if the process or feed dies, plus the broker's own end-of-day square-off. Default recommendation: (b) for the first live weeks, with an external heartbeat that alerts if we stop. Revisit after observing real fills.
+- **Failure behaviour:** feed stale, token expired, broker API down, or clock skew -> no new entries, alert, keep trying to exit open positions. Never fail open.
+
+### M5.5 Arming and the kill switch
+- Live is **off by default and re-armed every trading day** by an explicit action in the UI that shows the account, limits and strategy and requires a typed confirmation. It is in addition to `TRADING_MODE=LIVE` plus `LIVE_TRADING_CONFIRM` (§14.10), which only let the app start in LIVE mode.
+- The **kill switch** is real in live: it cancels working orders, flattens open positions at market, blocks entries, persists across restarts (§22.5) and is never cleared by a restart. It must be one click, and also available from the command line if the UI is down.
+- A visible **LIVE** badge and the account id are on every page whenever live is armed, and the data-source and pricing labels stay (§14.11).
+
+### M5.6 Regulation and operations (to verify, not assumed)
+- **SEBI retail algo framework** (§15): API orders must come from a broker-registered **static IP** with daily 2FA. The owner must choose where the trader runs (a machine on a static IP, or a small server with one) and register that IP in the Fyers API app. Whether a personal-use algo needs any registration or approval at the owner's order rates, and any per-second order-rate threshold, must be checked against Fyers' and SEBI's current rules before go-live; not assumed here.
+- **Daily login stays interactive.** Tokens expire each morning; the owner signs in. If the token is gone, the runner stays flat and alerts; it never trades on a stale session.
+- **Records and tax:** the journal and audit trail already hold every trade, charges and the strategy version. Add a CSV export for the owner's accountant. Tax treatment is the owner's to confirm with an accountant.
+- **Alerts** (Telegram or email): feed or broker down, stale data, order rejected, reconciliation mismatch, risk breach, loss budget hit, process heartbeat lost.
+
+### M5.7 Build order and testing
+1. `FyersBroker` against a **fake order server** (contract tests): placement, idempotent retry, partial fill, rejection, timeout, duplicate order id, cancel, position and order queries.
+2. `ApprovedOrder` and the "no bypass" test; live limits and ceilings; loss-budget logic.
+3. Reconciliation with fault injection (position appears, disappears, quantity differs, an order we never placed).
+4. **Shadow mode** (the `LIVE_DATA + PAPER_EXECUTION` dry run, §12.3): the runner builds the exact live order it would send and logs it next to the paper fill, without sending, for several weeks. Compare intended vs paper price and timing.
+5. **Micro-live**: 1 lot, owner watching, tiny loss budget, then the DoD above (10 days, zero mismatches). Widen by small steps only.
+6. Alerts, kill switch and watchdog exercised live before the first unattended day.
+
+### M5.8 Open decisions for the owner
+1. The loss budget numbers (total, weekly, daily) and the live amount in the account.
+2. Where the trader runs and its static IP.
+3. Exchange-side stop order vs watchdog (M5.4).
+4. Which strategies are candidates, and the out-of-sample period reserved for them.
+5. Alert channel (Telegram or email).
 
 ## M6 — ML Signals & Regimes
 
