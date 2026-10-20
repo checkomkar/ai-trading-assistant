@@ -75,6 +75,24 @@ class Settings(BaseSettings):
     risk_max_trades_per_day: int = 5
     risk_max_open_positions: int = 1
     risk_max_lots_per_trade: int = 1
+    risk_max_consecutive_losses: int = 3
+    risk_max_risk_per_trade: float = 4000  # premium x quantity x stop-loss %, in rupees
+    risk_max_premium_exposure: float = 60000
+    risk_max_underlying_exposure: float = 40000
+    risk_max_data_age_seconds: float = 10
+
+    # Paper trading (PRD M4). Nothing here can place a live order: the only broker is PaperBroker.
+    paper_autostart: bool = False  # start the strategy runner with the API
+    paper_underlyings: str = "NIFTY"  # comma separated
+    paper_timeframe: str = "5m"  # must be a timeframe the collector builds live (1m, 5m)
+    paper_strategy: str = "momentum"  # momentum | spec
+    paper_latency_ms: int = 500
+    paper_capital: float = 100000
+
+    # MARKET_DATA_PROVIDER=replay: rehearse a stored day through the live pipeline (PRD §14.1)
+    replay_date: str = ""  # YYYY-MM-DD, a stored trading day
+    replay_speed: float = 60  # 1 = real time; 0 = as fast as possible
+    replay_source: str = "real"  # real | simulated
 
     risk_free_rate: float = 0.065
 

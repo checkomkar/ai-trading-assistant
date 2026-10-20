@@ -273,3 +273,136 @@ export interface Translation {
   model: string;
   repaired: boolean;
 }
+
+// ---- paper trading (M4) -------------------------------------------------------------
+export interface PaperDecision {
+  kind: "signal" | "no_trade" | "none" | "disabled";
+  ts: string;
+  reason?: string;
+  correlation_id?: string;
+  direction?: "LONG" | "SHORT";
+  confidence?: number;
+  strategy?: string;
+  option?: string;
+  entry?: number;
+  stop?: number;
+  target?: number;
+  outcome?: "pending" | "ordered" | "filled" | "skipped" | "risk_rejected" | "order_rejected";
+  detail?: string;
+}
+
+export interface PaperLane {
+  underlying: string;
+  strategy: string;
+  timeframe: string;
+  enabled: boolean;
+  warmed_bars: number;
+  last_bar: string | null;
+  last_decision: PaperDecision | null;
+  signals: PaperDecision[];
+}
+
+export interface RiskStatus {
+  kill_switch: { active: boolean; reason: string; since: string | null };
+  disabled_strategies: string[];
+  day: string | null;
+  limits: {
+    max_daily_loss: number;
+    max_consecutive_losses: number;
+    max_trades_per_day: number;
+    max_open_positions: number;
+    max_lots_per_trade: number;
+    max_risk_per_trade: number;
+    max_premium_exposure: number;
+    max_underlying_exposure: number;
+    max_data_age_seconds: number;
+  };
+  usage: {
+    day_pnl: number;
+    trades_today: number;
+    consecutive_losses: number;
+    open_positions: number;
+    premium_exposure: number;
+    underlying_exposure: Record<string, number>;
+  };
+}
+
+export interface PaperStatus {
+  running: boolean;
+  now: string;
+  broker: string;
+  data_source: string;
+  option_pricing: string;
+  cash: number;
+  starting_cash: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  errors: number;
+  last_error: string | null;
+  lanes: PaperLane[];
+  risk: RiskStatus;
+}
+
+export interface PaperPosition {
+  correlation_id: string;
+  state: "ENTRY" | "OPEN" | "EXIT";
+  underlying: string;
+  symbol: string;
+  strategy: string;
+  direction: "LONG" | "SHORT";
+  quantity: number;
+  entry_price: number | null;
+  current_price: number | null;
+  stop: number | null;
+  target: number | null;
+  unrealized_pnl: number | null;
+  minutes_held: number;
+  exit_reason: string | null;
+}
+
+export interface PaperTrade {
+  id: number;
+  correlation_id: string;
+  trading_day: string;
+  underlying: string;
+  symbol: string;
+  strategy: string;
+  direction: "LONG" | "SHORT";
+  quantity: number;
+  entry_time: string;
+  entry_price: number;
+  exit_time: string;
+  exit_price: number;
+  exit_reason: string;
+  gross_pnl: number;
+  charges: number;
+  net_pnl: number;
+  mae_pct: number | null;
+  mfe_pct: number | null;
+  minutes_held: number | null;
+  signal_reason: string | null;
+  confidence: number | null;
+  data_source: string;
+  option_pricing: string;
+}
+
+export interface PaperSummary {
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number | null;
+  gross_pnl: number;
+  charges: number;
+  net_pnl: number;
+  max_drawdown: number;
+  profit_factor: number | null;
+  by_strategy: Record<string, { trades: number; wins: number; losses: number; net_pnl: number }>;
+  by_exit_reason: Record<string, number>;
+}
+
+export interface PaperEvent {
+  ts: string;
+  event_type: string;
+  correlation_id: string | null;
+  payload: Record<string, unknown>;
+}

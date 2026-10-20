@@ -2101,7 +2101,7 @@ Each milestone is a shippable state with an explicit definition of done. Do not 
 | M2 | Live Market Data (Fyers) | 1, 2, 3 (real broker), 2.4 | A | 🚧 Connected & history loaded; market-hours DoD pending (§21) |
 | M3 | Research Engine | 5, 6, 7, 8 | B | ✅ Running on 1 year of real data (§21); contract-note cost check pending |
 | M3b | Custom Strategy Builder (natural language) | 7 (extended), §19 | B | ✅ Built; live translator test needs an Anthropic key (§21) |
-| M4 | Paper Trading | 9, 10, 11 | C | Planned |
+| M4 | Paper Trading | 9, 10, 11 | C | 🚧 Built; 20-day unattended run pending (§22) |
 | M5 | Controlled Live Trading | 12, 20 (monitoring + alerts) | F | Planned |
 | M6 | ML Signals & Regimes | 13, 14, 15 | D | Planned |
 | M7 | AI Research Assistant & Analyst | 16, 17 | E | Planned |
@@ -2467,3 +2467,37 @@ The edge does not survive out-of-sample. Most of the profit came from short (PE)
 - Requests beyond 1 year failed the whole backfill. They are now clamped, and per-symbol failures no longer abort the run.
 - The backtest loader preferred a few days of native 5m candles (from the live collector) over a full year of 1m. It now picks the stored timeframe that covers the most of the requested range.
 - The translator returned HTTP 500 instead of a clear message when no Anthropic credentials exist.
+
+# 22. M4 Implementation Notes: Paper Trading (2026-10-21)
+
+## 22.1 What is built
+Everything in the M4 scope is built and tested except the 20-day unattended run, which needs real market days.
+
+- **Broker interface and `PaperBroker`** (`trader/execution/`): `Broker` is async (`place_order`, `modify_order`, `cancel_order`, `get_positions`, `get_orders`). `PaperBroker` fills BUY at the live ask and SELL at the live bid, after a latency (`PAPER_LATENCY_MS`, default 500), using the quote at fill time. Time moves only through `process(now)`, so replays are deterministic. Quotes without bid/ask fall back to last ± the modelled half-spread. It is long-only (selling more than the open quantity is rejected), idempotent on `client_order_id`, refuses entries on stale or missing quotes, and charges costs from `costs.yaml`. Exits take the last known quote and are flagged if it is stale.
+- **Risk engine** (`trader/risk/engine.py`): deterministic and pure. It runs the §10.5 checklist as 15 independent checks and records all of them, not just the first failure: kill switch, strategy enabled, market open, instrument valid, quantity valid, **data fresh** (underlying and option quote, §14.7), margin, daily loss (realised + unrealised), consecutive losses, trades per day, open positions, lots per trade, risk per trade (premium × quantity × stop %), per-underlying exposure, total premium exposure. Exits are never blocked. A daily-loss breach with an open position flattens it. The kill switch blocks entries and, by default, flattens.
+- **Live runner** (`trader/execution/runner.py`): on each closed bar, `FeatureEngine` → `MomentumStrategy` / `RuleStrategy` → risk → `PaperBroker`. The strategy definition is the same `BacktestRequest` the backtester takes, so exits (trail, EOD, time) come from the same place. Stops and targets are checked on every heartbeat against the live bid. The option comes from the broker symbol master (nearest expiry, ATM, lot size from the master). Indicators are warmed from stored candles.
+- **Audit trail:** every step is an `events` row sharing one `correlation_id`: `signal.generated` (with the feature snapshot) → `risk.approved|rejected` (all checks) → `order.placed` → `order.filled` → `exit.triggered` → `order.placed` → `order.filled` → `trade.closed`. `GET /paper/trace/{correlation_id}` returns it.
+- **Journal and summary:** table `paper_trades` (migration `c8d2e6a1f340`); each row records `data_source` (fyers / simulated / replay) and `option_pricing`. `GET /paper/journal` filters by day, symbol, strategy, direction, result and data source. `GET /paper/summary` gives trades, wins, losses, gross, charges, net, drawdown, profit factor and per-strategy buckets.
+- **API** (`/paper/*`): status, start, stop, kill, kill/reset, strategy enable/disable, risk, positions, orders, signals, journal, summary, trace, events. There is **no endpoint that accepts an order**; a test enforces this.
+- **Dashboard** (Paper tab): runner state and data-source badge, P&L, a KILL SWITCH button (with confirm), signal panel, open positions, risk-limit meters, latest audit events, journal with filters and summary tiles, and a click-through audit trail per trade.
+- **`ReplayProvider`** (`MARKET_DATA_PROVIDER=replay`, `REPLAY_DATE`, `REPLAY_SPEED`, `REPLAY_SOURCE`): plays stored 1m candles (index, near future, VIX) as 12 ticks a minute, shaped so the collector rebuilds the stored OHLC and futures volume exactly (tested). It has its own clock, uses `REPLAY:` tokens and **does not persist market data**, so it cannot overwrite real candles. **Option quotes are synthetic** (Black-Scholes on the replayed spot, IV = VIX × multiplier, modelled spread), because stored data has no historical option bid/ask. The header and journal say so.
+- **Rehearsal CLI** (`python -m trader.scripts.paper_rehearsal --underlying NIFTY --start .. --end ..`): replays days in-process with a hand-driven clock (no background tasks, so it is deterministic), journals the trades, then runs the backtester on the same days for comparison.
+
+## 22.2 First rehearsal on real stored data (NIFTY, 12–19 Oct 2026, Momentum #1, 5m)
+Paper pipeline: 14 trades, net ₹14,940 (gross ₹15,951, charges ₹1,011). Backtest on the same days: 14 trades, net ₹14,682. The pipeline reproduces the backtest's trades; the ₹258 difference comes from fill timing (5 s after bar close, at the live ask, vs the next bar's open) and tick-level stop checks. **Both use synthetic option prices and a strategy that failed out-of-sample (§21.2). This validates the plumbing, not the strategy, and it says nothing about profit.**
+
+## 22.3 Decisions to know about
+- **Risk defaults** (`RISK_*` in `.env`): daily loss ₹5,000, per-trade risk ₹4,000 (a one-lot NIFTY ATM trade at 25% stop risks about ₹3,200, so one loss takes most of the daily budget), 1 lot, 1 open position, 5 trades a day, 3 consecutive losses, ₹40k per underlying and ₹60k total premium, quotes fresher than 10 s. A first draft with ₹3,000 per-trade risk silently blocked every NIFTY entry at spot 26,500, which is the check working as designed; the limit is a deliberate setting.
+- **Entries are blocked when the market is closed, with no override.** To exercise the pipeline at any hour, use the replay provider.
+- **Fill timing:** the replay ticks every 5 s, so an order's fill lands on the first tick at least `latency` after the signal. Live, it is the first quote after latency.
+- **Not persisted:** open positions and the kill-switch state are in memory. The strategy is flat by 15:15, but a restart mid-session forgets an open paper position, and the kill switch resets to off. Fix before the 20-day run (persist both, rebuild on start).
+- **Daily-summary generation** is on demand (`/paper/summary`); an end-of-day `daily.summary` event and report are not yet emitted.
+- **Single runner, per-lane risk shared:** lanes (underlying × strategy) share one broker and one risk engine, so limits are portfolio-wide.
+
+## 22.4 M4 DoD status
+| DoD item | Status |
+|---|---|
+| 20 consecutive trading days unattended, no unhandled errors | Not started. Needs live market days (`PAPER_AUTOSTART=true`). Restart persistence (§22.3) first. |
+| Every trade traceable signal → order → fill → exit via `correlation_id` | Done, tested (`test_full_day_trades_are_traceable_signal_to_exit`). |
+| Paper P&L within tolerance of a backtest on the same days | Machinery done (rehearsal CLI). Tolerance not yet agreed; first result in §22.2. Must be re-checked on recorded live option data, not synthetic. |
+| (M3 DoD) Same signals in backtest and paper on replayed data | Done: features and first signal match on identical bars (`test_first_signal_matches_the_backtest_on_the_same_bars`). |

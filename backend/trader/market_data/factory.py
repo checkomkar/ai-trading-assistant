@@ -4,7 +4,7 @@ from trader.config import Settings
 from trader.market_data.base import MarketDataProvider
 
 
-def create_provider(settings: Settings) -> MarketDataProvider:
+def create_provider(settings: Settings, sessionmaker=None) -> MarketDataProvider:  # noqa: ANN001
     name = settings.market_data_provider.lower()
     if name == "simulated":
         from trader.market_data.simulated import SimConfig, SimulatedMarketDataProvider
@@ -20,6 +20,17 @@ def create_provider(settings: Settings) -> MarketDataProvider:
         from trader.brokers.fyers.provider import FyersMarketDataProvider
 
         return FyersMarketDataProvider(settings)
+    if name == "replay":
+        from datetime import date
+
+        from trader.market_data.replay import ReplayProvider
+
+        if sessionmaker is None or not settings.replay_date:
+            raise ValueError("MARKET_DATA_PROVIDER=replay needs REPLAY_DATE=YYYY-MM-DD and a database")
+        unds = tuple(u.strip().upper() for u in settings.paper_underlyings.split(",") if u.strip())
+        return ReplayProvider(sessionmaker, date.fromisoformat(settings.replay_date), speed=settings.replay_speed,
+                              source=settings.replay_source, underlyings=unds,
+                              risk_free_rate=settings.risk_free_rate)
     if name == "shoonya":
         from trader.market_data.shoonya import ShoonyaMarketDataProvider
 

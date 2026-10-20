@@ -55,6 +55,9 @@ class ReconnectPolicy:
 class MarketDataProvider(ABC):
     name: str = "base"
     is_simulated: bool = False
+    has_own_clock: bool = False  # True for replay: `clock_now()` replaces the wall clock
+    persist_market_data: bool = True  # False for replays: they must not write into the real candle tables
+    option_pricing: str = "live quotes"  # how option prices are produced; paper journals record it
 
     def __init__(
         self,
@@ -66,6 +69,10 @@ class MarketDataProvider(ABC):
         self.subscription_policy = subscription or SubscriptionPolicy()
         self._subscribed: set[str] = set()
         self._closing = False
+
+    def clock_now(self) -> datetime:
+        """The provider's own clock (only called when `has_own_clock`)."""
+        return datetime.now(timezone.utc)
 
     # ---- to implement -------------------------------------------------------
     @abstractmethod

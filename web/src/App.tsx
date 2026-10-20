@@ -8,11 +8,12 @@ import { OptionChain } from "./components/OptionChain";
 import { FeedHealthPanel } from "./components/FeedHealthPanel";
 import { BacktestPage } from "./pages/BacktestPage";
 import { StrategiesPage } from "./pages/StrategiesPage";
+import { PaperPage } from "./pages/PaperPage";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
-type View = "market" | "backtest" | "strategies";
+type View = "market" | "paper" | "backtest" | "strategies";
 const viewFromHash = (): View =>
-  location.hash === "#/backtest" ? "backtest" : location.hash === "#/strategies" ? "strategies" : "market";
+  location.hash === "#/backtest" ? "backtest" : location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : "market";
 
 export default function App() {
   const [market, setMarket] = useState<MarketMessage | null>(null);
@@ -58,7 +59,11 @@ export default function App() {
         </div>
       )}
 
-      {view === "strategies" ? (
+      {view === "paper" ? (
+        <ErrorBoundary label="Paper trading page">
+          <PaperPage />
+        </ErrorBoundary>
+      ) : view === "strategies" ? (
         <ErrorBoundary label="Strategies page">
           <StrategiesPage />
         </ErrorBoundary>
@@ -90,7 +95,7 @@ export default function App() {
       )}
 
       <footer className="border-t border-ink-800 px-6 py-2 text-[11px] text-ink-400">
-        No orders are placed. Data → Analysis → Paper trade.
+        Paper trading only: virtual money, no live orders. Data → Analysis → Paper.
       </footer>
     </div>
   );

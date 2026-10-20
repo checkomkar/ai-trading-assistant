@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from trader.api.routes import backtests, health, market, options, strategies, ws
+from trader.api.routes import backtests, health, market, options, paper, strategies, ws
 from trader.config import Settings, get_settings
 from trader.db.migrate import upgrade_db
+from trader.execution.service import PaperService
 from trader.db.session import create_engine, create_sessionmaker
 from trader.logging import configure_logging, get_logger
 from trader.market_data.factory import create_provider
@@ -30,16 +31,27 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         engine = create_engine(settings.resolved_database_url)
         app.state.engine = engine
         app.state.sessionmaker = create_sessionmaker(engine)
-        md = MarketDataService(create_provider(settings), app.state.sessionmaker, settings)
+        provider = create_provider(settings, app.state.sessionmaker)
+        # A replay has its own clock and must never write its synthetic ticks into the real tables.
+        md = MarketDataService(provider, app.state.sessionmaker if provider.persist_market_data else None,
+                               settings, now_fn=provider.clock_now if provider.has_own_clock else None)
         app.state.md = md
+        app.state.paper = PaperService(md, app.state.sessionmaker, settings)
         if start_collector:
             await md.start()
+            if settings.paper_autostart:
+                try:
+                    await app.state.paper.start()
+                except Exception as exc:  # noqa: BLE001 - the dashboard stays up; the error shows in /paper/status
+                    log.error("paper runner failed to start", event="paper.start_failed", error=str(exc))
         log.info("api started", event="api.started", mode=settings.trading_mode.value,
                  provider=settings.market_data_provider)
         try:
             yield
         finally:
             if start_collector:
+                await app.state.paper.stop()
+                await app.state.paper.store.flush()
                 await md.stop()
             await engine.dispose()
 
@@ -50,7 +62,7 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    for r in (health.router, market.router, options.router, backtests.router, strategies.router, ws.router):
+    for r in (health.router, market.router, options.router, backtests.router, strategies.router, paper.router, ws.router):
         app.include_router(r)
 
     @app.get("/", include_in_schema=False)

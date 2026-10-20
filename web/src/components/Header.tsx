@@ -26,7 +26,7 @@ interface Props {
   socket: SocketStatus;
   feed: FeedStatus | null;
   mode: string | null;
-  view: "market" | "backtest" | "strategies";
+  view: "market" | "paper" | "backtest" | "strategies";
 }
 
 export function Header({ session, simulated, provider, socket, feed, mode, view }: Props) {
@@ -45,7 +45,7 @@ export function Header({ session, simulated, provider, socket, feed, mode, view 
       </div>
 
       <nav className="flex gap-1 rounded-md bg-ink-850 p-0.5 text-xs" aria-label="Sections">
-        {([["market", "Market", "#/"], ["strategies", "Strategies", "#/strategies"], ["backtest", "Backtest", "#/backtest"]] as const).map(([id, label, href]) => (
+        {([["market", "Market", "#/"], ["paper", "Paper", "#/paper"], ["strategies", "Strategies", "#/strategies"], ["backtest", "Backtest", "#/backtest"]] as const).map(([id, label, href]) => (
           <a
             key={id}
             href={href}
@@ -65,7 +65,15 @@ export function Header({ session, simulated, provider, socket, feed, mode, view 
           SIMULATED DATA
         </span>
       )}
-      {simulated === false && provider && (
+      {provider === "replay" && (
+        <span
+          className="rounded px-2 py-0.5 text-[11px] font-semibold tracking-widest text-sim ring-1 ring-sim/40 bg-sim/10"
+          title="A stored day is being replayed through the live pipeline; option quotes are synthetic"
+        >
+          REPLAY · SYNTHETIC OPTIONS
+        </span>
+      )}
+      {simulated === false && provider && provider !== "replay" && (
         <span className="rounded px-2 py-0.5 text-[11px] font-semibold tracking-widest text-up ring-1 ring-up/40 bg-up/10">
           LIVE · {provider.toUpperCase()}
         </span>

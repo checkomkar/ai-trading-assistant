@@ -24,7 +24,7 @@ def test_legacy_create_all_db_is_stamped_and_upgraded(tmp_path):
     version = con.execute("SELECT version_num FROM alembic_version").fetchone()[0]
     kept = con.execute("SELECT count(*) FROM candles").fetchone()[0]
     con.close()
-    assert "oi" in cols and version == "b5e1d4f08c22" and kept == 1
+    assert "oi" in cols and version == "c8d2e6a1f340" and kept == 1
 
 
 def test_fresh_db_upgrades_to_head(tmp_path):

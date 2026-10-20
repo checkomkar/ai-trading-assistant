@@ -85,18 +85,21 @@ class MarketDataService:
         self.writes = {"ticks": 0, "candles": 0, "option_snapshots": 0, "errors": 0}
 
     # ---- lifecycle ------------------------------------------------------------
-    async def start(self) -> None:
-        self.started_at = self.now()
+    async def discover(self) -> list[Instrument]:
+        """Load instruments into the registry and mark which tokens are indices / get candles."""
         instruments = await self.provider.discover_instruments()
         self.registry.add_many(instruments)
         log.info("instruments discovered", event="instruments.discovered", count=len(instruments))
-
-        underlying_tokens = {i.token for i in instruments if i.instrument_type in (InstrumentType.INDEX,
-                                                                                  InstrumentType.FUT)}
         index_tokens = {i.token for i in instruments if i.instrument_type == InstrumentType.INDEX}
         self.quality.index_tokens = index_tokens
         self.quality.watched_tokens = index_tokens
-        self._candle_tokens = set(underlying_tokens)
+        self._candle_tokens = {i.token for i in instruments
+                               if i.instrument_type in (InstrumentType.INDEX, InstrumentType.FUT)}
+        return instruments
+
+    async def start(self) -> None:
+        self.started_at = self.now()
+        instruments = await self.discover()
 
         if self.sessionmaker:
             async with self.sessionmaker() as s, s.begin():

@@ -152,3 +152,35 @@ class StrategyRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (Index("ux_strategies_name_version", "name", "version", unique=True),)
+
+
+class PaperTradeRow(Base):
+    """Journal of closed paper trades (PRD §9.3). `correlation_id` joins it to the `events` audit trail."""
+
+    __tablename__ = "paper_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trading_day: Mapped[str] = mapped_column(String(10), nullable=False, index=True)  # IST date, YYYY-MM-DD
+    underlying: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy: Mapped[str] = mapped_column(String(80), nullable=False)
+    strategy_version: Mapped[str | None] = mapped_column(String(32))
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    exit_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    exit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    exit_reason: Mapped[str] = mapped_column(String(48), nullable=False)
+    gross_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+    charges: Mapped[float] = mapped_column(Float, nullable=False)
+    net_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+    mae_pct: Mapped[float | None] = mapped_column(Float)
+    mfe_pct: Mapped[float | None] = mapped_column(Float)
+    minutes_held: Mapped[float | None] = mapped_column(Float)
+    signal_reason: Mapped[str | None] = mapped_column(String)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    data_source: Mapped[str] = mapped_column(String(16), nullable=False)  # fyers | simulated | replay
+    option_pricing: Mapped[str] = mapped_column(String(48), nullable=False)
+    features: Mapped[dict] = mapped_column(JSON, default=dict)
