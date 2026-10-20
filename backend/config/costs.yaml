@@ -1,0 +1,28 @@
+# Transaction costs for NSE index options (PRD §8.2, §14.5).
+# Rates change with budgets / exchange circulars: add a new version, never edit an old one,
+# so old backtests stay reproducible. A backtest uses the version in effect on each trade date.
+#
+# Source: Fyers charges list (fyers.in/charges-list), checked 2026-10-20.
+# Verify against a real contract note before trusting P&L to the rupee (M3 DoD).
+versions:
+  - effective_from: 2024-10-01
+    note: "STT on option sell premium 0.1% (Finance Act 2024)"
+    brokerage_per_order: 20.0
+    stt_sell_pct: 0.10
+    exchange_txn_pct: 0.03503
+    clearing_pct: 0.0
+    sebi_per_crore: 10.0
+    ipft_per_crore: 0.01
+    stamp_buy_pct: 0.003
+    gst_pct: 18.0
+
+  - effective_from: 2026-04-01
+    note: "STT on option sell premium raised to 0.15% (Budget 2026); Fyers schedule as of Oct 2026"
+    brokerage_per_order: 20.0
+    stt_sell_pct: 0.15
+    exchange_txn_pct: 0.0355299
+    clearing_pct: 0.009
+    sebi_per_crore: 10.0
+    ipft_per_crore: 0.01
+    stamp_buy_pct: 0.003
+    gst_pct: 18.0

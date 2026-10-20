@@ -1,0 +1,31 @@
+# NSE equity-derivatives trading holidays (weekdays only; weekends are implicit).
+#
+# Populate from the official NSE holiday circular published each December:
+#   https://www.nseindia.com/resources/exchange-communication-holidays
+# A wrong holiday silently breaks expiry resolution and session handling, so only dates
+# backed by evidence are listed. Format: YYYY-MM-DD: description
+holidays:
+  # Inferred on 2026-10-20 from exchange data, not from the circular: weekdays with no Fyers 1m
+  # candles, and Tuesdays whose expiries the exchange moved a day earlier. Confirm against the
+  # NSE circular and add 2027 when it is published.
+  2025-11-05: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2025-12-25: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-01-15: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-01-26: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-03-03: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-03-26: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-03-31: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-04-03: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-04-14: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-05-01: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-05-28: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-06-26: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-09-14: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-10-02: "Holiday (inferred: no Fyers 1m data on this weekday)"
+  2026-10-20: "Holiday (inferred: Fyers history has no candles for this Tuesday; likely Dussehra)"
+  2026-11-10: "Holiday (inferred from NIFTY weekly expiry moved to 2026-11-09)"
+  2026-11-24: "Holiday (inferred from monthly expiry moved to 2026-11-23)"
+
+# Special sessions on otherwise-closed days (e.g. Muhurat trading).
+# Format: YYYY-MM-DD: {open: "HH:MM", close: "HH:MM", note: "..."}
+special_sessions: {}

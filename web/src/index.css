@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-ink-950: #0a0d12;
+  --color-ink-900: #0f131a;
+  --color-ink-850: #141922;
+  --color-ink-800: #1a202b;
+  --color-ink-700: #252d3a;
+  --color-ink-600: #344052;
+  --color-ink-400: #6b7a90;
+  --color-ink-300: #9aa7b8;
+  --color-ink-100: #e3e8ef;
+
+  --color-up: #22c55e;
+  --color-up-dim: #14532d;
+  --color-down: #f43f5e;
+  --color-down-dim: #4c0519;
+  --color-accent: #f5b301;
+  --color-sim: #a78bfa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Brief text-colour pulse on price change (quotes refresh every 500ms). */
+.flash-up {
+  animation: flashUp 0.4s ease-out;
+}
+.flash-down {
+  animation: flashDown 0.4s ease-out;
+}
+@keyframes flashUp {
+  from { color: var(--color-up); }
+}
+@keyframes flashDown {
+  from { color: var(--color-down); }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--color-ink-700); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
