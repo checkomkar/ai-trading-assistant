@@ -137,6 +137,35 @@ class RiskEngine:
     def exposure(self, underlying: str | None = None) -> float:
         return sum(p for u, p in self._open.values() if underlying is None or u == underlying)
 
+    # ---- persistence (PRD §22.3) -------------------------------------------------------
+    def export_state(self, exclude: set[str] = frozenset()) -> dict:  # type: ignore[assignment]
+        """Snapshot for a restart. `exclude` are entries that were ordered but never filled: they would
+        not survive a restart, so their reservations are left out."""
+        k = self.kill_switch
+        return {
+            "kill_switch": {"active": k.active, "reason": k.reason, "since": k.since.isoformat() if k.since else None},
+            "disabled_strategies": sorted(self.disabled_strategies),
+            "day": self.day.isoformat() if self.day else None,
+            "trades_today": max(0, self.trades_today - sum(1 for c in exclude if c in self._open)),
+            "day_pnl": self.day_pnl, "consecutive_losses": self.consecutive_losses,
+            "open": {c: [u, p] for c, (u, p) in self._open.items() if c not in exclude},
+        }
+
+    def restore_latch(self, state: dict) -> None:
+        """Kill switch and disabled strategies: restored whatever day they were saved on, because a safety
+        latch must not clear itself by restarting."""
+        k = state.get("kill_switch") or {}
+        self.kill_switch = KillSwitch(bool(k.get("active")), k.get("reason", ""),
+                                      datetime.fromisoformat(k["since"]) if k.get("since") else None)
+        self.disabled_strategies = set(state.get("disabled_strategies") or ())
+
+    def restore_day(self, state: dict) -> None:
+        """Counters and open exposure of the trading day the snapshot belongs to (same-day restores only)."""
+        self.day = date.fromisoformat(state["day"]) if state.get("day") else None
+        self.trades_today, self.day_pnl = int(state["trades_today"]), float(state["day_pnl"])
+        self.consecutive_losses = int(state["consecutive_losses"])
+        self._open = {c: (u, float(p)) for c, (u, p) in state.get("open", {}).items()}
+
     # ---- the pre-order checklist (PRD §10.5) -----------------------------------------------
     def check(self, i: OrderIntent, ctx: RiskContext) -> RiskDecision:
         if i.reduce_only:

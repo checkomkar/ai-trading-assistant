@@ -64,6 +64,11 @@ class PaperBroker(Broker):
         if o.status != OrderStatus.PENDING:
             return o
         r = o.request
+        if quantity is not None and quantity > r.quantity:
+            # The risk engine approved this quantity. A bigger order is a new order and must be checked again.
+            raise ValueError(f"cannot raise a pending order from {r.quantity} to {quantity}: submit a new order")
+        if quantity is not None and quantity <= 0:
+            raise ValueError("quantity must be positive")
         o.request = OrderRequest(r.token, r.symbol, r.side, quantity or r.quantity, r.client_order_id,
                                  r.correlation_id, r.order_type,
                                  limit_price if limit_price is not None else r.limit_price, r.tag)
@@ -135,6 +140,23 @@ class PaperBroker(Broker):
         self._orders = {k: v for k, v in self._orders.items() if v.status == OrderStatus.PENDING}
         self._by_client_id = {v.request.client_order_id: k for k, v in self._orders.items()}
         self.realized_pnl = 0.0
+
+    def export_state(self) -> dict:
+        """Cash, P&L and open positions. Pending orders are not saved: after a restart the runner places
+        a fresh exit for any position that was on its way out."""
+        return {"cash": self.cash, "realized_pnl": self.realized_pnl, "seq": self._seq,
+                "positions": [p.to_dict() for p in self.positions()]}
+
+    def restore_state(self, state: dict) -> None:
+        """Replace cash, P&L and positions wholesale and forget every order (a restart has none to keep)."""
+        self.cash, self.realized_pnl, self._seq = float(state["cash"]), float(state["realized_pnl"]), int(state["seq"])
+        self._orders.clear()
+        self._by_client_id.clear()
+        self._positions = {
+            d["token"]: Position(d["token"], d["symbol"], int(d["quantity"]), float(d["avg_price"]),
+                                 datetime.fromisoformat(d["opened_at"]), float(d.get("entry_charges", 0.0)),
+                                 float(d.get("realized_pnl", 0.0)), dict(d.get("meta") or {}))
+            for d in state.get("positions", ())}
 
     # ---- internals ---------------------------------------------------------------------
     def _reject(self, order: Order, reason: str) -> Order:

@@ -45,7 +45,8 @@ async def status(request: Request) -> dict:
     return {"running": False, "broker": p.broker.name, "data_source": p.md.provider.name,
             "option_pricing": p.md.provider.option_pricing, "cash": p.broker.cash,
             "starting_cash": p.broker.starting_cash, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "errors": 0,
-            "last_error": None, "lanes": [], "risk": p.risk.status(), "now": p.md.now().isoformat()}
+            "last_error": None, "lanes": [], "risk": p.risk.status(), "restore": p.restore_report,
+            "now": p.md.now().isoformat()}
 
 
 @router.post("/start")
@@ -86,7 +87,7 @@ async def kill(request: Request, body: KillIn | None = None) -> dict:
     else:
         p.risk.trip_kill_switch(body.reason, p.md.now())
         p.store.emit("kill_switch.tripped", None, {"reason": body.reason, "flatten": False})
-        await p.store.flush()
+        await p.persist()
     return p.risk.status()["kill_switch"]
 
 
@@ -95,7 +96,7 @@ async def kill_reset(request: Request) -> dict:
     p = svc(request)
     p.risk.reset_kill_switch()
     p.store.emit("kill_switch.reset", None, {})
-    await p.store.flush()
+    await p.persist()
     return p.risk.status()["kill_switch"]
 
 
@@ -104,6 +105,7 @@ async def set_enabled(request: Request, name: str, enabled: bool = Query(...)) -
     p = svc(request)
     p.risk.set_strategy_enabled(name, enabled)
     p.store.emit("strategy.enabled" if enabled else "strategy.disabled", None, {"strategy": name})
+    await p.persist()
     return {"strategy": name, "enabled": enabled}
 
 

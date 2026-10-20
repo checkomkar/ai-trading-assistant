@@ -184,3 +184,16 @@ class PaperTradeRow(Base):
     data_source: Mapped[str] = mapped_column(String(16), nullable=False)  # fyers | simulated | replay
     option_pricing: Mapped[str] = mapped_column(String(48), nullable=False)
     features: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PaperStateRow(Base):
+    """Latest snapshot of the paper account: open positions, risk counters, kill switch (PRD §22.3).
+    One row per key; it is overwritten, never appended. The audit trail stays in `events`."""
+
+    __tablename__ = "paper_state"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    trading_day: Mapped[str] = mapped_column(String(10), nullable=False)  # IST date the snapshot was taken
+    saved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    data_source: Mapped[str] = mapped_column(String(16), nullable=False)  # fyers | simulated | replay
+    state: Mapped[dict] = mapped_column(JSON, default=dict)
