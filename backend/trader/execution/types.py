@@ -62,6 +62,15 @@ class Order:
         }
 
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "Order":
+        req = OrderRequest(d["token"], d["symbol"], Side(d["side"]), d["quantity"], d["client_order_id"],
+                           d.get("correlation_id"), OrderType(d["order_type"]), d.get("limit_price"), d.get("tag", ""))
+        at = lambda k: datetime.fromisoformat(d[k]) if d.get(k) else None  # noqa: E731
+        return cls(d["id"], req, OrderStatus(d["status"]), at("submitted_at"), at("filled_at"),  # type: ignore[arg-type]
+                   d.get("fill_price"), d.get("filled_quantity", 0), d.get("charges", 0.0), d.get("reason"))
+
+
 @dataclass
 class Position:
     token: str

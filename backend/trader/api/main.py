@@ -37,6 +37,7 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
                                settings, now_fn=provider.clock_now if provider.has_own_clock else None)
         app.state.md = md
         app.state.paper = PaperService(md, app.state.sessionmaker, settings)
+        await app.state.paper.restore()  # kill switch, open positions and counters survive a restart
         if start_collector:
             await md.start()
             if settings.paper_autostart:

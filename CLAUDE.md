@@ -8,7 +8,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - M3: backtester, running on 1 year of real Fyers data
   - M3b: natural-language/JSON custom strategies
 - **M2 (Fyers live data):** works; still needs its market-hours checks (PRD §21.1).
-- **M4 (paper trading):** built (PRD §22): PaperBroker, risk engine, live runner, journal, Paper tab, ReplayProvider. Still needs the 20-day unattended run, and persistence of open positions and the kill switch across restarts (§22.3).
+- **M4 (paper trading):** built (PRD §22): PaperBroker, risk engine, live runner, journal, Paper tab, ReplayProvider. Open positions, the day's risk counters and the kill switch survive restarts (§22.5). Still needs the 20-day unattended run.
 - **Pending loose ends:**
   - live translator run (needs `ANTHROPIC_API_KEY`)
   - 20-prompt translator eval (§19.7)
@@ -20,6 +20,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
 - **Contract specs from the broker:** lot size, tick size and expiries come from the broker symbol master. `instruments/specs.py` is a simulator fallback only.
 - **Never mix data sources:** real (`NSE:` tokens) and simulated (`SIM:` tokens) data stay separate. Reports always state the data source and the option-pricing mode.
 - **Paper trading:** orders come only from the runner, through `RiskEngine.check`. There is no order endpoint, and `trader/ai` must never import `execution`, `risk` or `brokers` (both enforced by tests). Entries are blocked when the market is closed. Replay data is never persisted and always labelled (`REPLAY:` tokens, synthetic options).
+- **Restart state:** positions, same-day counters and the kill switch are snapshotted to `paper_state` (one row per data source) and restored at API start-up; a snapshot from an earlier day is flagged (`state.stale`), never resumed, and the kill switch is never cleared by a restart. A restored position with no lane to manage it refuses the runner start. Replay does not persist.
 - **Credentials:** live only in `.env` (git-ignored), never in `.env.example`.
 
 ## Layout
@@ -31,7 +32,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - `options/`: Black-Scholes, chain analytics
   - `indicators/`: incremental indicators
   - `strategy/`: base, momentum, spec (Strategy Spec v1) and rule_strategy (interpreter)
-  - `execution/`: `Broker` interface, `PaperBroker`, `runner` (live strategy runner), `store` (audit + journal), `summary`, `rehearsal` (in-process replay driver)
+  - `execution/`: `Broker` interface, `PaperBroker`, `runner` (live strategy runner), `store` (audit + journal + state row), `state` (snapshot/restore policy), `service`, `summary`, `rehearsal` (in-process replay driver)
   - `risk/`: deterministic `RiskEngine` (pre-order checklist, kill switch). The only gate to the broker.
   - `backtest/`: costs, pricing (synthetic/real), engine, metrics, data loader, runner
   - `ai/strategy_translator.py`: Claude, translation only
@@ -48,7 +49,7 @@ Run from `backend/` unless noted.
   ```bash
   .venv/Scripts/python -m pytest -q
   ```
-  159 tests, about 1 min (the replay tests run full days); all must pass.
+  175 tests, about 2 min (the replay tests run full days); all must pass.
 - API (port 8000):
   ```bash
   .venv/Scripts/uvicorn trader.api.main:app

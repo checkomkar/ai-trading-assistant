@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
@@ -30,6 +31,7 @@ from trader.backtest import data as bt_data
 from trader.backtest.runner import BacktestRequest, build_strategy
 from trader.domain import Instrument
 from trader.execution.paper import PaperBroker
+from trader.execution.state import build_snapshot, signal_from_dict, signal_to_dict
 from trader.execution.store import PaperStore
 from trader.execution.types import Order, OrderRequest, OrderStatus, Side
 from trader.features import FeatureEngine, Features
@@ -103,12 +105,33 @@ class Lane:
         # bar assembly: futures / vix candles of the same bucket arrive separately
         self.fut: dict[datetime, Candle] = {}
         self.vix: dict[datetime, float] = {}
-        self.pending: tuple[Candle, datetime] | None = None
+        self.pending: deque[tuple[Candle, datetime]] = deque()  # closed bars not yet handed to the strategy
         self.enabled = True
 
 
 def _minutes(tf: str) -> int:
     return int(TIMEFRAMES[tf].total_seconds() // 60)
+
+
+def _live_to_dict(lane: Lane, lv: _Live) -> dict:
+    """What a restart needs to keep managing an open position (PRD §22.3). Not stored: the exit order
+    (a restarted runner places a fresh one) and the instrument (looked up again from the symbol master)."""
+    return {
+        "cid": lv.cid, "underlying": lane.cfg.underlying, "strategy": lane.label, "token": lv.inst.token,
+        "symbol": lv.inst.symbol, "quantity": lv.quantity, "state": lv.state,
+        "signal": signal_to_dict(lv.signal), "entry_order": {**lv.entry_order.to_dict(), "charges": lv.entry_order.charges},
+        "entry_price": lv.entry_price, "entry_time": lv.entry_time.isoformat() if lv.entry_time else None,
+        "stop": lv.stop, "initial_stop": lv.initial_stop, "target": lv.target, "high_water": lv.high_water,
+        "low_water": lv.low_water, "last_bid": lv.last_bid, "bars": lv.bars, "exit_reason": lv.exit_reason,
+        "exit_attempts": lv.exit_attempts}
+
+
+def _live_from_dict(d: dict, inst: Instrument) -> _Live:
+    return _Live(d["cid"], signal_from_dict(d["signal"]), inst, d["quantity"], d["state"],
+                 Order.from_dict(d["entry_order"]), None, d["entry_price"],
+                 datetime.fromisoformat(d["entry_time"]) if d.get("entry_time") else None, d["stop"],
+                 d["initial_stop"], d["target"], d["high_water"], d["low_water"], d["last_bid"], d["bars"],
+                 d.get("exit_reason"), d.get("exit_attempts", 0))
 
 
 class PaperRunner:
@@ -127,12 +150,17 @@ class PaperRunner:
         self.errors = 0
         self.last_error: str | None = None
         self._tasks: list[asyncio.Task] = []
-        self._day: date | None = None
+        self._day: date | None = risk.day  # a restored same-day engine must not be rolled (and reset) again
+        self.restore_report: dict | None = None  # set by PaperService: what was restored at start-up
         self._routes: dict[str, list[tuple[Lane, str]]] = {}  # token -> (lane, "bar" | "fut" | "vix")
 
     # ---- lifecycle ------------------------------------------------------------------------
-    async def start(self, *, warmup: bool = True) -> None:
+    async def start(self, *, warmup: bool = True, restored: list[dict] | None = None) -> None:
+        """`restored` are open positions from a saved snapshot (or a previous run of this process); each is
+        handed to the lane that trades it, or the start is refused (PRD §22.3)."""
         self.started_at = self.now()
+        if restored:
+            self.adopt(restored)
         for lane in self.lanes:
             self._bind_tokens(lane)
             if warmup:
@@ -153,7 +181,18 @@ class PaperRunner:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
+        # Nothing manages an order while the runner is down: withdraw what is in flight, so a later start
+        # (which re-places the exit of a position that was leaving) cannot race a stale order.
+        now = self.now()
+        for lane in self.lanes:
+            live = lane.live
+            if live is not None and live.state == "ENTRY":
+                await self._withdraw_entry(lane, live, now)
+            elif live is not None and live.exit_order is not None:
+                await self.broker.cancel_order(live.exit_order.id)
+                live.exit_order = None
         self.store.emit("runner.stopped", None, {"open_positions": [ln.live.cid for ln in self.lanes if ln.live]})
+        self._save_state(now)
         await self.store.flush()
 
     def _bind_tokens(self, lane: Lane) -> None:
@@ -189,7 +228,7 @@ class PaperRunner:
             if c.timeframe != lane.cfg.timeframe:
                 continue
             if kind == "bar":
-                lane.pending = (c, self.now())
+                lane.pending.append((c, self.now()))
             elif kind == "fut":
                 lane.fut[c.ts] = c
             else:
@@ -209,22 +248,41 @@ class PaperRunner:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - one bad tick must not stop the runner
-                self.errors += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"
-                log.exception("paper tick failed", event="paper.tick_failed")
-                self.store.emit("runner.error", None, {"error": self.last_error})
+                self._record_error("tick", exc)
+
+    def _record_error(self, what: str, exc: Exception) -> None:
+        self.errors += 1
+        self.last_error = f"{type(exc).__name__}: {exc}"
+        log.exception("paper step failed", event="paper.tick_failed", step=what)
+        self.store.emit("runner.error", None, {"error": self.last_error, "step": what})
+
+    @contextmanager
+    def _isolated(self, what: str):
+        """A failure in one step of the heartbeat (a strategy that raises on a bar, say) is recorded and must
+        not skip the steps after it: order fills and stop management have to keep running."""
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001
+            self._record_error(what, exc)
 
     # ---- the heartbeat -----------------------------------------------------------------------
     async def tick(self, now: datetime | None = None) -> None:
         now = now or self.now()
-        self._roll_day(now)
+        with self._isolated("roll_day"):
+            self._roll_day(now)
         for lane in self.lanes:
-            await self._drain_bar(lane, now)
+            with self._isolated(f"bar:{lane.cfg.underlying}"):
+                await self._drain_bar(lane, now)
         for order in self.broker.process(now):
-            self._on_order_update(order, now)
+            with self._isolated(f"fill:{order.id}"):
+                self._on_order_update(order, now)
         for lane in self.lanes:
-            await self._manage(lane, now)
-        await self._enforce_daily_loss(now)
+            with self._isolated(f"manage:{lane.cfg.underlying}"):
+                await self._manage(lane, now)
+        with self._isolated("daily_loss"):
+            await self._enforce_daily_loss(now)
+        with self._isolated("save_state"):
+            self._save_state(now)
 
     def _roll_day(self, now: datetime) -> None:
         day = now.astimezone(IST).date()
@@ -237,18 +295,17 @@ class PaperRunner:
                 lane.vix.clear()
 
     async def _drain_bar(self, lane: Lane, now: datetime) -> None:
-        if lane.pending is None:
-            return
-        bar, got_at = lane.pending
-        fut_inst = self.md.registry.future(lane.cfg.underlying)
-        fut_ready = fut_inst is None or bar.ts in lane.fut
-        if not fut_ready and (now - got_at).total_seconds() < lane.cfg.bar_grace_seconds:
-            return
-        lane.pending = None
-        for old in [k for k in lane.fut if k < bar.ts - timedelta(hours=1)]:
-            lane.fut.pop(old, None)
-            lane.vix.pop(old, None)
-        await self.on_bar(lane, bar, lane.fut.get(bar.ts), lane.vix.get(bar.ts), now)
+        while lane.pending:  # oldest first; a late heartbeat must not drop a bar and leave a hole in the indicators
+            bar, got_at = lane.pending[0]
+            fut_inst = self.md.registry.future(lane.cfg.underlying)
+            fut_ready = fut_inst is None or bar.ts in lane.fut
+            if not fut_ready and (now - got_at).total_seconds() < lane.cfg.bar_grace_seconds:
+                return
+            lane.pending.popleft()
+            for old in [k for k in lane.fut if k < bar.ts - timedelta(hours=1)]:
+                lane.fut.pop(old, None)
+                lane.vix.pop(old, None)
+            await self.on_bar(lane, bar, lane.fut.get(bar.ts), lane.vix.get(bar.ts), now)
 
     # ---- bar close: features, exit rules, signal -----------------------------------------------
     async def on_bar(self, lane: Lane, bar: Candle, fut: Candle | None, vix: float | None,
@@ -490,15 +547,23 @@ class PaperRunner:
         self.store.emit("kill_switch.tripped", None, {"reason": reason, "flatten": flatten})
         for lane in self.lanes:
             live = lane.live
-            if live is not None and live.state == "ENTRY":  # not filled yet: withdraw it
-                await self.broker.cancel_order(live.entry_order.id)
-                self.risk.on_entry_failed(live.cid)
-                self.store.emit("order.cancelled", live.cid, live.entry_order.to_dict())
-                lane.live = None
-            elif flatten:
+            if live is not None and live.state == "ENTRY" and await self._withdraw_entry(lane, live, now):
+                continue  # not filled yet: withdrawn
+            if flatten:
                 self._request_exit(lane, f"kill switch: {reason}", now)
         await self.tick(now)
         await self.store.flush()
+
+    async def _withdraw_entry(self, lane: Lane, live: _Live, now: datetime) -> bool:
+        """Cancel an entry that has not filled. False if it filled in the meantime (it is then a position)."""
+        order = await self.broker.cancel_order(live.entry_order.id)
+        if order.status == OrderStatus.FILLED:
+            self._on_order_update(order, now)
+            return False
+        self.risk.on_entry_failed(live.cid)
+        self.store.emit("order.cancelled", live.cid, order.to_dict())
+        lane.live = None
+        return True
 
     async def _enforce_daily_loss(self, now: datetime) -> None:
         if not any(ln.live and ln.live.state == "OPEN" for ln in self.lanes):
@@ -514,6 +579,44 @@ class PaperRunner:
             if lv and lv.state in ("OPEN", "EXIT") and lv.entry_price:
                 total += (lv.last_bid - lv.entry_price) * lv.quantity - lv.entry_order.charges
         return total
+
+    # ---- persistence (PRD §22.3) ---------------------------------------------------------------
+    def export_lives(self) -> list[dict]:
+        """Open positions (OPEN or on their way out). An entry still waiting for its fill is not one."""
+        return [_live_to_dict(ln, ln.live) for ln in self.lanes if ln.live and ln.live.state in ("OPEN", "EXIT")]
+
+    def snapshot(self) -> dict:
+        unfilled = {ln.live.cid for ln in self.lanes if ln.live and ln.live.state == "ENTRY"}
+        return build_snapshot(self.risk, self.broker, self.export_lives(), unfilled)
+
+    def _save_state(self, now: datetime) -> None:
+        self.store.set_state(now.astimezone(IST).date().isoformat(), self.data_source, self.snapshot())
+
+    def adopt(self, lives: list[dict]) -> None:
+        """Resume managing restored positions. All or nothing: if any cannot be matched to a lane, a contract
+        in the symbol master or a position in the broker, nothing is adopted and the start is refused, since
+        a position nobody manages never exits."""
+        plan: list[tuple[Lane, _Live]] = []
+        for d in lives:
+            free = [ln for ln in self.lanes if ln.live is None and ln.cfg.underlying == d["underlying"]
+                    and all(ln is not p[0] for p in plan)]
+            lane = next((ln for ln in free if ln.label == d["strategy"]), free[0] if free else None)
+            if lane is None:
+                raise RuntimeError(f"open paper position {d['symbol']} ({d['strategy']}) has no lane to manage it: "
+                                   f"start a lane for {d['underlying']}, or close the position first")
+            inst = self.md.registry.by_token(d["token"])
+            if inst is None:
+                raise RuntimeError(f"open paper position {d['symbol']} is not in the symbol master any more")
+            pos = self.broker.position(d["token"])
+            if pos is None or pos.quantity < d["quantity"]:
+                raise RuntimeError(f"saved position {d['symbol']} does not match the paper broker's positions")
+            plan.append((lane, _live_from_dict(d, inst)))
+        for lane, live in plan:
+            lane.live = live
+            self.store.emit("position.restored", live.cid, {
+                "symbol": live.inst.symbol, "state": live.state, "quantity": live.quantity,
+                "entry_price": live.entry_price, "stop": round(live.stop, 2), "target": round(live.target, 2),
+                "high_water": live.high_water, "bars": live.bars, "strategy": lane.label})
 
     # ---- read side ---------------------------------------------------------------------------
     def positions(self) -> list[dict]:
@@ -550,5 +653,5 @@ class PaperRunner:
                 "last_bar": ln.last_bar.ts.isoformat() if ln.last_bar else None,
                 "last_decision": ln.last_decision, "signals": list(ln.signals)[-10:][::-1],
             } for ln in self.lanes],
-            "risk": self.risk.status(),
+            "risk": self.risk.status(), "restore": self.restore_report,
         }

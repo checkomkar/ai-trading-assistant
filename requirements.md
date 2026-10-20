@@ -2490,14 +2490,46 @@ Paper pipeline: 14 trades, net ₹14,940 (gross ₹15,951, charges ₹1,011). Ba
 - **Risk defaults** (`RISK_*` in `.env`): daily loss ₹5,000, per-trade risk ₹4,000 (a one-lot NIFTY ATM trade at 25% stop risks about ₹3,200, so one loss takes most of the daily budget), 1 lot, 1 open position, 5 trades a day, 3 consecutive losses, ₹40k per underlying and ₹60k total premium, quotes fresher than 10 s. A first draft with ₹3,000 per-trade risk silently blocked every NIFTY entry at spot 26,500, which is the check working as designed; the limit is a deliberate setting.
 - **Entries are blocked when the market is closed, with no override.** To exercise the pipeline at any hour, use the replay provider.
 - **Fill timing:** the replay ticks every 5 s, so an order's fill lands on the first tick at least `latency` after the signal. Live, it is the first quote after latency.
-- **Not persisted:** open positions and the kill-switch state are in memory. The strategy is flat by 15:15, but a restart mid-session forgets an open paper position, and the kill switch resets to off. Fix before the 20-day run (persist both, rebuild on start).
+- **Restart persistence:** done in the M4 hardening pass, see §22.5.
 - **Daily-summary generation** is on demand (`/paper/summary`); an end-of-day `daily.summary` event and report are not yet emitted.
 - **Single runner, per-lane risk shared:** lanes (underlying × strategy) share one broker and one risk engine, so limits are portfolio-wide.
 
 ## 22.4 M4 DoD status
 | DoD item | Status |
 |---|---|
-| 20 consecutive trading days unattended, no unhandled errors | Not started. Needs live market days (`PAPER_AUTOSTART=true`). Restart persistence (§22.3) first. |
+| 20 consecutive trading days unattended, no unhandled errors | Not started. Needs live market days (`PAPER_AUTOSTART=true`). Restart persistence is done (§22.5), so a restart mid-session no longer loses a position or the kill switch. |
 | Every trade traceable signal → order → fill → exit via `correlation_id` | Done, tested (`test_full_day_trades_are_traceable_signal_to_exit`). |
 | Paper P&L within tolerance of a backtest on the same days | Machinery done (rehearsal CLI). Tolerance not yet agreed; first result in §22.2. Must be re-checked on recorded live option data, not synthetic. |
 | (M3 DoD) Same signals in backtest and paper on replayed data | Done: features and first signal match on identical bars (`test_first_signal_matches_the_backtest_on_the_same_bars`). |
+
+## 22.5 M4 hardening: restart persistence and review fixes (2026-10-21)
+
+### Restart persistence
+Open paper positions, the day's risk counters and the kill switch now survive a restart.
+
+- **Storage:** table `paper_state` (migration `d4a7f1b93c58`), one row per data source (`paper-fyers`, `paper-simulated`, `paper-replay`), overwritten on change. `PaperStore.set_state` buffers it and `flush` writes it in the same transaction as the audit events, so the snapshot and the events that explain it never disagree. The runner saves at the end of every heartbeat (only if it changed); the kill-switch, reset and strategy-toggle endpoints save immediately, even with no runner.
+- **Contents** (`execution/state.py`): `PaperBroker` cash, realised P&L, order sequence and positions; `RiskEngine` day, trades, day P&L, consecutive losses, open reservations, kill switch and disabled strategies; and, per open position, the runner's `_Live` (signal, entry order, stop, initial stop, target, high-water, low-water, last bid, bars held, exit reason). Not saved: pending orders (a restarted runner places a fresh exit for a position that was leaving) and entries that were ordered but not yet filled (they cannot survive a restart, so their risk reservation is left out).
+- **Restore** (`PaperService.restore`, called at API start-up before anything can trade): the kill switch and disabled strategies come back **whatever day they were saved on** (a latch must not clear by restarting); positions, cash, P&L and counters come back **only if the snapshot is from the same IST trading day**. An older snapshot is *not* resumed: status `stale`, a `state.stale` event listing the abandoned positions, and `restore` in `GET /paper/status`. Other statuses: `none`, `restored`, `ignored` (other data source or format), `disabled`, `error` (unreadable state: the kill switch is tripped, because we cannot vouch for it).
+- **Adoption:** `PaperRunner.start(restored=...)` / `adopt()` hands each restored position to the lane for its underlying (preferring the same strategy label). If a position has no lane, is not in the symbol master, or does not match the broker's position, **the start is refused** (HTTP 400) rather than leaving a position nobody manages. Adoption emits `position.restored` under the original `correlation_id`, so the trace reads signal → risk → order → fill → **restored** → exit → fill → trade.closed.
+- **Replay does not persist** (`PaperService(persist_state=None)` defaults to off for providers with their own clock): its clock restarts at the open, so a saved position would come back from the future. The in-process rehearsal harness opts in for tests, and its snapshot is keyed `paper-replay`, so a rehearsal can never overwrite live state.
+- **Tests:** `tests/test_paper_persistence.py` (crash mid-trade and finish it, counters not reset, kill switch survives, stale day not resumed, data-source isolation, no-lane refusal, stop/start, plus an API restart).
+
+### Review fixes (`execution/`, `risk/`, `replay.py`, `routes/paper.py`)
+1. **Stop then start orphaned a position.** `PaperRunner.stop()` left the broker position and the risk reservation behind; the next runner had no `_Live` for it, so it was never exited and blocked `max_open_positions` for the rest of the day. `stop()` now withdraws unfilled entries and in-flight exits, and `PaperService.start` hands the open positions to the new runner.
+2. **One failing step skipped everything after it.** An exception in bar handling (a strategy that raises) aborted the whole heartbeat, so that tick's fills and stop checks were skipped. Each step of `tick()` is now isolated and recorded as `runner.error`.
+3. **A late heartbeat dropped bars.** `lane.pending` held one bar, so two closes between heartbeats lost the older one and left a hole in the indicators. It is now a queue, drained oldest first.
+4. **A second start on the same day reset realised P&L and order history.** `_roll_day` treated a fresh runner as a new day. It now starts from the risk engine's day.
+5. **A pending order could be enlarged after the risk check** through `modify_order`. Raising the quantity now raises `ValueError`. Nothing calls it today; the interface was the hole.
+6. **`kill()` could discard a filled entry.** The cancel of an unfilled entry now notices a fill that landed first and keeps it as a position.
+
+Verified, no change: every entry order is created in `PaperRunner._on_signal`, after `RiskEngine.check`; the only other `broker.submit` is the exit in `_place_exit`. No route accepts an order. Heartbeat and candle handling cannot interleave: `on_candle` only enqueues, and `tick` has no suspension point except the final flush.
+
+### Open questions (not changed)
+- **A restart mid-bar builds that bar from a partial bucket.** The candle aggregator is empty after a restart, so the first bar closing after it has only the ticks since. Warm-up covers earlier bars. Fix needs a backfill of the in-progress bucket from stored candles or the broker.
+- **An exit with no quote retries every second, forever.** If the held option stops ticking (outside the subscription window, or after a restart before its first tick), `PaperBroker` rejects the exit ("no quote") and `_manage` re-places it each heartbeat, one `alert.exit_rejected` event per second. Needs a rule: subscribe the held contract explicitly, and escalate after N attempts.
+- **Cash is not restored from a previous day.** After a restart on a new day the account is back to `PAPER_CAPITAL` while a long-running process would carry its P&L forward. Left alone because "restore only same-day state" and a flat account is the safe default.
+- **`/paper/stop` with an open position leaves it unmanaged** until the next start (now preserved, not lost). It should probably flatten or refuse.
+- **`/paper/start` accepts duplicate underlyings** (two lanes on one underlying). Risk limits still apply, so the second lane's entries are rejected; harmless but noisy.
+- **Risk is checked at the signal-time ask, the fill uses the quote ~0.5 s later.** A fast-moving option can fill above the checked price; the effect on `risk_per_trade` is small but unbounded in principle.
+- **`ReplayProvider` after a reconnect re-emits the step in progress** (`t < clock` is skipped, `t == clock` is not). Cumulative volume stays correct; ticks are duplicated once.
+- **The snapshot is written once per heartbeat at most**, so a hard crash can lose up to a second of high-water movement. Stops are re-derived from the saved stop, which only ever ratchets up, so the failure is a slightly wider trailing stop, not a lost position.
