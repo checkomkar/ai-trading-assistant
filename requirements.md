@@ -2330,6 +2330,28 @@ Backtesting was prioritised ahead of live verification, so M3 started before M2'
 - **Going down is impossible:** a 5m candle cannot be split into 1m candles. Never synthesise lower timeframes.
 - **Volume for VWAP:** index candles carry **no volume**, so VWAP and volume features come from futures candles (§14.11).
 
+## 20.1 Bulk download of expired option candles (real option prices for backtests)
+
+`python -m trader.scripts.fetch_expired_bulk` downloads the expired option contracts a backtest needs for a date range, instead of one expiry with a hand-typed ATM level (`fetch_expired_options`, still available).
+
+**What it plans** (`brokers/fyers/expired_bulk.py`):
+- **Expiries:** every expired expiry in the range under the exchange rules in force then (`backtest/pricing.py` `EXPIRY_RULES`), with the right symbol format (weekly `NIFTY25N1125000CE`, monthly `NIFTY25NOV25000CE`; the last weekly expiry of a month is the monthly contract; BANKNIFTY is monthly-only from Nov 2024). Today's and future expiries are never requested.
+- **Days:** only the window in which a backtest can use the contract, from the previous expiry to its own. A request spans days, not the 100-day maximum.
+- **Strikes:** the at-the-money strikes the index actually opened bars at in that window (from the stored index candles), plus `--pad` strikes either side (default 1). Strikes nobody could have traded at the money are not requested. Roughly 25-35 contracts per NIFTY weekly expiry, so on the order of 1,500 for a year.
+- **Timeframe:** 1m by default, the finest the API serves; the backtest loader builds 5m from it exactly (§20, resampling policy).
+
+**Running it:**
+- `--dry-run` prints the plan (contracts to fetch, already stored, known empty, days needed on Standard). It needs no login and sends no requests.
+- Standard plan: 10 requests a day (`FYERS_EXPIRED_INTRADAY_DAILY_LIMIT`). Newest expiries are fetched first, so a partial run covers the most recent weeks. Re-run daily; it resumes.
+- Prime: `--prime` removes the daily cap. `--max-requests N` sets a budget for one sitting; `--pause` spaces requests (default 0.4 s).
+- Resumable and idempotent: stored contracts are skipped, and contracts Fyers answered "no data" for are remembered in `data/fyers/expired_empty.json` so they do not cost quota again.
+- Stops early, without burning requests, after 5 consecutive errors (rate limit, expired token, Fyers down) and says why.
+- Needs the index candles for the range stored first (`backfill_history`); expiries with none are listed and skipped rather than guessed.
+
+**Playbook for a one-month Prime subscription** (§15, plan limits): backfill 1m index history first (`backfill_history --days 365`, works on Standard); `--dry-run` to see the count; subscribe; run with `--prime` for the full year, then again for BANKNIFTY; re-run until the summary shows 0 to download; confirm with a "Real candles" backtest; only then cancel. Stored data stays in our database. **Fyers data is licensed to the account holder: it is for our own research, not for redistribution to customers (§23.1 on the SaaS branch).**
+
+**Not yet verified against the live API.** The module is tested with a fake Fyers client (planning, formats, quota, resume, error stop, and that the stored candles load into the backtester). It has not been run against real Fyers. Run a Standard-plan trial first (`--max-requests 3`) and check that candles arrive and a "Real candles" backtest picks them up. Expiries before 2025-09-01 use best-effort expiry-weekday rules, so some contracts will return "no data". Whether Fyers actually serves expired-contract data that far back on Prime is Fyers' claim, to be confirmed by trying an old expiry.
+
 ---
 
 # 19. Custom Strategies from Natural Language (Milestone M3b)

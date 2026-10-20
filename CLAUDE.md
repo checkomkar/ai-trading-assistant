@@ -27,7 +27,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
 - `backend/trader/`: Python 3.10 package
   - `config.py`, `logging.py`, `domain.py`, `features.py` (FeatureEngine shared by backtest and live)
   - `market_data/`: provider base, simulator, replay, collector service, candles, resample, quality, bus
-  - `brokers/fyers/`: auth/login CLI, symbol master, socket provider, expired-contract data
+  - `brokers/fyers/`: auth/login CLI, symbol master, socket provider, expired-contract data (`expired`, `expired_bulk` planner)
   - `instruments/`: calendar/holidays, expiry, strikes, registry
   - `options/`: Black-Scholes, chain analytics
   - `indicators/`: incremental indicators
@@ -38,7 +38,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - `ai/strategy_translator.py`: Claude, translation only
   - `api/`: FastAPI routes (market, options, backtests, strategies, paper, health, ws)
   - `db/`: models, migrate, repository
-  - `scripts/`: backfill_history, fetch_expired_options, generate_sim_history, backtest, import_candles, paper_rehearsal
+  - `scripts/`: backfill_history, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal
 - `backend/alembic/`: migrations, run automatically at API start-up
 - `backend/config/`: `nse_holidays.yaml`, `costs.yaml`
 - `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Strategies, Backtest.
@@ -49,7 +49,7 @@ Run from `backend/` unless noted.
   ```bash
   .venv/Scripts/python -m pytest -q
   ```
-  175 tests, about 2 min (the replay tests run full days); all must pass.
+  186 tests, about 2 min (the replay tests run full days); all must pass.
 - API (port 8000):
   ```bash
   .venv/Scripts/uvicorn trader.api.main:app
