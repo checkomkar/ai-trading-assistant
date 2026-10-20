@@ -78,6 +78,12 @@ Deeper history, from `backend/`. This resumes from the last stored candle:
 
 Expired option contracts, for backtests. The Standard plan allows 10 intraday calls a day, so re-run daily and it resumes. Pass `--prime` if you subscribe to Fyers Prime.
 
+To fetch a whole date range (it works out the expiries and strikes itself, newest first, and resumes), see `fetch_expired_bulk`; preview with `--dry-run`, which needs no login:
+
+```bash
+.venv/Scripts/python -m trader.scripts.fetch_expired_bulk --start 2025-10-23 --end 2026-10-19 --dry-run
+```
+
 ```bash
 .venv/Scripts/python -m trader.scripts.fetch_expired_options --underlying NIFTY --expiry 2025-03-27 --monthly --atm 23500 --width 5
 ```
