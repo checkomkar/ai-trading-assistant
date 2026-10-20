@@ -14,6 +14,9 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - 20-prompt translator eval (§19.7)
   - contract-note cost check (`clearing_pct` in `backend/config/costs.yaml`)
 
+## Product direction
+Intended to become a hosted multi-user (SaaS) product, paper and research only until the regulatory questions in PRD §23 are settled. Until stage S1 lands (§23.4), keep new code *tenant-ready* without building tenancy: don't add new module-level singletons or process-wide state that belongs to one trader, keep per-account settings out of `os.environ` reads, and put owner-scoped data behind the repository/store layer so an `account_id` can be added later.
+
 ## Non-negotiables
 - **Safety:** the default path is DATA → ANALYSIS → PAPER. No code path may let LLM output place orders (PRD §2). Risk limits are enforced by the engine, not by strategies.
 - **No look-ahead:** signals form on a bar's close and fill at the next bar's open. If one bar touches both stop and target, assume the stop hit.
