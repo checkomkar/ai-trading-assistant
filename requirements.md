@@ -2538,14 +2538,13 @@ Verified, no change: every entry order is created in `PaperRunner._on_signal`, a
 
 **Status: direction, not a commitment.** Today this is a single-user research and paper-trading tool (one trader, one machine, one broker login). The aim is to grow it into a hosted multi-user product. This section records what that changes, so milestones M4-M5 are built without closing the door. Nothing here changes the rules in §2 or §22.
 
-## 23.1 Gating questions (answer before building anything multi-user)
-These are legal and commercial, not technical, and they decide the shape of the product. None is answered here; each needs a lawyer or the vendor.
+## 23.1 Decisions made by the owner (2026-10-21)
+1. **Research only. No signals are sold.** Users define their own strategies; the platform backtests and paper-trades them. The platform never tells a user what to trade. This keeps it on the software side of SEBI's adviser/research-analyst line; confirm with a lawyer before launch.
+2. **Bring your own keys.** Every customer connects their own Fyers (or other broker) account and API keys. The platform does not redistribute market data, so no data-vendor licence is needed for this model.
+3. **LLM access is provided and managed by us. This is the selling point.** Customers never supply an Anthropic (or other) key. Consequences: a platform-held key per provider, per-tenant metering and hard monthly caps (§23.5), pricing that covers token cost, and the §2 rule that LLM output never places an order.
+4. **Live orders come from the customer's own broking account**, using their own credentials and (per SEBI's retail algo framework, §15) their own registered static IP. The platform never pools or places orders on its own account. **Live order placement is the last feature built**, after S3 (§23.4). Until then the product is research and paper only.
 
-1. **What exactly is sold?** A tool users run on their own strategies (software) is very different from signals or recommendations (SEBI Investment Adviser / Research Analyst territory). The platform must not generate buy/sell calls for other people unless registered. The safe framing is: users define strategies, the platform backtests and paper-trades them. The §2 rule that LLM output never places orders also keeps the LLM on the "translate the user's own words" side.
-2. **Market data licensing.** Fyers API data is licensed for the account holder's own use. A SaaS that fans one feed out to many users is redistribution, and NSE requires a data-vendor licence for that. Until that is settled, the only clean model is **bring your own broker**: each tenant connects their own Fyers (or other) account and the platform reads data with their token.
-3. **Retail algo rules (SEBI framework effective 1 April 2026, see §15).** API orders must come from a broker-registered static IP with daily 2FA. A hosted platform placing live orders for many clients is a different regulatory position from one person's own machine. Live trading for tenants (M5 and later) is therefore out of scope until this is understood. **The SaaS is paper-and-research only until then.**
-4. **Personal data.** Users' trades, broker tokens and identity fall under India's DPDP Act 2023 (consent, retention, deletion on request).
-5. **Pricing basis and liability.** What is a customer paying for, and what does the terms-of-service say about simulated results not predicting returns (see §21.2 and §22.2: the one strategy tested so far failed out-of-sample).
+Still open, and needing a lawyer rather than code: whether managed LLM translation of a customer's own words into a strategy could ever be read as advice (it should not, because the customer authors the intent and can see and edit the spec, §19); DPDP Act 2023 obligations for customer data and broker tokens; and terms of service on simulated results (§21.2, §22.2).
 
 ## 23.2 What stays non-negotiable at any scale
 - No code path lets LLM output place an order. In a multi-tenant product the LLM is also a cost and abuse surface (§23.5).
@@ -2577,7 +2576,7 @@ Each stage ships and is useful on its own. No stage turns on live order placemen
 - **S1, tenancy seams (no user-visible change):** add `account_id` columns (default `"default"`) and thread an `AccountContext` through `PaperService`, risk, broker, store and routes; per-account settings; `paper_state` keyed by account. Test: two accounts in one process cannot see or affect each other's positions, kill switch or journal.
 - **S2, hosted single-tenant, then multi-user closed beta:** Postgres, auth, per-tenant encrypted broker tokens, workers for runners, per-tenant quotas (backtests, LLM translations, concurrent runners), BYO-broker data. Invite-only, paper only, a handful of known users.
 - **S3, product basics:** onboarding, billing (a payments provider that supports INR and GST invoices), usage metering, admin console with the global kill switch, status page, support tooling, backups and a tested restore, data export and delete (DPDP).
-- **S4, live trading (M5) for tenants:** only after §23.1 items 1 and 3 are resolved in writing. Likely each tenant's own broker with their own static IP, never pooled orders.
+- **S4, live trading (M5) for tenants, last:** orders go from the customer's own broker account with their own credentials and static IP, never pooled. Needs the broker-order adapter behind the `Broker` interface, explicit per-tenant opt-in, a second confirmation as in `LIVE_TRADING_CONFIRM`, and written legal sign-off first.
 
 ## 23.5 Cost, abuse and reliability
 - **LLM translator:** metered per tenant with a hard monthly cap, and the Strategy Spec validation (§19) stays the only thing that crosses from LLM to engine. Prompts and specs are tenant data.
@@ -2587,8 +2586,7 @@ Each stage ships and is useful on its own. No stage turns on live order placemen
 - **Observability:** per-tenant metrics (runner heartbeat lag, errors, feed age, risk rejections) feed alerts, since "unattended for 20 days" becomes "unattended for every customer, every day".
 
 ## 23.6 Open decisions for the owner
-1. Is the first paying customer a retail trader, a small prop desk, or a trading educator? Each implies a different compliance stance and feature set.
-2. BYO-broker only, or pursue a data licence?
-3. Hosting region and budget (India region for latency and data-residency comfort).
-4. Single broker (Fyers) at launch, or a second adapter early so the product is not tied to one vendor's API terms.
-
+1. Who is the first paying customer: a retail trader, a small prop desk, or a trading educator?
+2. Pricing: per seat, or per LLM usage tier? The managed-LLM cost is the main variable cost.
+3. Hosting region and budget (an India region for latency and data-residency comfort).
+4. A single broker (Fyers) at launch, or a second adapter early so the product is not tied to one vendor's API terms.
