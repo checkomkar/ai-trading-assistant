@@ -375,14 +375,15 @@ def test_assistant_has_no_way_to_trade():
         assert banned not in src, banned
 
 
-async def test_engine_makes_the_model_look_up_data_questions_instead_of_inventing():
-    p = Scripted(answer("You have an Iron Condor strategy."), tool("list_strategies"), answer("You have 1 strategy: X."))
+async def test_engine_looks_up_data_questions_itself_so_one_model_call_is_enough():
     async def ls(_):
         return [{"name": "X"}]
+
+    p = Scripted(answer("You have 1 strategy: X."))
     r = await chat_mod.run_chat(p, {"list_strategies": chat_mod.Tool("l", ls)}, [], "list my saved strategies", [], [],
                                 snapshot="Saved strategies (1):\n  - X (v1, 5m)")
-    assert r.text == "You have 1 strategy: X." and r.tools_used == ["list_strategies"]
-    assert chat_mod.NUDGE in p.calls[1][1][-1]["content"]  # the first, ungrounded answer was bounced back
+    assert r.text == "You have 1 strategy: X." and r.tools_used == ["list_strategies"] and len(p.calls) == 1
+    assert '"name":"X"' in p.calls[0][1][-1]["content"] and "<already_looked_up>" in p.calls[0][1][-1]["content"]
     assert "Saved strategies (1)" in p.calls[0][0]  # real facts are in the prompt
 
 
@@ -392,15 +393,24 @@ async def test_engine_does_not_nudge_small_talk():
     assert r.text == "Hello!" and len(p.calls) == 1
 
 
-async def test_engine_fetches_the_data_itself_when_the_model_keeps_refusing_to_look():
+async def test_engine_prefetches_file_search_with_the_question_and_runs_lookups_together():
     fetched = []
 
     async def search(a):
         fetched.append(a)
         return [{"file": "rules.txt", "text": "Never risk more than 2 percent."}]
 
-    p = Scripted(answer("Your max daily loss is 5%."), answer("Also 3 open positions."), answer("Your notes say 2% per trade."))
+    p = Scripted(answer("Your notes say 2% per trade."))
     r = await chat_mod.run_chat(p, {"search_knowledge": chat_mod.Tool("s", search)}, [], "what do my notes say about risk", [], [])
     assert fetched == [{"query": "what do my notes say about risk"}] and r.tools_used == ["search_knowledge"]
-    assert r.text == "Your notes say 2% per trade."  # the invented answers never reach the user
-    assert chat_mod.FORCED in p.calls[2][1][-1]["content"] and "Never risk more than 2 percent" in p.calls[2][1][-1]["content"]
+    assert r.text == "Your notes say 2% per trade." and len(p.calls) == 1
+    assert "Never risk more than 2 percent" in p.calls[0][1][-1]["content"]
+
+
+def test_history_keeps_recent_turns_in_full_and_shortens_older_replies():
+    long = "x" * 3000
+    hist = [{"role": "user", "content": "q"}, {"role": "assistant", "content": long}] * 6
+    out = chat_mod._trim_history(hist)
+    assert len(out) == chat_mod.MAX_HISTORY
+    assert len(out[0]["content"]) <= chat_mod.OLD_REPLY_CHARS + 1 or out[0]["role"] == "user"
+    assert out[-1]["content"] == long  # the latest reply is untouched

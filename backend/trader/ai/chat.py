@@ -21,8 +21,10 @@ from typing import Any, Awaitable, Callable
 from trader.ai.providers import LLMProvider, TranslatorUnavailable
 
 MAX_STEPS = 6
-MAX_TOOL_CHARS = 7000
-MAX_HISTORY = 20
+MAX_TOOL_CHARS = 4000  # every step re-sends earlier tool results, so keep each one short
+MAX_HISTORY = 8  # earlier turns re-sent with each model call; older replies are shortened (see _trim_history)
+OLD_REPLY_CHARS = 500
+MAX_KB_LINES = 15
 MAX_ATTACHED_CHARS = 12000  # per turn, across attached files
 
 ACTION_SCHEMA = {
@@ -83,7 +85,9 @@ FORCED = ("Here are the results of looking this up in the trader's own data. Ans
 def system_prompt(tools: dict[str, Tool], memory: list[str], docs: list[dict], snapshot: str = "") -> str:
     tool_lines = "\n".join(f"- {name}: {t.description}" for name, t in tools.items())
     mem = "\n".join(f"- {m}" for m in memory) or "(nothing yet)"
-    kb = "\n".join(f"- {d['filename']} ({d['kind']}): {d['summary'][:200]}" for d in docs[:40]) or "(no files uploaded)"
+    kb = "\n".join(f"- {d['filename']} ({d['kind']}): {d['summary'][:120]}" for d in docs[:MAX_KB_LINES]) or "(no files uploaded)"
+    if len(docs) > MAX_KB_LINES:
+        kb += f"\n(+{len(docs) - MAX_KB_LINES} more files: search_knowledge finds them)"
     return f"""You are the trader's private assistant inside their NIFTY/BANKNIFTY option-buying research and paper-trading \
 platform. You know their strategies, backtests, paper trades and uploaded notes, and you help them understand, describe, \
 compare and improve strategies. Today is {date.today().isoformat()}.
@@ -122,6 +126,29 @@ def _clip(obj: Any) -> str:
     return s if len(s) <= MAX_TOOL_CHARS else s[:MAX_TOOL_CHARS] + "…[truncated]"
 
 
+def _trim_history(history: list[dict]) -> list[dict]:
+    """The last few turns in full; older assistant replies shortened (long answers are the bulk of a chat's tokens)."""
+    recent = history[-MAX_HISTORY:]
+    keep_full = 2
+    return [m if (i >= len(recent) - keep_full or m["role"] != "assistant" or len(m["content"]) <= OLD_REPLY_CHARS)
+            else {**m, "content": m["content"][:OLD_REPLY_CHARS] + "…"} for i, m in enumerate(recent)]
+
+
+async def _lookups(tools: dict[str, Tool], user_text: str, result: "ChatResult") -> list[str]:
+    """Run the obvious lookups for this question ourselves (cheap database reads) as <tool_result> blocks."""
+    todo = [(name, args) for pattern, name, args in _LOOKUPS if name in tools and pattern.search(user_text)]
+
+    async def one(name: str, args: dict | None) -> str:
+        try:
+            out = await tools[name].run(args if args is not None else {"query": user_text})
+            result.tools_used.append(name)
+        except Exception as exc:  # noqa: BLE001
+            out = {"error": str(exc)[:200]}
+        return f"<tool_result name={json.dumps(name)}>\n{_clip(out)}\n</tool_result>"
+
+    return list(await asyncio.gather(*(one(n, a) for n, a in todo)))
+
+
 async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[dict], user_text: str,
                    memory: list[str], docs: list[dict], attached: list[dict] | None = None,
                    snapshot: str = "") -> ChatResult:
@@ -134,8 +161,14 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
         body = (a["text"] or "(no text could be read from this file)")[:max(budget, 0)]
         budget -= len(body)
         content += f"\n\n<attached_file name={json.dumps(a['filename'])}>\n{body}\n</attached_file>"
-    messages: list[dict] = [*history[-MAX_HISTORY:], {"role": "user", "content": content}]
     result = ChatResult("")
+    if tools and _DATA_WORDS.search(user_text):
+        # Fetch the obvious data up front (cheap database reads): one model call instead of a look-up round trip first,
+        # and every extra call re-sends the whole prompt.
+        pre = await _lookups(tools, user_text, result)
+        if pre:
+            content += "\n\n<already_looked_up>\n" + "\n".join(pre) + "\n</already_looked_up>"
+    messages: list[dict] = [*_trim_history(history), {"role": "user", "content": content}]
     empty_retried = False
     for step in range(MAX_STEPS):
         if step == MAX_STEPS - 1 and result.tools_used:
@@ -155,15 +188,7 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
             continue
         if ungrounded and not forced:
             forced = True  # it still would not look: fetch the obvious data ourselves and hand it over
-            fetched = []
-            for pattern, name, args in _LOOKUPS:
-                if name in tools and pattern.search(user_text):
-                    try:
-                        out = await tools[name].run(args if args is not None else {"query": user_text})
-                        result.tools_used.append(name)
-                        fetched.append(f"<tool_result name={json.dumps(name)}>\n{_clip(out)}\n</tool_result>")
-                    except Exception as exc:  # noqa: BLE001
-                        fetched.append(f"<tool_result name={json.dumps(name)}>\n{_clip({'error': str(exc)[:200]})}\n</tool_result>")
+            fetched = await _lookups(tools, user_text, result)
             if fetched:
                 messages += [{"role": "assistant", "content": reply.text},
                              {"role": "user", "content": FORCED + "\n\n" + "\n".join(fetched)}]
