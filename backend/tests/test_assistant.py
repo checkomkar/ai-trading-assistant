@@ -137,6 +137,19 @@ async def test_engine_survives_unknown_tool_and_tool_errors():
     assert "unknown tool" in p.calls[1][1][-1]["content"] and "db down" in p.calls[2][1][-1]["content"]
 
 
+async def test_engine_asks_for_a_final_answer_instead_of_running_out_of_steps():
+    p = Scripted(*[tool("t")] * (chat_mod.MAX_STEPS - 1), answer("Summary of the files."))
+    r = await chat_mod.run_chat(p, {"t": chat_mod.Tool("t", _noop)}, [], "q", [], [])
+    assert r.text == "Summary of the files."
+    assert chat_mod.LAST_CALL in p.calls[-1][1][-1]["content"]
+
+
+async def test_engine_retries_once_when_the_model_returns_an_empty_answer():
+    p = Scripted(answer(""), answer("Now with text."))
+    r = await chat_mod.run_chat(p, {}, [], "hello", [], [])
+    assert r.text == "Now with text." and len(p.calls) == 2
+
+
 async def test_engine_stops_after_max_steps_and_injects_context():
     p = Scripted(*[tool("t")] * 10)
     r = await chat_mod.run_chat(p, {"t": chat_mod.Tool("t", _noop)}, [{"role": "user", "content": "earlier"}], "q",

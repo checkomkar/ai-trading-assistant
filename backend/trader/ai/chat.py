@@ -73,6 +73,9 @@ _LOOKUPS = [  # (question pattern, tool, args): what to fetch ourselves when the
     (re.compile(r"\b(backtest\w*)\b", re.I), "list_backtests", {"limit": 8}),
     (re.compile(r"\b(paper|journal|trades?|p&l|pnl|performance|win ?rate)\b", re.I), "paper_journal", {}),
 ]
+LAST_CALL = ("You have used your tool calls. Do not call another tool. Reply now with action \"answer\" and write the full reply "
+             "in \"text\", using only what the tools returned. If it was not enough, say what you found and what is missing.")
+EMPTY_REPLY = "Your reply had no text. Reply again with action \"answer\" and put the full reply in \"text\"."
 FORCED = ("Here are the results of looking this up in the trader's own data. Answer ONLY from these results and the "
           "snapshot. If they don't contain the answer, say you couldn't find it.")
 
@@ -133,7 +136,10 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
         content += f"\n\n<attached_file name={json.dumps(a['filename'])}>\n{body}\n</attached_file>"
     messages: list[dict] = [*history[-MAX_HISTORY:], {"role": "user", "content": content}]
     result = ChatResult("")
+    empty_retried = False
     for step in range(MAX_STEPS):
+        if step == MAX_STEPS - 1 and result.tools_used:
+            messages.append({"role": "user", "content": LAST_CALL})  # no more tool calls: write the reply from what was found
         reply = await asyncio.to_thread(provider.complete, system, messages, ACTION_SCHEMA, native_specs(tools) or None)
         result.model = provider.label
         try:
@@ -162,8 +168,14 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
                 messages += [{"role": "assistant", "content": reply.text},
                              {"role": "user", "content": FORCED + "\n\n" + "\n".join(fetched)}]
                 continue
+        if act.get("action") == "answer" and not (act.get("text") or "").strip() and not empty_retried and step < MAX_STEPS - 1:
+            empty_retried = True  # weaker models sometimes return an empty reply: ask once more
+            messages += [{"role": "assistant", "content": reply.text}, {"role": "user", "content": EMPTY_REPLY}]
+            continue
         if act.get("action") == "answer" or step == MAX_STEPS - 1:
-            result.text = (act.get("text") or "").strip() or "I couldn't put together an answer. Could you rephrase?"
+            result.text = (act.get("text") or "").strip() or (
+                "I read through your files but couldn't finish an answer. Try a narrower request, for example: "
+                "\"Summarise the entry rules in PAPA DECISION SHEET\", then \"Draft a strategy from those rules\".")
             result.remember = [str(x).strip()[:300] for x in act.get("remember", []) if str(x).strip()][:5]
             return result
         name = str(act.get("tool", ""))
