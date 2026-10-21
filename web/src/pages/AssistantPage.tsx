@@ -127,6 +127,7 @@ export function AssistantPage() {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<KnowledgeDoc[]>([]); // files attached to the message being written
   const [busy, setBusy] = useState<"send" | "upload" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [reading, setReading] = useState<string | null>(null); // name of the file being uploaded and read
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Record<string, string>>({}); // card key -> confirmation
@@ -196,12 +197,14 @@ export function AssistantPage() {
     if (!files?.length) return;
     setBusy("upload");
     setError(null);
+    setNotice(null);
     for (const f of Array.from(files)) {
       setReading(f.name);
       try {
         const d = await uploadFile(f);
-        setPending((p) => [...p, d]);
-        setDocs((all) => [d, ...all]);
+        setPending((p) => (p.some((x) => x.id === d.id) ? p : [...p, d]));
+        if (d.duplicate) setNotice(`${f.name} was already uploaded, so I used the existing copy.`);
+        else setDocs((all) => [d, ...all]);
       } catch (e) {
         setError(`${f.name}: ${(e as Error).message}`);
       }
@@ -279,6 +282,7 @@ export function AssistantPage() {
   // ---- composer (centred on an empty chat, docked at the bottom otherwise) ----
   const composer = (
     <div className="mx-auto w-full max-w-3xl px-4">
+      {notice && <p className="mb-2 rounded-lg border border-ink-700 bg-ink-900 px-3 py-2 text-xs text-ink-300" role="status">{notice}</p>}
       {error && <p className="mb-2 rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-xs text-down" role="alert">{error}</p>}
       <div className="rounded-2xl border border-ink-700 bg-ink-850 p-2 shadow-lg shadow-black/20 focus-within:border-ink-600">
         {reading && (

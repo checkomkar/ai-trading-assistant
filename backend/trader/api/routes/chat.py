@@ -103,6 +103,11 @@ async def upload(request: Request, user: CurrentUser, meter: MeterDep, filename:
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"file is larger than {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
     ctype = request.headers.get("content-type", "")
+    if save:
+        async with request.app.state.sessionmaker() as s:
+            same = await repo.find_duplicate_doc(s, filename, len(data), user.id)
+        if same is not None:  # already uploaded: reuse it, don't store or read it again
+            return {**_doc(same), "duplicate": True}
     try:
         kind, text = await asyncio.to_thread(extract_text, filename, ctype, data)
     except UnsupportedFile as exc:

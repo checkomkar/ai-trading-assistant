@@ -95,6 +95,13 @@ async def replace_doc_text(s: AsyncSession, doc_id: str, *, text: str, status: s
     return True
 
 
+async def find_duplicate_doc(s: AsyncSession, filename: str, size: int, owner: str = OWNER) -> KnowledgeDocRow | None:
+    """An earlier upload of the same file (same name and size) by this owner."""
+    return (await s.execute(select(KnowledgeDocRow).where(
+        KnowledgeDocRow.owner == owner, func.lower(KnowledgeDocRow.filename) == filename[:200].lower(),
+        KnowledgeDocRow.size_bytes == size).order_by(KnowledgeDocRow.created_at).limit(1))).scalars().first()
+
+
 async def list_docs(s: AsyncSession, owner: str = OWNER) -> list[KnowledgeDocRow]:
     return list((await s.execute(select(KnowledgeDocRow).where(KnowledgeDocRow.owner == owner)
                                  .order_by(KnowledgeDocRow.created_at.desc()))).scalars())

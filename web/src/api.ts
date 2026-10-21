@@ -301,6 +301,8 @@ export interface KnowledgeDoc {
   status: "ready" | "no_text" | "no_vision" | "ocr";
   summary: string;
   chars: number;
+  /** The server already had this file, so nothing new was stored. */
+  duplicate?: boolean;
 }
 
 /** Send one file's bytes; the server extracts its text (PDF, Word, Excel, text, or an image via a vision model). */

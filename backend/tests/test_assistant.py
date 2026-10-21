@@ -241,6 +241,16 @@ def upload(c, name, data, ctype="text/plain", **q):
     return c.post("/knowledge/upload", params={"filename": name, **q}, content=data, headers={"content-type": ctype})
 
 
+def test_uploading_the_same_file_again_reuses_the_first_copy(client):
+    client.provider.actions = [{"summary": "rules"}]
+    a = upload(client, "rules.md", b"Opening range breakout. Max loss 3000.").json()
+    b = upload(client, "Rules.MD", b"Opening range breakout. Max loss 3000.").json()
+    assert b["id"] == a["id"] and b["duplicate"] is True and "duplicate" not in a
+    assert len(client.get("/knowledge/docs").json()["docs"]) == 1
+    c = upload(client, "rules.md", b"A different file with the same name.").json()
+    assert c["id"] != a["id"] and len(client.get("/knowledge/docs").json()["docs"]) == 2
+
+
 def test_upload_search_and_delete(client):
     client.provider.actions = [{"summary": "ORB rules and risk limits"}]
     d = upload(client, "orb.md", b"Opening range breakout. Max loss per day is 3000 rupees.").json()
