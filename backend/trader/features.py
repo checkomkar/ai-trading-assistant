@@ -87,17 +87,18 @@ class FeatureEngine:
         hv = self.hv.update(bar.close)
         if vix is not None:
             self.vix = vix
-        fut_vwap = fut_close = None
+        fut_vwap = fut_close = fut_volume = None
         if future is not None:
             fut_vwap = self.vwap.update(day, future.high, future.low, future.close, future.volume)
             fut_close = future.close
+            fut_volume = float(future.volume) if future.volume else None
 
         return Features(bar.ts, day, local.time(), bar.open, bar.high, bar.low, bar.close, {
             "ema_fast": ema_f, "ema_slow": ema_s, "rsi": rsi, "atr": atr,
             "atr_pct": atr / bar.close * 100 if atr else None,
             "adx": adx, "plus_di": self.adx.plus_di, "minus_di": self.adx.minus_di, "hv": hv,
             "breakout_high": self.extreme.high, "breakout_low": self.extreme.low,
-            "fut_close": fut_close, "fut_vwap": fut_vwap, "vix": self.vix,
+            "fut_close": fut_close, "fut_vwap": fut_vwap, "fut_volume": fut_volume, "vix": self.vix,
             "or_high": self.or_high, "or_low": self.or_low,
             "prev_day_high": self.prev_day_high, "prev_day_low": self.prev_day_low,
             "prev_day_close": self.prev_day_close, "bars_today": float(self.bars_today),

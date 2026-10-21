@@ -228,3 +228,89 @@ class SessionVWAP:
             self._v += volume
             self.value = self._pv / self._v
         return self.value
+
+
+class Pivots:
+    """Swing highs/lows by fractal: a bar is a swing high when its high is above the `k` bars before and after it.
+    A pivot is only known `k` bars after it happened, so this never looks ahead. Keeps the latest two of each,
+    with the RSI (if given) at the pivot, for divergence checks."""
+
+    def __init__(self, k: int) -> None:
+        self.k = k
+        self._win: deque[tuple[float, float, float | None]] = deque(maxlen=2 * k + 1)
+        self._n = 0
+        self.highs: deque[tuple[int, float, float | None]] = deque(maxlen=2)  # (bar index, price, rsi)
+        self.lows: deque[tuple[int, float, float | None]] = deque(maxlen=2)
+        self.index = -1  # index of the bar last passed to update()
+
+    def update(self, high: float, low: float, rsi: float | None = None) -> None:
+        self._n += 1
+        self.index = self._n - 1
+        self._win.append((high, low, rsi))
+        if len(self._win) < 2 * self.k + 1:
+            return
+        k, w = self.k, list(self._win)
+        mid_h, mid_l, mid_r = w[k]
+        at = self.index - k
+        if all(mid_h > w[i][0] for i in range(2 * k + 1) if i != k):
+            self.highs.append((at, mid_h, mid_r))
+        if all(mid_l < w[i][1] for i in range(2 * k + 1) if i != k):
+            self.lows.append((at, mid_l, mid_r))
+
+    @property
+    def last_high(self) -> float | None:
+        return self.highs[-1][1] if self.highs else None
+
+    @property
+    def last_low(self) -> float | None:
+        return self.lows[-1][1] if self.lows else None
+
+    def divergence(self, within: int) -> tuple[bool, bool]:
+        """(bullish, bearish): price made a lower low / higher high but RSI did not, between the last two pivots
+        that are at most `within` bars apart, the newer one at most `within` bars old."""
+        def check(pts, worse) -> bool:  # noqa: ANN001
+            if len(pts) < 2:
+                return False
+            (i1, p1, r1), (i2, p2, r2) = pts[0], pts[1]
+            if None in (r1, r2) or i2 - i1 > within or self.index - i2 > within:
+                return False
+            return worse(p2, p1) and (r2 > r1 if worse is _lower else r2 < r1)  # type: ignore[operator]
+        return check(self.lows, _lower), check(self.highs, _higher)
+
+
+def _lower(a: float, b: float) -> bool:
+    return a < b
+
+
+def _higher(a: float, b: float) -> bool:
+    return a > b
+
+
+def candle_patterns(bars: list[tuple[float, float, float, float]]) -> dict[str, float]:
+    """1.0/0.0 flags for classic candlestick patterns. `bars` = last up to 3 closed (open, high, low, close), oldest
+    first. Each pattern is only the shape of the candles; combine it with a trend condition to give it meaning."""
+    out = dict.fromkeys(("bull_engulfing", "bear_engulfing", "doji", "hammer", "shooting_star",
+                         "morning_star", "evening_star"), 0.0)
+    if not bars:
+        return out
+    o, h, l, c = bars[-1]
+    rng = h - l
+    body = abs(c - o)
+    if rng > 0:
+        upper, lower = h - max(o, c), min(o, c) - l
+        out["doji"] = float(body <= 0.1 * rng)
+        out["hammer"] = float(body <= 0.4 * rng and lower >= 0.6 * rng and upper <= 0.15 * rng)
+        out["shooting_star"] = float(body <= 0.4 * rng and upper >= 0.6 * rng and lower <= 0.15 * rng)
+    if len(bars) >= 2:
+        po, _, _, pc = bars[-2]
+        out["bull_engulfing"] = float(pc < po and c > o and o <= pc and c >= po)
+        out["bear_engulfing"] = float(pc > po and c < o and o >= pc and c <= po)
+    if len(bars) >= 3:
+        o1, h1, l1, c1 = bars[-3]
+        o2, h2, l2, c2 = bars[-2]
+        r1, r2 = h1 - l1, h2 - l2
+        if r1 > 0 and r2 > 0 and rng > 0:
+            small = abs(c2 - o2) <= 0.3 * r2
+            out["morning_star"] = float(c1 < o1 and abs(c1 - o1) >= 0.5 * r1 and small and c > o and c > (o1 + c1) / 2)
+            out["evening_star"] = float(c1 > o1 and abs(c1 - o1) >= 0.5 * r1 and small and c < o and c < (o1 + c1) / 2)
+    return out

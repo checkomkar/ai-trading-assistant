@@ -44,7 +44,9 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
   - `instruments/`: calendar/holidays, expiry, strikes, registry
   - `options/`: Black-Scholes, chain analytics
   - `indicators/`: incremental indicators
-  - `strategy/`: base, momentum, spec (Strategy Spec v1) and rule_strategy (interpreter)
+  - `strategy/`: base, momentum, spec (Strategy Spec v1) and rule_strategy (interpreter), `sizing.py` (risk-based lots)
+    - Spec operands beyond the basics: candlestick flags `cs_*` and RSI divergence (0/1, use `> 0`), `swing_high`/`swing_low` (dynamic support/resistance), `volume`/`rel_volume` (futures volume; no futures data = unknown = no trade), `daily_ema`/`daily_sma`/`daily_rsi` (completed days only; context, the trading timeframe stays 1m-60m, no overnight holds).
+    - `risk.risk_per_trade_pct` sizes lots so the stop loses that % of capital (backtest `capital`, paper `starting_cash`; a single lot over budget = trade skipped); `risk.min_reward_risk` rejects specs whose target/stop is lower. Measured-move targets are not built: use exit conditions on `swing_*`.
   - `execution/`: `Broker` interface, `PaperBroker`, `runner` (live strategy runner), `store` (audit + journal + state row), `state` (snapshot/restore policy), `service`, `summary`, `rehearsal` (in-process replay driver)
   - `risk/`: deterministic `RiskEngine` (pre-order checklist, kill switch). The only gate to the broker.
   - `backtest/`: costs, pricing (synthetic/real), engine, metrics, data loader, runner

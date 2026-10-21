@@ -24,6 +24,7 @@ from trader.features import FeatureConfig, FeatureEngine
 from trader.instruments.calendar import IST
 from trader.instruments.strikes import OptionType
 from trader.market_data.candles import Candle
+from trader.strategy.sizing import lots_for_risk
 from trader.strategy.base import MarketState, NoTrade, Signal, Strategy
 
 
@@ -222,9 +223,15 @@ class BacktestEngine:
             return None
         mid = pb.open
         paid = self.exe.buy(mid)
+        lots = self.cfg.lots
+        if sig.risk_pct:
+            lots = lots_for_risk(self.cfg.capital, sig.risk_pct, paid, sig.stop_loss_pct, c.lot_size)
+            if lots == 0:
+                skipped["risk budget below one lot"] += 1
+                return None
         stop = paid * (1 - sig.stop_loss_pct / 100)
         target = paid * (1 + sig.target_pct / 100)
-        return _Position(sig, c, self.cfg.lots * c.lot_size, bar.ts, paid, mid, stop, target, mid, mid, bar.open,
+        return _Position(sig, c, lots * c.lot_size, bar.ts, paid, mid, stop, target, mid, mid, bar.open,
                          initial_stop=stop, last_mid=mid)
 
     def _manage(self, p: _Position, bar: Candle, vix: float | None, last_bar_of_day: bool) -> Trade | None:

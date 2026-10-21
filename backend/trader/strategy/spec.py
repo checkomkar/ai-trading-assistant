@@ -46,12 +46,38 @@ INDICATORS: dict[str, tuple[bool, tuple[int, int] | None, str, str]] = {
     "macd_signal": (False, None, "MACD signal (9)", "macd"),
     "macd_hist": (False, None, "MACD histogram", "macd"),
     "vix": (False, None, "INDIA VIX", "vix"),
+    # candlestick shapes on the last 1-3 closed candles: 1 = formed on this candle, 0 = not
+    "cs_bull_engulfing": (False, None, "bullish engulfing candle", "flag"),
+    "cs_bear_engulfing": (False, None, "bearish engulfing candle", "flag"),
+    "cs_doji": (False, None, "doji candle", "flag"),
+    "cs_hammer": (False, None, "hammer candle", "flag"),
+    "cs_shooting_star": (False, None, "shooting-star candle", "flag"),
+    "cs_morning_star": (False, None, "morning-star pattern", "flag"),
+    "cs_evening_star": (False, None, "evening-star pattern", "flag"),
+    # RSI(14) divergence between the last two confirmed swing points (3 bars each side), at most {p} bars apart
+    "rsi_bull_div": (True, (5, 60), "bullish RSI divergence (swing lows within {p} bars)", "flag"),
+    "rsi_bear_div": (True, (5, 60), "bearish RSI divergence (swing highs within {p} bars)", "flag"),
+    # dynamic support / resistance: the latest confirmed swing low / high ({p} bars each side)
+    "swing_high": (True, (2, 10), "latest swing high ({p} bars each side)", "index"),
+    "swing_low": (True, (2, 10), "latest swing low ({p} bars each side)", "index"),
+    # volume comes from the near-month futures (index candles carry none)
+    "volume": (False, None, "futures volume", "volume"),
+    "rel_volume": (True, (3, 100), "futures volume relative to its {p}-bar average", "volume"),
+    # daily-timeframe context, from completed days only (today's unfinished day is never used)
+    "daily_ema": (True, (2, 200), "daily EMA({p})", "index"),
+    "daily_sma": (True, (2, 200), "daily SMA({p})", "index"),
+    "daily_rsi": (True, (2, 100), "daily RSI({p})", "osc"),
 }
 IndicatorName = Literal[tuple(INDICATORS)]  # type: ignore[valid-type]
 
 MIRROR_NAME = {"highest": "lowest", "lowest": "highest", "or_high": "or_low", "or_low": "or_high",
                "prev_day_high": "prev_day_low", "prev_day_low": "prev_day_high", "bb_upper": "bb_lower",
-               "bb_lower": "bb_upper", "plus_di": "minus_di", "minus_di": "plus_di", "high": "low", "low": "high"}
+               "bb_lower": "bb_upper", "plus_di": "minus_di", "minus_di": "plus_di", "high": "low", "low": "high",
+               "cs_bull_engulfing": "cs_bear_engulfing", "cs_bear_engulfing": "cs_bull_engulfing",
+               "cs_hammer": "cs_shooting_star", "cs_shooting_star": "cs_hammer",
+               "cs_morning_star": "cs_evening_star", "cs_evening_star": "cs_morning_star",
+               "rsi_bull_div": "rsi_bear_div", "rsi_bear_div": "rsi_bull_div",
+               "swing_high": "swing_low", "swing_low": "swing_high"}
 MIRROR_OP = {">": "<", "<": ">", ">=": "<=", "<=": ">="}
 
 
@@ -185,6 +211,11 @@ class OptionSelection(_Strict):
 
 class Risk(_Strict):
     max_trades_per_day: int = Field(3, ge=1, le=20)
+    # Size each trade so that hitting the stop loses about this % of capital (lots = budget / loss per lot, rounded
+    # down; a trade whose single lot would risk more than the budget is skipped). None = the fixed number of lots.
+    risk_per_trade_pct: float | None = Field(None, gt=0, le=5)
+    # Refuse the spec unless target % / stop-loss % is at least this (e.g. 3 = reward at least 3x the risk).
+    min_reward_risk: float | None = Field(None, ge=1, le=20)
 
 
 class StrategySpec(_Strict):
@@ -270,6 +301,10 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
         errs.append("long side must buy CE (long options only, PRD §3)")
     if spec.sides.short and spec.sides.short.option != "PE":
         errs.append("short side must buy PE (long options only, PRD §3)")
+    rr = spec.risk.min_reward_risk
+    if rr is not None and spec.exits.target_pct / spec.exits.stop_loss_pct < rr:
+        errs.append(f"reward-to-risk is {spec.exits.target_pct / spec.exits.stop_loss_pct:.2f} "
+                    f"(target {spec.exits.target_pct:g}% / stop {spec.exits.stop_loss_pct:g}%), below the minimum {rr:g}")
     tw_end = time.fromisoformat(spec.filters.time_window[1])
     if tw_end > time.fromisoformat(spec.exits.eod):
         errs.append("entries are allowed after the EOD exit time")
@@ -287,7 +322,7 @@ def mirror_condition(c: object) -> object:
     def reflect(ind: Operand, const: Operand) -> Operand:
         if not isinstance(const, Const) or not isinstance(ind, Ind):
             return const
-        if ind.ind == "rsi":
+        if ind.ind in ("rsi", "daily_rsi"):
             return Const(const=100 - const.const)
         if ind.ind in ("macd", "macd_signal", "macd_hist", "roc"):
             return Const(const=-const.const)
@@ -295,6 +330,8 @@ def mirror_condition(c: object) -> object:
 
     if isinstance(c, Cmp):
         a, op, b = c.cmp
+        if any(isinstance(x, Ind) and INDICATORS[x.ind][3] == "flag" for x in (a, b)):
+            return Cmp(cmp=(mo(a), op, mo(b)))  # a pattern flag stays "present": only its name is swapped
         return Cmp(cmp=(mo(reflect(b, a)), MIRROR_OP[op], mo(reflect(a, b))))
     if isinstance(c, Cross):
         a, d, b = c.cross
@@ -332,13 +369,29 @@ def _op_text(o: Operand) -> str:
 
 
 _OPS = {">": "is above", "<": "is below", ">=": "is at or above", "<=": "is at or below"}
+_CMP = {">": lambda x, y: x > y, "<": lambda x, y: x < y, ">=": lambda x, y: x >= y, "<=": lambda x, y: x <= y}
+
+
+def _flag_text(a: Operand, op: str, b: Operand) -> str | None:
+    """'bullish engulfing candle is present' for a comparison of a 0/1 pattern flag with a constant."""
+    if isinstance(a, Const) and isinstance(b, Ind):
+        a, b, op = b, a, MIRROR_OP[op]
+    if not (isinstance(a, Ind) and isinstance(b, Const) and INDICATORS[a.ind][3] == "flag"):
+        return None
+    on, off = _CMP[op](1.0, b.const), _CMP[op](0.0, b.const)
+    if on and not off:
+        return f"{_op_text(a)} is present"
+    if off and not on:
+        return f"{_op_text(a)} is not present"
+    return None
 
 
 def render_condition(c: object, depth: int = 0) -> str:
     pad = "  " * depth
     if isinstance(c, Cmp):
         a, op, b = c.cmp
-        return f"{pad}- {_op_text(a)} {_OPS[op]} {_op_text(b)}"
+        flag = _flag_text(a, op, b)
+        return f"{pad}- {flag or f'{_op_text(a)} {_OPS[op]} {_op_text(b)}'}"
     if isinstance(c, Cross):
         a, d, b = c.cross
         return f"{pad}- {_op_text(a)} crosses {d} {_op_text(b)} (on this bar's close)"
@@ -387,7 +440,9 @@ def render_english(spec: StrategySpec) -> str:
         lines.append("Also exit at the next candle's open when:")
         lines.append(render_condition(e.conditions))
     n = spec.risk.max_trades_per_day
-    lines.append(f"\nRisk: at most {n} trade{'s' if n != 1 else ''} per day, one position at a time. "
+    sizing = (f"size each trade so the stop loses about {spec.risk.risk_per_trade_pct:g}% of capital; "
+              if spec.risk.risk_per_trade_pct else "")
+    lines.append(f"\nRisk: {sizing}at most {n} trade{'s' if n != 1 else ''} per day, one position at a time. "
                  f"Expiry: nearest{' (rolled to the next one on expiry day)' if spec.option_selection.roll_on_expiry_day else ''}.")
     return "\n".join(lines)
 

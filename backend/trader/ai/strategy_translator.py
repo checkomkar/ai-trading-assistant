@@ -58,6 +58,15 @@ bar where it crosses); {{"between": [value, low, high]}}; and {{"all": [...]}}, 
 Never compare `close`/`high`/`low`/EMA with `vwap`.
 - "Breakout" with a lookback means close vs `highest`/`lowest` of the previous N bars. If the trader says \
 "breakout" without saying of what, ask.
+- Candlestick patterns (`cs_*`) and RSI divergence (`rsi_bull_div`/`rsi_bear_div`) are 0/1 flags: write \
+"pattern present" as {{"cmp": [{{"ind": "cs_hammer"}}, ">", {{"const": 0}}]}}. They are only candle shapes, so combine \
+them with a trend or level condition. `swing_low`/`swing_high` are dynamic support/resistance (latest confirmed swing). \
+`volume`/`rel_volume` come from futures. `daily_ema`/`daily_sma`/`daily_rsi` are daily-timeframe context from completed \
+days; the strategy still trades on intraday candles (1m-60m) and never holds overnight.
+- "Risk 1% of capital per trade" = risk.risk_per_trade_pct 1 (lots are sized so the stop loses that much). \
+"Minimum 1:3 reward to risk" = risk.min_reward_risk 3 with target_pct at least 3x stop_loss_pct.
+- A measured-move target (peak minus trough) is not supported: use target_pct, or an exit condition on a swing level, \
+and say so in "unsupported".
 - If both directions are wanted and the put rules are the mirror image, use {{"mirror_of": "long"}} for the short side.
 - Exit conditions (exits.conditions) are written from the long side's point of view; they are mirrored for puts.
 - Use defaults only for genuinely standard choices (RSI/ADX/ATR period 14, MACD 12/26/9, EMA as written) and \

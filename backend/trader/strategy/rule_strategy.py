@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import date, time
 
-from trader.indicators import ADX, ATR, EMA, MACD, ROC, RSI, SMA, BollingerBands, RollingExtreme
+from trader.indicators import ADX, ATR, EMA, MACD, ROC, RSI, SMA, BollingerBands, Pivots, RollingExtreme, candle_patterns
 from trader.strategy.base import Direction, MarketState, NoTrade, Signal, Strategy
 from trader.strategy.spec import (
     All,
@@ -33,6 +33,10 @@ FEATURE_OPERANDS = {  # operand -> Features key (computed by the shared FeatureE
     "prev_day_high": "prev_day_high", "prev_day_low": "prev_day_low", "prev_day_close": "prev_day_close",
 }
 PRICE_OPERANDS = ("open", "high", "low", "close")
+PATTERNS = {"cs_" + k: k for k in ("bull_engulfing", "bear_engulfing", "doji", "hammer", "shooting_star",
+                                    "morning_star", "evening_star")}
+DAILY = {"daily_ema": EMA, "daily_sma": SMA, "daily_rsi": RSI}
+DIV_PIVOT_BARS = 3  # swing width used for RSI divergence
 
 
 class _Bank:
@@ -41,9 +45,23 @@ class _Bank:
     def __init__(self, keys: set[tuple[str, int | None]]) -> None:
         self.keys = keys
         self.objs: dict[tuple[str, int | None], object] = {}
+        self.recent: deque[tuple[float, float, float, float]] = deque(maxlen=3)  # (o, h, l, c) for candle patterns
+        self.volumes: dict[int, deque[float]] = {}  # rel_volume: previous volumes per period
+        self.daily: dict[tuple[str, int | None], object] = {}  # indicators fed once a day with the previous close
+        self._day = None
+        self._pats: dict[str, float] = {}
         for name, p in keys:
             k = (name, p)
-            if name == "ema":
+            if name in DAILY:
+                self.daily[k] = DAILY[name](p)
+            elif name == "rel_volume":
+                self.volumes[p] = deque(maxlen=p)
+            elif name in ("swing_high", "swing_low"):
+                self.objs[("pivots", p)] = self.objs.get(("pivots", p)) or Pivots(p)
+            elif name in ("rsi_bull_div", "rsi_bear_div"):
+                self.objs[("divrsi", 14)] = self.objs.get(("divrsi", 14)) or RSI(14)
+                self.objs[("pivots", DIV_PIVOT_BARS)] = self.objs.get(("pivots", DIV_PIVOT_BARS)) or Pivots(DIV_PIVOT_BARS)
+            elif name == "ema":
                 self.objs[k] = EMA(p)
             elif name == "sma":
                 self.objs[k] = SMA(p)
@@ -63,17 +81,52 @@ class _Bank:
                 self.objs[("macd", None)] = self.objs.get(("macd", None)) or MACD()
 
     def update(self, f) -> dict[tuple[str, int | None], float | None]:  # noqa: ANN001
+        if self.daily and f.day != self._day:  # a new day began: yesterday's close is now final
+            self._day = f.day
+            if f["prev_day_close"] is not None:
+                for o in self.daily.values():
+                    o.update(f["prev_day_close"])  # type: ignore[attr-defined]
+        self.recent.append((f.open, f.high, f.low, f.close))
+        if any(n in PATTERNS for n, _ in self.keys):
+            self._pats = candle_patterns(list(self.recent))
+        if ("divrsi", 14) in self.objs:  # first, so the pivots below see this bar's RSI
+            self.objs[("divrsi", 14)].update(f.close)  # type: ignore[attr-defined]
         for (kind, p), o in self.objs.items():
+            if kind == "divrsi":
+                continue
             if kind in ("atr", "adx"):
                 o.update(f.high, f.low, f.close)  # type: ignore[attr-defined]
             elif kind == "extreme":
                 o.update(f.high, f.low)  # type: ignore[attr-defined]
+            elif kind == "pivots":
+                rsi = self.objs[("divrsi", 14)].value if ("divrsi", 14) in self.objs else None  # type: ignore[attr-defined]
+                o.update(f.high, f.low, rsi if p == DIV_PIVOT_BARS else None)  # type: ignore[attr-defined]
             else:
                 o.update(f.close)  # type: ignore[attr-defined]
+        vol = f["fut_volume"]
+        rel = {}
+        for per, dq in self.volumes.items():
+            rel[per] = vol / (sum(dq) / per) if vol and len(dq) == per and sum(dq) > 0 else None
+            if vol:
+                dq.append(vol)
         snap: dict[tuple[str, int | None], float | None] = {}
         for name, p in self.keys:
             if name in PRICE_OPERANDS:
                 v = getattr(f, name)
+            elif name in PATTERNS:
+                v = self._pats.get(PATTERNS[name])
+            elif name in DAILY:
+                v = self.daily[(name, p)].value  # type: ignore[attr-defined]
+            elif name == "volume":
+                v = f["fut_volume"]
+            elif name == "rel_volume":
+                v = rel[p]
+            elif name in ("swing_high", "swing_low"):
+                o = self.objs[("pivots", p)]
+                v = o.last_high if name == "swing_high" else o.last_low  # type: ignore[attr-defined]
+            elif name in ("rsi_bull_div", "rsi_bear_div"):
+                bull, bear = self.objs[("pivots", DIV_PIVOT_BARS)].divergence(p)  # type: ignore[attr-defined]
+                v = float(bull if name == "rsi_bull_div" else bear)
             elif name in FEATURE_OPERANDS:
                 v = f[FEATURE_OPERANDS[name]]
             elif name in ("ema", "sma", "rsi", "roc"):
@@ -195,7 +248,8 @@ class RuleStrategy(Strategy):
                               self.spec.exits.target_pct, f"{self.spec.name}: {d.value.lower()} rules met",
                               f.ts, f"spec:{self.spec.hash}",
                               {f"{k[0]}{'' if k[1] is None else k[1]}": (round(v, 4) if isinstance(v, float) else v)
-                               for k, v in (self.hist[0] if self.hist else {}).items()})
+                               for k, v in (self.hist[0] if self.hist else {}).items()},
+                              risk_pct=self.spec.risk.risk_per_trade_pct)
         return None
 
     def exit_signal(self, state: MarketState, direction: Direction) -> str | None:
