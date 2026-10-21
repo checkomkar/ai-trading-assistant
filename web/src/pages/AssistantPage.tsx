@@ -125,6 +125,8 @@ export function AssistantPage() {
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [text, setText] = useState("");
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null); // an "@" being typed
+  const [mentionIdx, setMentionIdx] = useState(0);
   const [pending, setPending] = useState<KnowledgeDoc[]>([]); // files attached to the message being written
   const [busy, setBusy] = useState<"send" | "upload" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -229,6 +231,30 @@ export function AssistantPage() {
     attach(fromTransfer(e.dataTransfer));
   };
 
+  const suggestions = mention
+    ? docs.filter((d) => d.filename.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 6)
+    : [];
+
+  const pickMention = (d: KnowledgeDoc) => {
+    if (!mention) return;
+    const caret = box.current?.selectionStart ?? text.length;
+    const next = `${text.slice(0, mention.start)}@${d.filename} ${text.slice(caret)}`;
+    setText(next);
+    setMention(null);
+    const pos = mention.start + d.filename.length + 2;
+    requestAnimationFrame(() => {
+      box.current?.focus();
+      box.current?.setSelectionRange(pos, pos);
+    });
+  };
+
+  const onTextChange = (value: string, caret: number) => {
+    setText(value);
+    const m = /(^|\s)@([^\n@]{0,40})$/.exec(value.slice(0, caret));
+    setMention(m ? { start: caret - m[2].length - 1, query: m[2] } : null);
+    setMentionIdx(0);
+  };
+
   const send = async (override?: string) => {
     const body = (override ?? text).trim();
     if (!body || busy) return;
@@ -241,10 +267,13 @@ export function AssistantPage() {
         setActive(id);
       }
       const docIds = pending.map((d) => d.id);
+      const lower = body.toLowerCase();
+      const focusIds = docs.filter((d) => lower.includes(`@${d.filename.toLowerCase()}`)).map((d) => d.id); // files named with @
       setMsgs((m) => [...m, { id: `tmp${Date.now()}`, role: "user", content: body, cards: [], doc_ids: docIds }]);
       setText("");
+      setMention(null);
       setPending([]);
-      const reply = await postJSON<Msg>(`/chat/conversations/${id}/messages`, { text: body, doc_ids: docIds });
+      const reply = await postJSON<Msg>(`/chat/conversations/${id}/messages`, { text: body, doc_ids: docIds, focus_doc_ids: focusIds });
       setMsgs((m) => [...m, reply]);
       await loadSide();
     } catch (e) {
@@ -284,7 +313,24 @@ export function AssistantPage() {
     <div className="mx-auto w-full max-w-3xl px-4">
       {notice && <p className="mb-2 rounded-lg border border-ink-700 bg-ink-900 px-3 py-2 text-xs text-ink-300" role="status">{notice}</p>}
       {error && <p className="mb-2 rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-xs text-down" role="alert">{error}</p>}
-      <div className="rounded-2xl border border-ink-700 bg-ink-850 p-2 shadow-lg shadow-black/20 focus-within:border-ink-600">
+      <div className="relative rounded-2xl border border-ink-700 bg-ink-850 p-2 shadow-lg shadow-black/20 focus-within:border-ink-600">
+        {suggestions.length > 0 && (
+          <ul role="listbox" aria-label="Files" className="absolute bottom-full left-0 z-20 mb-2 max-h-64 w-full max-w-md overflow-auto rounded-xl border border-ink-700 bg-ink-900 p-1 shadow-xl shadow-black/40">
+            {suggestions.map((d, i) => (
+              <li key={d.id} role="option" aria-selected={i === mentionIdx}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); pickMention(d); }}
+                  onMouseEnter={() => setMentionIdx(i)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] ${i === mentionIdx ? "bg-ink-800 text-ink-100" : "text-ink-300"}`}
+                >
+                  <Icon d={I.file} size={13} />
+                  <span className="truncate">{d.filename}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {reading && (
           <div className="flex items-center gap-2 px-2 pb-2 pt-1 text-[12px] text-ink-300" role="status">
             <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
@@ -310,8 +356,24 @@ export function AssistantPage() {
         <textarea
           ref={box}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => onTextChange(e.target.value, e.target.selectionStart)}
           onKeyDown={(e) => {
+            if (suggestions.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                setMentionIdx((i) => (i + (e.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                pickMention(suggestions[mentionIdx] ?? suggestions[0]);
+                return;
+              }
+              if (e.key === "Escape") {
+                setMention(null);
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               send();
@@ -325,7 +387,7 @@ export function AssistantPage() {
             attach(files);
           }}
           rows={1}
-          placeholder="Message your assistant…"
+          placeholder="Message your assistant… (type @ to refer to a file)"
           className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 text-[15px] leading-relaxed text-ink-100 outline-none placeholder:text-ink-400"
         />
         <div className="flex items-center gap-1 pt-1">

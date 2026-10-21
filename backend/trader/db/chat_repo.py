@@ -123,10 +123,14 @@ async def delete_doc(s: AsyncSession, doc_id: str, owner: str = OWNER) -> bool:
     return True
 
 
-async def search_knowledge(s: AsyncSession, query: str, k: int = 5, owner: str = OWNER) -> list[dict]:
-    rows = list((await s.execute(select(KnowledgeChunkRow, KnowledgeDocRow.filename)
-                                 .join(KnowledgeDocRow, KnowledgeDocRow.id == KnowledgeChunkRow.doc_id)
-                                 .where(KnowledgeChunkRow.owner == owner))).all())
+async def search_knowledge(s: AsyncSession, query: str, k: int = 5, owner: str = OWNER,
+                           doc_ids: list[str] | None = None) -> list[dict]:
+    q = (select(KnowledgeChunkRow, KnowledgeDocRow.filename)
+         .join(KnowledgeDocRow, KnowledgeDocRow.id == KnowledgeChunkRow.doc_id)
+         .where(KnowledgeChunkRow.owner == owner))
+    if doc_ids:
+        q = q.where(KnowledgeChunkRow.doc_id.in_(doc_ids))
+    rows = list((await s.execute(q)).all())
     ranked = bm25_rank(query, [r[0].text for r in rows], k)
     return [{"file": rows[i][1], "chunk": rows[i][0].idx, "score": round(sc, 2), "text": rows[i][0].text}
             for i, sc in ranked]

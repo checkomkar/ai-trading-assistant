@@ -5,6 +5,7 @@ There is no endpoint here that touches orders, and the chat's tools are read-onl
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -202,6 +203,7 @@ async def delete_note(request: Request, note_id: int, user: CurrentUser) -> dict
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
     doc_ids: list[str] = Field(default_factory=list, max_length=10)
+    focus_doc_ids: list[str] = Field(default_factory=list, max_length=10)  # files the trader pointed at with @
 
 
 @router.get("/chat/conversations")
@@ -260,10 +262,15 @@ async def send(request: Request, conv_id: str, body: MessageIn, user: CurrentUse
         memory_notes = [n.text for n in await repo.list_memory(s, user.id)]
         docs_all = [_doc(d) for d in await repo.list_docs(s, user.id)]
         attached = [{"filename": d.filename, "text": d.text} for d in await repo.get_docs(s, body.doc_ids, user.id)]
-    tools = build_tools(request, user, meter)
+        focus = await repo.get_docs(s, body.focus_doc_ids, user.id)
+    tools = build_tools(request, user, meter, focus_doc_ids=[d.id for d in focus])
+    model_text = body.text
+    if focus:  # the trader named files with @: search only those, and say so
+        names = ", ".join(json.dumps(d.filename) for d in focus)
+        model_text += f"\n\n[The trader referred to these files with @: {names}. search_knowledge is limited to them.]"
     try:
         async with meter.metered(user, "chat_messages", provider) as mp:  # 402 when the plan's messages are used up
-            result = await run_chat(mp, tools, history, body.text, memory_notes, docs_all, attached, await _snapshot(tools))
+            result = await run_chat(mp, tools, history, model_text, memory_notes, docs_all, attached, await _snapshot(tools))
     except TranslatorUnavailable as exc:
         raise HTTPException(503, str(exc)) from None
     async with sm() as s, s.begin():

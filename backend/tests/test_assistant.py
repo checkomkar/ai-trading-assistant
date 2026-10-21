@@ -307,6 +307,20 @@ def test_conversation_with_tools_memory_and_cards(client):
     assert client.get(f"/chat/conversations/{conv}").status_code == 404
 
 
+def test_at_mentioned_file_limits_the_search_to_that_file(client):
+    client.provider.actions = [{"summary": "a"}, {"summary": "b"}]
+    a = upload(client, "alpha.txt", b"Risk rule from alpha: stop loss is 10 percent.").json()
+    upload(client, "beta.txt", b"Risk rule from beta: stop loss is 40 percent.")
+    conv = client.post("/chat/conversations").json()["id"]
+    client.provider.actions = [tool("search_knowledge", '{"query":"risk rule stop loss"}'), answer("done")]
+    client.post(f"/chat/conversations/{conv}/messages", json={"text": "What does @alpha.txt say about risk?", "focus_doc_ids": [a["id"]]})
+    system, msgs = client.provider.calls[-1]
+    first_user = client.provider.calls[-2][1][-1]["content"]
+    assert "referred to these files with @" in first_user and "alpha.txt" in first_user
+    hit = msgs[-1]["content"]
+    assert "alpha" in hit and "beta" not in hit  # beta.txt was never searched
+
+
 def test_attached_file_text_reaches_the_model_and_memory_dedupes(client):
     client.provider.actions = [{"summary": "s"}]
     doc = upload(client, "plan.txt", b"MY SECRET PLAN: buy dips on NIFTY").json()
