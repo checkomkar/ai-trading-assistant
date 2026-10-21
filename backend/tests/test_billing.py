@@ -226,3 +226,66 @@ def test_broker_keys_need_a_server_key(client):
     signup(client)
     r = client.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": "A", "secret_key": "B"}})
     assert r.status_code == 503
+
+
+def test_fyers_sign_in_flow_stores_a_token_per_account_and_tests_it(tmp_path, monkeypatch):
+    import base64
+    import time
+    import urllib.parse
+
+    from trader.accounts import vault
+    from trader.api.routes import brokers as br
+    from trader.brokers.fyers.auth import FyersAuthError
+
+    def jwt(exp):
+        body = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        return f"h.{body}.s"
+
+    key = vault.generate_key()
+    st = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{(tmp_path / 'f.db').as_posix()}", market_data_provider="simulated",
+                  auth_enabled=True, credential_key=key, public_url="https://striktek.example")
+    seen = {}
+
+    def fake_exchange(settings, code, post=None):
+        seen["ns"], seen["code"] = settings, code
+        if code == "bad":
+            raise FyersAuthError("invalid code")
+        return jwt(int(time.time()) + 3600)
+
+    async def fake_profile(client_id, token, quote_symbol="x"):
+        return {"name": "Test User", "fy_id": "XA12345", "email": "t@x.com", "nifty": 24990.5}
+
+    monkeypatch.setattr(br, "exchange_auth_code", fake_exchange)
+    monkeypatch.setattr(br, "fetch_profile", fake_profile)
+    with TestClient(create_app(st, start_collector=False)) as c:
+        signup(c, "one@x.com")
+        assert c.get("/brokers/catalog").json()["fyers_redirect_uri"] == "https://striktek.example/api/brokers/fyers/callback"
+        assert c.post("/brokers/fyers/login-url").status_code == 404  # no keys saved yet
+        c.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": "AB-100", "secret_key": "SECRET1"}})
+        assert c.get("/brokers/connections").json()[0]["session"]["state"] == "none"
+        assert c.post("/brokers/fyers/test").json()["needs_login"] is True
+
+        out = c.post("/brokers/fyers/login-url").json()
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(out["url"]).query))
+        assert q["client_id"] == "AB-100" and q["redirect_uri"] == "https://striktek.example/api/brokers/fyers/callback"
+        assert "SECRET1" not in out["url"]
+
+        assert c.get("/brokers/fyers/callback", params={"auth_code": "x", "state": "forged.1.abc"}).status_code == 400
+        ok = c.get("/brokers/fyers/callback", params={"auth_code": "good", "state": q["state"]}, follow_redirects=False)
+        assert ok.status_code == 303 and seen["code"] == "good" and seen["ns"].fyers_secret_key == "SECRET1"
+        conn = c.get("/brokers/connections").json()[0]
+        assert conn["session"]["state"] == "signed_in" and "access_token" not in json.dumps(conn)
+        assert c.post("/brokers/fyers/test").json() == {"ok": True, "name": "Test User", "fy_id": "XA12345", "email": "t@x.com", "nifty": 24990.5}
+
+        # a state minted for one customer is useless to another
+        c.post("/auth/logout")
+        signup(c, "two@x.com")
+        c.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": "ZZ-100", "secret_key": "S2"}})
+        assert c.get("/brokers/fyers/callback", params={"auth_code": "good", "state": q["state"]}).status_code == 400
+        assert c.get("/brokers/connections").json()[0]["session"]["state"] == "none"
+
+        # saving new keys drops the old token
+        c.post("/auth/logout")
+        c.post("/auth/login", json={"email": "one@x.com", "password": PW})
+        c.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": "AB-100", "secret_key": "NEW"}})
+        assert c.get("/brokers/connections").json()[0]["session"]["state"] == "none"

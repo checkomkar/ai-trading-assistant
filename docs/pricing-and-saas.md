@@ -112,3 +112,9 @@ What is **not** built yet: only the Fyers adapter exists, and it still reads the
 a per-account data feed (PRD §23.3: one collector, 100-symbol cap and daily login per customer), one adapter per broker behind the `MarketDataProvider` interface,
 and a "connect and test" step per broker. Broker data prices reported on 2026-10-21 (verify): Fyers, Upstox, Angel One free; Dhan about ₹499 a month; Zerodha about ₹500 a month
 ([comparison](https://algotest.in/blog/best-brokers-for-algo-trading-in-india.md)).
+
+### Fyers connect and test (added 2026-10-22)
+Each customer registers their own Fyers app and sets its Redirect URL to the address the Brokers page shows (`PUBLIC_URL` + `/api/brokers/fyers/callback`).
+"Sign in to Fyers" sends the browser to Fyers' own login; the callback is accepted only with a signed, 10-minute `state` tied to the logged-in customer,
+and the day's access token is stored encrypted next to their keys (never returned to the browser). "Test connection" asks Fyers who is signed in and for one
+NIFTY quote (read-only). Saving new keys discards the old token. Still not built: a data feed that runs from these tokens (one collector per customer).

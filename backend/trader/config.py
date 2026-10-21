@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     # Per-user broker API keys are encrypted with this Fernet key (generate: python -m trader.scripts.accounts gen-key).
     credential_key: str = Field(default="", repr=False)
     auth_enabled: bool = False
+    # The public address of the site (https://striktek.si). Broker sign-ins send the browser back here; empty = use the request's own host.
+    public_url: str = ""
     auth_session_days: int = 30
     auth_cookie_secure: bool = False  # true behind HTTPS
     signup_open: bool = True
