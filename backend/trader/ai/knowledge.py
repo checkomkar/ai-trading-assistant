@@ -13,6 +13,7 @@ from collections import Counter
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_TEXT_CHARS = 400_000
+MAX_PDF_PAGES = 600
 CHUNK_CHARS = 1200
 CHUNK_OVERLAP = 150
 
@@ -63,7 +64,15 @@ def _pdf(data: bytes) -> str:
     reader = PdfReader(io.BytesIO(data))
     if reader.is_encrypted:
         raise UnsupportedFile("This PDF is password protected.")
-    return "\n\n".join(f"[page {i}]\n{(p.extract_text() or '').strip()}" for i, p in enumerate(reader.pages, 1))
+    parts: list[str] = []
+    total = 0
+    for i, page in enumerate(reader.pages, 1):  # one page at a time; stop once enough text is kept (small server, big books)
+        if i > MAX_PDF_PAGES or total >= MAX_TEXT_CHARS:
+            break
+        text = (page.extract_text() or "").strip()
+        total += len(text)
+        parts.append(f"[page {i}]\n{text}")
+    return "\n\n".join(parts)
 
 
 def _docx(data: bytes) -> str:
