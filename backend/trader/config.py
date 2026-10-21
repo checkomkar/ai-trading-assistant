@@ -121,6 +121,11 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     # The public address of the site (https://striktek.si). Broker sign-ins send the browser back here; empty = use the request's own host.
     public_url: str = ""
+    # Per-customer live feeds (market_data/feeds.py): how many may run at once on this machine, how long an unused one
+    # stays up, and how many days of candles it loads for charts.
+    max_user_feeds: int = 4
+    feed_idle_seconds: int = 600
+    feed_history_days: int = 3
     auth_session_days: int = 30
     auth_cookie_secure: bool = False  # true behind HTTPS
     signup_open: bool = True

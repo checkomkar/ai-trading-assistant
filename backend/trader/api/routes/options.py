@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from trader.api.deps import get_md, normalize_underlying
+from trader.api.deps import get_user_md, normalize_underlying
 from trader.instruments.expiry import resolve_expiries
 from trader.instruments.specs import get_spec
 from trader.instruments.strikes import OptionType
@@ -15,7 +15,7 @@ router = APIRouter(tags=["options"])
 
 
 @router.get("/options/{underlying}/expiries")
-async def expiries(underlying: str, md: MarketDataService = Depends(get_md)) -> dict:
+async def expiries(underlying: str, md: MarketDataService = Depends(get_user_md)) -> dict:
     u = normalize_underlying(underlying)
     now = md.now()
     calc = resolve_expiries(u, now, md.calendar)
@@ -33,7 +33,7 @@ async def chain(
     underlying: str,
     expiry: date | None = Query(None, description="YYYY-MM-DD; defaults to nearest listed expiry"),
     strikes: int | None = Query(None, ge=1, le=50, description="Limit to ATM +/- N strikes"),
-    md: MarketDataService = Depends(get_md),
+    md: MarketDataService = Depends(get_user_md),
 ) -> dict:
     u = normalize_underlying(underlying)
     exp = expiry or md.registry.resolve_expiry(u, "nearest", md.now())
@@ -49,7 +49,7 @@ async def resolve_option(
     expiry: str = Query("nearest", description="nearest | next | monthly | YYYY-MM-DD"),
     strike: float | None = None,
     offset: int = Query(0, description="Strike steps from ATM when strike is omitted, e.g. 1 = ATM+1"),
-    md: MarketDataService = Depends(get_md),
+    md: MarketDataService = Depends(get_user_md),
 ) -> dict:
     """Option resolver (PRD §3.4)."""
     u = normalize_underlying(underlying)

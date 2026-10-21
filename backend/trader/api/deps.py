@@ -11,6 +11,7 @@ from trader.accounts import repo as accounts
 from trader.accounts.repo import Principal
 from trader.billing.meter import Meter
 from trader.instruments.specs import UNDERLYINGS
+from trader.market_data.feeds import FeedUnavailable
 from trader.market_data.service import MarketDataService
 
 COOKIE = "striktek_session"
@@ -66,3 +67,33 @@ async def ws_allowed(ws: WebSocket) -> bool:
         await ws.close(code=4401)
         return False
     return True
+
+
+async def resolve_md(app, user: Principal) -> MarketDataService:
+    """The market data this caller sees. Local mode shares the one feed. When accounts are on, every customer gets a feed
+    built from their OWN broker sign-in; the operator may fall back to the site's shared feed if they have not connected one.
+    Raises FeedUnavailable (the routes turn it into a 409 the UI can act on)."""
+    if not app.state.settings.auth_enabled:
+        return app.state.md
+    try:
+        return await app.state.feeds.md_for(user.id)
+    except FeedUnavailable as exc:
+        if user.is_admin and exc.code == "broker_required":
+            return app.state.md
+        raise
+
+
+async def get_user_md(request: Request, user: CurrentUser) -> MarketDataService:
+    try:
+        return await resolve_md(request.app, user)
+    except FeedUnavailable as exc:
+        raise HTTPException(409, detail={"code": exc.code, "message": exc.message}) from None
+
+
+UserMd = Annotated[MarketDataService, Depends(get_user_md)]
+
+
+async def ws_principal(ws: WebSocket) -> Principal | None:
+    if not ws.app.state.settings.auth_enabled:
+        return accounts.local_principal()
+    return await _principal(ws.app.state.sessionmaker, ws.cookies.get(COOKIE))

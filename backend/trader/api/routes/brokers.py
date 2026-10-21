@@ -21,6 +21,9 @@ from trader.brokers.catalog import CATALOG
 from trader.brokers.fyers import auth as fyers_auth
 from trader.brokers.fyers.check import fetch_profile
 from trader.db.models import BrokerConnectionRow
+from trader.logging import get_logger
+
+log = get_logger("brokers")
 
 router = APIRouter(prefix="/brokers", tags=["brokers"])
 
@@ -96,7 +99,9 @@ async def connect(request: Request, user: CurrentUser, body: ConnectIn) -> dict:
         else:
             row.public, row.secret_blob = public, blob
         await s.flush()
-        return _view(row, request.app.state.settings.credential_key)
+        out = _view(row, request.app.state.settings.credential_key)
+    await request.app.state.feeds.drop(user.id)  # the old keys' feed must not outlive them
+    return out
 
 
 @router.delete("/connections/{conn_id}")
@@ -106,6 +111,7 @@ async def disconnect(request: Request, user: CurrentUser, conn_id: str) -> dict:
         if row is None or row.owner != user.id:
             raise HTTPException(404, "Connection not found.")
         await s.delete(row)
+    await request.app.state.feeds.drop(user.id)
     return {"deleted": conn_id}
 
 
@@ -186,26 +192,23 @@ async def fyers_callback(request: Request, user: CurrentUser, auth_code: str = "
             return _page(f"Fyers refused the sign-in: {exc}", False)
         keys["access_token"] = token
         row.secret_blob = vault.seal(keys, request.app.state.settings.credential_key)
-    _feed_with_owner_token(request, user, keys["client_id"], token)
+    _refresh_feed(request, user, token)
     return RedirectResponse("/#/brokers", status_code=303)
 
 
-def _feed_with_owner_token(request: Request, user, client_id: str, token: str) -> None:
-    """The site's one shared live feed runs on the OPERATOR's Fyers app. When the operator signs in here with that same app,
-    hand the token to the feed and restart it, so the daily sign-in needs no file copying. A customer's token never reaches
-    the shared feed (it would put their account behind everyone's data)."""
-    st = request.app.state.settings
-    if not (user.is_admin and st.market_data_provider == "fyers" and client_id == st.fyers_client_id):
-        return
-    fyers_auth.save_token(fyers_auth.token_path(st), client_id, token)
-
+def _refresh_feed(request: Request, user, token: str) -> None:
+    """A new sign-in: reconnect this customer's running feed with the new token (a feed that is not running just starts
+    on their next visit)."""
     async def go() -> None:
         try:
-            await request.app.state.md.restart()
-        except Exception as exc:  # noqa: BLE001 - the sign-in itself succeeded; the feed error shows in /health/feed
-            request.app.state.md.provider.health.last_error = f"restart failed: {exc}"
+            await request.app.state.feeds.refresh(user.id, token)
+        except Exception as exc:  # noqa: BLE001 - the sign-in itself succeeded; the feed status shows any problem
+            log.warning("feed refresh failed", event="feed.refresh_failed", owner=user.id, error=str(exc))
 
-    request.app.state.feed_restart = asyncio.create_task(go())  # kept so it is not garbage-collected mid-run
+    request.app.state.feed_tasks = getattr(request.app.state, "feed_tasks", set())
+    t = asyncio.create_task(go())
+    request.app.state.feed_tasks.add(t)
+    t.add_done_callback(request.app.state.feed_tasks.discard)
 
 
 exchange_auth_code = fyers_auth.exchange_auth_code  # module-level so tests can replace it

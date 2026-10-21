@@ -18,7 +18,8 @@ from datetime import date
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 
-from trader.api.deps import ws_allowed
+from trader.api.deps import resolve_md, ws_allowed, ws_principal
+from trader.market_data.feeds import FeedUnavailable
 from trader.instruments.specs import UNDERLYINGS, VIX_SYMBOL
 from trader.market_data.service import MarketDataService
 
@@ -61,10 +62,20 @@ async def ws_market(ws: WebSocket) -> None:
     if not await ws_allowed(ws):
         return
     await ws.accept()
-    md: MarketDataService = ws.app.state.md
+    user = await ws_principal(ws)
     state: dict = {"_interval": MARKET_PUSH_SECONDS, "candles": {"symbol": "NIFTY", "timeframe": "5m"}}
 
     async def push() -> None:
+        try:
+            md = await resolve_md(ws.app, user)
+        except FeedUnavailable as exc:  # tell the page what to offer (connect a broker / sign in again) and keep the socket
+            await _send(ws, {"type": "market", "server_time": None, "session": None, "simulated": False, "provider": None,
+                             "feed": {"connected": False, "error": exc.message, "action": exc.code, "ticks_per_second": 0,
+                                      "reconnects": 0, "stale": 0},
+                             "quotes": {}})
+            state["_interval"] = 3.0
+            return
+        state["_interval"] = MARKET_PUSH_SECONDS
         now = md.now()
         h = md.provider.health
         await _send(ws, {
@@ -94,10 +105,14 @@ async def ws_options(ws: WebSocket) -> None:
     if not await ws_allowed(ws):
         return
     await ws.accept()
-    md: MarketDataService = ws.app.state.md
+    user = await ws_principal(ws)
     state: dict = {"_interval": OPTIONS_PUSH_SECONDS, "underlying": "NIFTY", "expiry": None, "strikes": 15}
 
     async def push() -> None:
+        try:
+            md = await resolve_md(ws.app, user)
+        except FeedUnavailable:
+            return  # the market socket already tells the page why there is no data
         u = str(state.get("underlying", "NIFTY")).upper()
         if u not in UNDERLYINGS:
             await _send(ws, {"type": "error", "message": f"unknown underlying {u}"})

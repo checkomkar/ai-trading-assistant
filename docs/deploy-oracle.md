@@ -40,6 +40,12 @@ It builds both images here, copies them over SSH, copies `.env` and the compose 
 - Memory: `docker stats` and `free -m`. If the API restarts under load, this machine is too small; use an A1 or a paid VPS and the portability guide.
 - Fyers: the daily 06:00 IST sign-in still needs you (see the Fyers connect-and-test work in the roadmap).
 
-## Daily Fyers sign-in (no file copying)
-Sign in as the operator (an `ADMIN_EMAILS` account) on the **Brokers** page, save the Fyers app that matches `FYERS_CLIENT_ID` in `.env`, and press **Sign in to Fyers** each morning after 06:00 IST.
-The token goes to the site's shared feed and the collector restarts by itself. A customer's sign-in never reaches the shared feed. `push-fyers-token.sh` remains as a fallback.
+## Never delete the data volume
+`docker compose down` is safe; **`docker compose down -v` deletes the `apidata` volume (the SQLite database with all stored candles, option snapshots and history). Never use `-v`, and never `docker volume rm` it.** Updates via `ship.sh` keep the volume. Back it up before any risky change.
+
+## Live data: every user's own broker (nothing in `.env`)
+Each user, the owner included, saves their own Fyers App ID and secret on the **Brokers** page, sets the Redirect URL it shows in their Fyers app, and presses
+**Sign in to Fyers** each morning after 06:00 IST. That user's live feed then starts in memory on the server (stopped after 10 idle minutes), from their own
+account and symbol limits. Nothing is read from `.env`, and nothing of theirs is written to the shared database. Users with no broker see a "connect your broker"
+card; the operator without one sees the shared feed if `.env` configures it.
+On the 1 GB Micro keep `MAX_USER_FEEDS` small (the default is 4). `push-fyers-token.sh` is only for an operator using the shared `.env` feed.

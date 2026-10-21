@@ -23,6 +23,7 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
 - `AUTH_ENABLED=false` (default) = local single user, owner `"local"`, no limits. `true` = cookie sessions, per-account data, plans.
 - Every owned row carries `owner` (= `accounts.id`); routes take it from `CurrentUser` (`api/deps.py`), never from a request field. Market data needs a login; **paper and admin routes are operator-only** until per-account runners exist.
 - Metering: `billing/meter.py` (`Meter.metered` for model calls, `counted` for backtests/speech, `check_stock` for stock limits). 402 `quota_exceeded` is the UI's upgrade prompt. Plans and the AI cost ceiling: `billing/plans.py` (a test enforces the margin). Payments: `billing/razorpay.py`; access is granted only by the signed webhook.
+- Live data when accounts are on: each customer gets their own in-memory feed from the Fyers keys and daily sign-in saved on the Brokers page (`market_data/feeds.py`, `FeedManager`); it never writes to the shared database and needs nothing in `.env`. No broker connected = 409 `broker_required` (the UI shows a connect card). Routes get the feed through `get_user_md` / `resolve_md`, never `app.state.md` directly (that is the shared operator feed, used in local mode and as the operator's fallback).
 - New AI call sites must go through `meter.metered(...)`; new owned tables need an `owner` column and repo-level filtering.
 
 ## Non-negotiables
@@ -32,6 +33,7 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
 - **Never mix data sources:** real (`NSE:` tokens) and simulated (`SIM:` tokens) data stay separate. Reports always state the data source and the option-pricing mode.
 - **Paper trading:** orders come only from the runner, through `RiskEngine.check`. There is no order endpoint, and `trader/ai` must never import `execution`, `risk` or `brokers` (both enforced by tests). Entries are blocked when the market is closed. Replay data is never persisted and always labelled (`REPLAY:` tokens, synthetic options).
 - **Restart state:** positions, same-day counters and the kill switch are snapshotted to `paper_state` (one row per data source) and restored at API start-up; a snapshot from an earlier day is flagged (`state.stale`), never resumed, and the kill switch is never cleared by a restart. A restored position with no lane to manage it refuses the runner start. Replay does not persist.
+- **Stored market history is never deleted:** candles, option snapshots, ticks, instruments and fetched expired-option data are only upserted (candles by instrument + timeframe + time; instruments by token). No code, migration or script may `DELETE`/`TRUNCATE`/`DROP` them (`tests/test_market_data_is_never_deleted.py` scans for it). Never run `docker compose down -v` on a host that holds the data volume.
 - **Credentials:** live only in `.env` (git-ignored), never in `.env.example`.
 
 ## Layout

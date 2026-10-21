@@ -17,6 +17,8 @@ export interface FeedStatus {
   reconnects: number;
   stale: number;
   error: string | null;
+  /** Set when this account has no live feed yet: what to offer. */
+  action?: "broker_required" | "signin_required" | "feed_busy" | "feed_unavailable";
 }
 
 export interface MarketMessage {
@@ -146,6 +148,8 @@ function failure(res: Response, data: unknown, path = ""): ApiError {
   else if (detail && typeof detail === "object" && (detail as QuotaInfo).code === "quota_exceeded") {
     quota = detail as QuotaInfo;
     msg = quota.message;
+  } else if (detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string") {
+    msg = (detail as { message: string }).message; // e.g. 409 {code: "broker_required", message}
   }
   if (res.status === 401) window.dispatchEvent(new Event("striktek:unauth"));
   if (quota) window.dispatchEvent(new CustomEvent("striktek:quota", { detail: quota }));

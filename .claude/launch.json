@@ -49,7 +49,7 @@
       "runtimeExecutable": "backend/.venv/Scripts/python.exe",
       "runtimeArgs": [
         "-c",
-        "import os; os.environ.update(AUTH_ENABLED='true', MARKET_DATA_PROVIDER='simulated', DATABASE_URL='sqlite+aiosqlite:///./data/saas.db', ADMIN_EMAILS='boss@example.com', SMS_PROVIDER='console', GOOGLE_CLIENT_ID='demo.apps.googleusercontent.com', API_CORS_ORIGINS='http://localhost:5175'); import uvicorn; uvicorn.run('trader.api.main:app', app_dir='backend', port=8002)"
+        "import os; os.environ.update(AUTH_ENABLED='true', MARKET_DATA_PROVIDER='simulated', DATABASE_URL='sqlite+aiosqlite:///./data/saas.db', ADMIN_EMAILS='boss@example.com', SIGNUP_INVITE_CODE='', SMS_PROVIDER='console', GOOGLE_CLIENT_ID='demo.apps.googleusercontent.com', API_CORS_ORIGINS='http://localhost:5175'); import uvicorn; uvicorn.run('trader.api.main:app', app_dir='backend', port=8002)"
       ],
       "port": 8002
     },
