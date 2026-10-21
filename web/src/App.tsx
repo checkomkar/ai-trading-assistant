@@ -11,6 +11,7 @@ import { PaperPage } from "./pages/PaperPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { PricingPage } from "./pages/PricingPage";
 import { BrokersPage } from "./pages/BrokersPage";
+import { RISK_WARNING } from "./pages/LegalPage";
 import { UpgradePrompt } from "./components/UpgradePrompt";
 import { useAuth } from "./auth";
 import { brand } from "./brand";
@@ -111,8 +112,11 @@ export default function App() {
       </main>
       )}
 
-      <footer className="border-t border-ink-800 px-6 py-2 text-[11px] text-ink-400">
-        {brand.name} · {brand.tagline}. Paper trading only: virtual money, no live orders. Data → Analysis → Paper.
+      <footer className="border-t border-ink-800 px-6 py-3 text-[11px] text-ink-400">
+        <p className="font-medium text-down/90">Risk warning: {RISK_WARNING}</p>
+        <p className="mt-1">
+          {brand.name} · {brand.tagline}. Data → Analysis → Paper, no real orders. <a className="underline hover:text-ink-100" href="#/terms">Terms</a> · <a className="underline hover:text-ink-100" href="#/privacy">Privacy</a>
+        </p>
       </footer>
       <UpgradePrompt />
     </div>

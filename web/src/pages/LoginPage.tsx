@@ -60,6 +60,16 @@ export function LoginPage() {
               <input className={`${field} mt-1`} required value={invite} onChange={(e) => setInvite(e.target.value)} />
             </label>
           )}
+          {mode === "up" && (
+            <label className="flex items-start gap-2 text-[11px] text-ink-300">
+              <input type="checkbox" required className="mt-0.5" />
+              <span>
+                I have read the <a className="underline" href="#/terms" target="_blank" rel="noreferrer">Terms</a> and{" "}
+                <a className="underline" href="#/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>, and I understand that {brand.name} gives no
+                investment advice, places no real orders, and is not responsible for any trade I make.
+              </span>
+            </label>
+          )}
           {error && <p className="text-xs text-down" role="alert">{error}</p>}
           <button disabled={busy} className="w-full rounded-md bg-accent px-3 py-2 text-sm font-semibold text-ink-950 disabled:opacity-60">
             {busy ? "Please wait…" : mode === "in" ? "Sign in" : "Start free trial"}

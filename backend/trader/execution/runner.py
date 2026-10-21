@@ -32,6 +32,7 @@ from trader.backtest.runner import BacktestRequest, build_strategy
 from trader.domain import Instrument
 from trader.execution.paper import PaperBroker
 from trader.execution.state import build_snapshot, signal_from_dict, signal_to_dict
+from trader.execution.shadow import shadow_order
 from trader.execution.store import PaperStore
 from trader.execution.types import Order, OrderRequest, OrderStatus, Side
 from trader.features import FeatureEngine, Features
@@ -144,6 +145,7 @@ class PaperRunner:
         self.tick_interval = tick_interval
         self.lanes = [Lane(c) for c in lanes]
         self.data_source = md.provider.name
+        self.shadow_slippage_pct = 1.0  # entry slippage cap used for the shadow (never-sent) live order
         self.option_pricing = getattr(md.provider, "option_pricing", "live quotes")
         self.running = False
         self.started_at: datetime | None = None
@@ -384,6 +386,11 @@ class PaperRunner:
             d["outcome"], d["detail"] = "order_rejected", order.reason or ""
             self.store.emit("order.rejected", cid, order.to_dict())
             return
+        if self.data_source not in ("simulated", "replay"):  # real feed only; synthetic data has no live order to mirror
+            ask = quote.ask if quote.ask and quote.ask > 0 else price
+            self.store.emit("shadow.order", cid, shadow_order(
+                symbol=inst.symbol, quantity=qty, ask=ask, tick_size=inst.tick_size,
+                slippage_pct=self.shadow_slippage_pct, paper_price=price, correlation_id=cid))
         self.risk.on_entry(cid, sig.underlying, price * qty)
         lane.live = _Live(cid, sig, inst, qty, "ENTRY", order)
         d["outcome"] = "ordered"
