@@ -1,0 +1,16 @@
+# SITE_ADDRESS=striktek.si gives automatic HTTPS; the default :80 is for local runs or behind a load balancer that already does TLS.
+{$SITE_ADDRESS::80} {
+	encode gzip
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy {$API_UPSTREAM:api:8000}
+	}
+	handle /ws/* {
+		reverse_proxy {$API_UPSTREAM:api:8000}
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

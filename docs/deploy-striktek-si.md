@@ -1,5 +1,7 @@
 # Putting STRIKTEK on `striktek.si`
 
+See also `docs/deploy-portability.md` (containers, PostgreSQL, moving hosts).
+
 Status: **plan only, nothing is deployed.** Written 2026-10-21. Read section 1 before touching DNS.
 
 ## 1. Do not expose it without a login

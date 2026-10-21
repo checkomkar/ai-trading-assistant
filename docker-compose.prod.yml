@@ -1,0 +1,43 @@
+# The whole product on any machine with Docker:   docker compose -f docker-compose.prod.yml up -d --build
+# Moving hosts = copy this file, your .env and a database dump. Every setting comes from the environment.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: trader
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides any DATABASE_URL in .env. For a managed database (RDS, Azure Database, Supabase...) delete `db` and set this to its URL.
+      DATABASE_URL: postgresql+asyncpg://trader:${POSTGRES_PASSWORD}@db:5432/trader
+      AUTH_ENABLED: "true"
+      AUTH_COOKIE_SECURE: "true"
+      STORE_TICKS: "false"
+    depends_on:
+      db: {condition: service_healthy}
+    volumes: [apidata:/app/data]
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports: ["80:80", "443:443"]
+    depends_on: [api]
+    volumes: [caddy:/data]
+
+volumes:
+  pgdata:
+  apidata:
+  caddy:
