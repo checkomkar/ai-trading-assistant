@@ -7,7 +7,7 @@ services:
     env_file: .env
     environment:
       AUTH_ENABLED: "true"
-      AUTH_COOKIE_SECURE: "true"
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}  # set false in .env only while testing over plain http
       STORE_TICKS: "false"
     volumes: [apidata:/app/data]
     mem_limit: 600m

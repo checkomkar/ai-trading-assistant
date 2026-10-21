@@ -22,7 +22,7 @@ services:
       # Overrides any DATABASE_URL in .env. For a managed database (RDS, Azure Database, Supabase...) delete `db` and set this to its URL.
       DATABASE_URL: postgresql+asyncpg://trader:${POSTGRES_PASSWORD}@db:5432/trader
       AUTH_ENABLED: "true"
-      AUTH_COOKIE_SECURE: "true"
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}  # set false in .env only while testing over plain http
       STORE_TICKS: "false"
     depends_on:
       db: {condition: service_healthy}
