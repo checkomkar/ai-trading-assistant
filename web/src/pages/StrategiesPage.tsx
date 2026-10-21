@@ -12,6 +12,7 @@ import {
 import { Results } from "../components/backtest/Results";
 import { MicButton } from "../components/MicButton";
 import { StrategyLibrary } from "../components/StrategyLibrary";
+import { ReadyMade } from "../components/ReadyMade";
 
 const EXAMPLES = [
   "NIFTY 5 min: buy the ATM call when futures are above VWAP, EMA 9 crosses above EMA 21 and RSI(14) is above 60. Mirror it for puts. Only 9:45 to 14:30, skip if ADX(14) is below 20. Stop 20%, target 40%, trail 10% after 25% profit, max 2 trades a day.",
@@ -228,6 +229,8 @@ ${r.text.trim()}` : r.text.trim()));
           </details>
         </section>
 
+        <ReadyMade onPick={(_name, spec) => { setSpec(spec); setTranslation(null); setCurrent(null); setText(""); setResult(null); }} />
+
         <StrategyLibrary saved={saved} current={current} onOpen={open} onChanged={refreshSaved} />
       </aside>
 
@@ -244,7 +247,7 @@ ${r.text.trim()}` : r.text.trim()));
           <div className="grid min-h-[300px] place-items-center rounded-lg border border-dashed border-ink-700 p-8 text-center text-sm text-ink-400">
             <div>
               <p className="mb-1 text-ink-300">No strategy loaded</p>
-              <p className="text-xs">Describe one, start from the template, or open a saved strategy.</p>
+              <p className="text-xs">Describe one, pick a ready-made strategy (Momentum, Trend, Scalp, Sideways), or open a saved strategy.</p>
             </div>
           </div>
         ) : (

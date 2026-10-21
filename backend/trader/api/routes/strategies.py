@@ -63,6 +63,15 @@ async def template() -> dict:
     return {"spec": s.model_dump(mode="json", by_alias=True, exclude_none=True), "english": render_english(s)}
 
 
+@router.get("/library")
+async def library(user: CurrentUser) -> dict:
+    """Ready-made starting points, the same for everyone. Opening one loads it into the editor; it is saved (and counted
+    against the plan) only when the user saves it."""
+    from trader.strategy.library import CATEGORIES, catalogue
+
+    return {"categories": list(CATEGORIES), "strategies": catalogue()}
+
+
 @router.get("/translator")
 async def translator_info(request: Request, user: CurrentUser) -> dict:
     """Which provider/model translates descriptions, and whether it has a key (the key itself is never sent).

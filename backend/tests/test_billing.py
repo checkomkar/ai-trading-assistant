@@ -289,3 +289,12 @@ def test_fyers_sign_in_flow_stores_a_token_per_account_and_tests_it(tmp_path, mo
         c.post("/auth/login", json={"email": "one@x.com", "password": PW})
         c.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": "AB-100", "secret_key": "NEW"}})
         assert c.get("/brokers/connections").json()[0]["session"]["state"] == "none"
+
+
+def test_ready_made_strategies_need_a_login_and_do_not_use_up_the_strategy_limit(client):
+    assert client.get("/strategies/library").status_code == 401
+    signup(client)
+    lib = client.get("/strategies/library").json()
+    assert lib["categories"] == ["Momentum", "Trend", "Scalp", "Sideways"] and len(lib["strategies"]) >= 11
+    assert client.get("/strategies").json() == []  # browsing the catalogue saves nothing
+    assert client.get("/billing/usage").json()["usage"]["strategies"]["used"] == 0
