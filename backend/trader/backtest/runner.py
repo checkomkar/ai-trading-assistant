@@ -134,7 +134,7 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
     }
 
 
-async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest) -> dict:
+async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest, owner: str = "local") -> dict:
     async with sessionmaker() as s:
         data = await bt_data.load(s, req.underlying, req.timeframe, req.start, req.end, req.source,
                                   with_options=req.pricing == "real")
@@ -144,7 +144,7 @@ async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest) 
     out = await asyncio.to_thread(execute, req, data)
     run_id = uuid.uuid4().hex[:12]
     row = BacktestRunRow(
-        id=run_id, created_at=datetime.now(timezone.utc), underlying=req.underlying, start=req.start, end=req.end,
+        id=run_id, owner=owner, created_at=datetime.now(timezone.utc), underlying=req.underlying, start=req.start, end=req.end,
         timeframe=req.timeframe,
         strategy=(f"spec:{out['params']['strategy']['spec']['name']}"[:32] if req.strategy == "spec" else req.strategy),
         data_source=out["data_source"],

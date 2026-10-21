@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
+from trader.api.deps import CurrentUser, MeterDep
 from trader.backtest import data as bt_data
 from trader.backtest.runner import BacktestRequest, run_and_store
 from trader.db.models import BacktestRunRow, StrategyRow
 from trader.features import FeatureConfig, FeatureEngine
+from trader.instruments.calendar import IST
 from trader.market_data.resample import minutes
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
@@ -74,12 +76,12 @@ async def coverage(request: Request, underlying: str = Query("NIFTY"), timeframe
 
 
 @router.post("")
-async def run(request: Request, body: BacktestIn) -> dict:
+async def run(request: Request, body: BacktestIn, user: CurrentUser, meter: MeterDep) -> dict:
     spec, version_id, strategy = body.spec, None, body.strategy
     if body.strategy_id:
         async with request.app.state.sessionmaker() as s:
             row = await s.get(StrategyRow, body.strategy_id)
-        if row is None:
+        if row is None or row.owner != user.id:
             raise HTTPException(404, "strategy not found")
         spec, version_id, strategy = row.spec, row.id, "spec"
     req = BacktestRequest(
@@ -90,7 +92,8 @@ async def run(request: Request, body: BacktestIn) -> dict:
         risk_free_rate=request.app.state.md.settings.risk_free_rate,
     )
     try:
-        return await run_and_store(request.app.state.sessionmaker, req)
+        async with meter.counted(user, "backtests"):  # no model involved: only a count, refunded if the run fails
+            return await run_and_store(request.app.state.sessionmaker, req, owner=user.id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from None
     except ValueError as exc:
@@ -98,10 +101,10 @@ async def run(request: Request, body: BacktestIn) -> dict:
 
 
 @router.get("")
-async def list_runs(request: Request, limit: int = Query(20, ge=1, le=200)) -> list[dict]:
+async def list_runs(request: Request, user: CurrentUser, limit: int = Query(20, ge=1, le=200)) -> list[dict]:
     async with request.app.state.sessionmaker() as s:
-        rows = (await s.execute(
-            select(BacktestRunRow).order_by(BacktestRunRow.created_at.desc()).limit(limit))).scalars().all()
+        rows = (await s.execute(select(BacktestRunRow).where(BacktestRunRow.owner == user.id)
+                                .order_by(BacktestRunRow.created_at.desc()).limit(limit))).scalars().all()
     keys = ("trades", "total_net_pnl", "win_rate", "profit_factor", "max_drawdown", "sharpe")
     return [{"id": r.id, "created_at": r.created_at.isoformat(), "underlying": r.underlying,
              "start": r.start.isoformat(), "end": r.end.isoformat(), "timeframe": r.timeframe,
@@ -110,16 +113,26 @@ async def list_runs(request: Request, limit: int = Query(20, ge=1, le=200)) -> l
 
 
 @router.get("/{run_id}/chart")
-async def chart(request: Request, run_id: str) -> dict:
-    """Underlying candles for a run + the EMA overlays the strategy saw, from the same FeatureEngine."""
+async def chart(request: Request, run_id: str, user: CurrentUser, timeframe: str | None = None, from_date: date | None = None,
+                last_days: int | None = Query(None, ge=1, le=400)) -> dict:
+    """Underlying candles for a run at any timeframe (built exactly from 1m) + the EMA overlays the strategy saw.
+    `from_date` / `last_days` trim the range, so 1m charts stay small."""
     async with request.app.state.sessionmaker() as s:
         row = await s.get(BacktestRunRow, run_id)
-        if row is None:
+        if row is None or row.owner != user.id:
             raise HTTPException(404, "backtest not found")
-        data = await bt_data.load(s, row.underlying, row.timeframe, row.start, row.end, row.data_source)
+        tf = timeframe or row.timeframe
+        try:
+            minutes(tf)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        lo = from_date or row.start
+        if last_days:
+            lo = max(lo, row.end - timedelta(days=int(last_days * 1.5) + 2))  # calendar days ≈ 1.5x trading days
+        data = await bt_data.load(s, row.underlying, tf, max(lo, row.start), row.end, row.data_source)
     sp = (row.result.get("params") or {}).get("strategy", {})
     cfg = FeatureConfig(ema_fast=int(sp.get("ema_fast", 9)), ema_slow=int(sp.get("ema_slow", 21)))
-    fe = FeatureEngine(minutes(row.timeframe), cfg)
+    fe = FeatureEngine(minutes(tf), cfg)
     bars, fast, slow = [], [], []
     for b in data.bars:
         f = fe.update(b)
@@ -129,16 +142,19 @@ async def chart(request: Request, run_id: str) -> dict:
             fast.append([t, round(f["ema_fast"], 2)])
         if f["ema_slow"] is not None:
             slow.append([t, round(f["ema_slow"], 2)])
-    return {"underlying": row.underlying, "timeframe": row.timeframe, "data_source": data.source,
+    if last_days:  # keep exactly the last N trading days
+        keep = set(data.trading_days[-last_days:])
+        bars = [b for b in bars if datetime.fromtimestamp(b[0], tz=timezone.utc).astimezone(IST).date().isoformat() in keep]
+    return {"underlying": row.underlying, "timeframe": tf, "data_source": data.source,
             "bars": bars, "ema_fast": {"period": cfg.ema_fast, "points": fast},
             "ema_slow": {"period": cfg.ema_slow, "points": slow}}
 
 
 @router.get("/{run_id}")
-async def get_run(request: Request, run_id: str) -> dict:
+async def get_run(request: Request, run_id: str, user: CurrentUser) -> dict:
     async with request.app.state.sessionmaker() as s:
         row = await s.get(BacktestRunRow, run_id)
-    if row is None:
+    if row is None or row.owner != user.id:
         raise HTTPException(404, "backtest not found")
     return {"id": row.id, "underlying": row.underlying, "start": row.start.isoformat(), "end": row.end.isoformat(),
             "timeframe": row.timeframe, "strategy": row.strategy, **row.result}

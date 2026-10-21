@@ -6,14 +6,19 @@ import { QuoteCard } from "./components/QuoteCard";
 import { PriceChart } from "./components/PriceChart";
 import { OptionChain } from "./components/OptionChain";
 import { FeedHealthPanel } from "./components/FeedHealthPanel";
-import { BacktestPage } from "./pages/BacktestPage";
 import { StrategiesPage } from "./pages/StrategiesPage";
 import { PaperPage } from "./pages/PaperPage";
+import { AssistantPage } from "./pages/AssistantPage";
+import { PricingPage } from "./pages/PricingPage";
+import { BrokersPage } from "./pages/BrokersPage";
+import { UpgradePrompt } from "./components/UpgradePrompt";
+import { useAuth } from "./auth";
+import { brand } from "./brand";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
-type View = "market" | "paper" | "backtest" | "strategies";
+type View = "market" | "paper" | "strategies" | "assistant" | "pricing" | "brokers";
 const viewFromHash = (): View =>
-  location.hash === "#/backtest" ? "backtest" : location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : "market";
+  location.hash === "#/pricing" ? "pricing" : location.hash === "#/brokers" ? "brokers" : location.hash === "#/assistant" ? "assistant" : location.hash === "#/backtest" || location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : "market";
 
 export default function App() {
   const [market, setMarket] = useState<MarketMessage | null>(null);
@@ -22,7 +27,11 @@ export default function App() {
   const [timeframe, setTimeframe] = useState("5m");
   const [chainUnderlying, setChainUnderlying] = useState("NIFTY");
   const [mode, setMode] = useState<string | null>(null);
-  const [view, setView] = useState<View>(viewFromHash);
+  const [rawView, setView] = useState<View>(viewFromHash);
+  const { me } = useAuth();
+  // The paper runner is one shared, operator-only runner for now; customers don't see its tab.
+  const showPaper = !!me?.is_admin;
+  const view: View = rawView === "paper" && !showPaper ? "market" : rawView;
 
   useEffect(() => {
     const onHash = () => setView(viewFromHash());
@@ -50,8 +59,8 @@ export default function App() {
   };
 
   return (
-    <div className="flex min-h-full flex-col">
-      <Header session={market?.session ?? null} simulated={market?.simulated ?? null} provider={market?.provider ?? null} socket={socket} feed={market?.feed ?? null} mode={mode} view={view} />
+    <div className={view === "assistant" ? "flex h-dvh flex-col overflow-hidden" : "flex min-h-full flex-col"}>
+      <Header session={market?.session ?? null} simulated={market?.simulated ?? null} provider={market?.provider ?? null} socket={socket} feed={market?.feed ?? null} mode={mode} view={view} showPaper={showPaper} />
 
       {market?.feed.error && !market.feed.connected && (
         <div className="border-b border-down/30 bg-down/10 px-4 py-2 text-xs text-down sm:px-6" role="alert">
@@ -59,7 +68,15 @@ export default function App() {
         </div>
       )}
 
-      {view === "paper" ? (
+      {view === "brokers" ? (
+        <ErrorBoundary label="Brokers page">
+          <BrokersPage />
+        </ErrorBoundary>
+      ) : view === "pricing" ? (
+        <ErrorBoundary label="Pricing page">
+          <PricingPage />
+        </ErrorBoundary>
+      ) : view === "paper" ? (
         <ErrorBoundary label="Paper trading page">
           <PaperPage />
         </ErrorBoundary>
@@ -67,9 +84,9 @@ export default function App() {
         <ErrorBoundary label="Strategies page">
           <StrategiesPage />
         </ErrorBoundary>
-      ) : view === "backtest" ? (
-        <ErrorBoundary label="Backtest page">
-          <BacktestPage />
+      ) : view === "assistant" ? (
+        <ErrorBoundary label="Assistant page">
+          <AssistantPage />
         </ErrorBoundary>
       ) : (
       <main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 gap-4 p-4 sm:p-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
@@ -95,8 +112,9 @@ export default function App() {
       )}
 
       <footer className="border-t border-ink-800 px-6 py-2 text-[11px] text-ink-400">
-        Paper trading only: virtual money, no live orders. Data → Analysis → Paper.
+        {brand.name} · {brand.tagline}. Paper trading only: virtual money, no live orders. Data → Analysis → Paper.
       </footer>
+      <UpgradePrompt />
     </div>
   );
 }

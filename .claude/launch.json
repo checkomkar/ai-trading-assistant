@@ -4,26 +4,63 @@
     {
       "name": "api",
       "runtimeExecutable": "backend/.venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "trader.api.main:app", "--app-dir", "backend", "--port", "8000"],
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "trader.api.main:app",
+        "--app-dir",
+        "backend",
+        "--port",
+        "8000"
+      ],
       "port": 8000
     },
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "web", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "web",
+        "run",
+        "dev"
+      ],
       "port": 5173
     },
     {
       "name": "paper-replay-api",
       "runtimeExecutable": "backend/.venv/Scripts/python.exe",
-      "runtimeArgs": ["-c", "import os; os.environ.update(MARKET_DATA_PROVIDER='replay', REPLAY_DATE='2026-10-19', REPLAY_SPEED='120', PAPER_AUTOSTART='true', PAPER_UNDERLYINGS='NIFTY', DATABASE_URL='sqlite+aiosqlite:///./data/rehearsal.db'); import uvicorn; uvicorn.run('trader.api.main:app', app_dir='backend', port=8001)"],
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ.update(MARKET_DATA_PROVIDER='replay', REPLAY_DATE='2026-10-19', REPLAY_SPEED='120', PAPER_AUTOSTART='true', PAPER_UNDERLYINGS='NIFTY', DATABASE_URL='sqlite+aiosqlite:///./data/rehearsal.db'); import uvicorn; uvicorn.run('trader.api.main:app', app_dir='backend', port=8001)"
+      ],
       "port": 8001
     },
     {
       "name": "paper-replay-web",
       "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "set VITE_API_TARGET=http://localhost:8001&& npm --prefix web run dev -- --port 5174 --strictPort"],
+      "runtimeArgs": [
+        "/c",
+        "set VITE_API_TARGET=http://localhost:8001&& npm --prefix web run dev -- --port 5174 --strictPort"
+      ],
       "port": 5174
+    },
+    {
+      "name": "saas-api",
+      "runtimeExecutable": "backend/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ.update(AUTH_ENABLED='true', MARKET_DATA_PROVIDER='simulated', DATABASE_URL='sqlite+aiosqlite:///./data/saas.db', ADMIN_EMAILS='boss@example.com', API_CORS_ORIGINS='http://localhost:5175'); import uvicorn; uvicorn.run('trader.api.main:app', app_dir='backend', port=8002)"
+      ],
+      "port": 8002
+    },
+    {
+      "name": "saas-web",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set VITE_API_TARGET=http://localhost:8002&& npm --prefix web run dev -- --port 5175 --strictPort"
+      ],
+      "port": 5175
     }
   ]
 }

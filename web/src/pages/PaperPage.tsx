@@ -11,6 +11,7 @@ import {
   type RiskStatus,
 } from "../api";
 import { fmtPrice, istTime, trendClass } from "../format";
+import { PaperChart } from "../components/PaperChart";
 
 const rupee = (v: number | null | undefined) =>
   v == null ? "—" : `${v < 0 ? "−" : ""}₹${fmtPrice(Math.abs(v))}`;
@@ -34,6 +35,8 @@ export function PaperPage() {
   const [status, setStatus] = useState<PaperStatus | null>(null);
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [events, setEvents] = useState<PaperEvent[]>([]);
+  const [chartDay, setChartDay] = useState("");
+  const [chartTrades, setChartTrades] = useState<PaperTrade[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -52,6 +55,15 @@ export function PaperPage() {
       setError((e as Error).message);
     }
   }, []);
+
+  // The chart's trades follow its own day picker (blank = today), refreshed whenever a trade closes.
+  const realized = status?.realized_pnl ?? 0;
+  useEffect(() => {
+    const q = chartDay ? `?day=${chartDay}` : "";
+    getJSON<{ trades: PaperTrade[] }>(`/paper/journal${q}`)
+      .then((r) => setChartTrades(r.trades))
+      .catch(() => setChartTrades([]));
+  }, [chartDay, realized]);
 
   useEffect(() => {
     refresh();
@@ -129,13 +141,7 @@ export function PaperPage() {
               Stop runner
             </button>
           ) : (
-            <button
-              disabled={busy || !status}
-              onClick={() => act("/paper/start")}
-              className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-ink-950 hover:brightness-110 disabled:opacity-50"
-            >
-              Start runner
-            </button>
+            <StartControl disabled={busy || !status} onStart={(body) => act("/paper/start", body)} />
           )}
           {killed ? (
             <button
@@ -178,8 +184,63 @@ export function PaperPage() {
         </div>
       </div>
 
+      <PaperChart trades={chartTrades} positions={positions} day={chartDay} onDay={setChartDay} />
+
       <Journal refreshKey={status?.realized_pnl ?? 0} />
     </main>
+  );
+}
+
+// ---- strategy picker: run the built-in momentum strategy or any saved one ---------------------
+interface SavedStrategy {
+  id: string;
+  name: string;
+  version: number;
+  spec: { timeframe: string; underlyings: string[] };
+}
+const LIVE_TIMEFRAMES = ["1m", "5m"]; // the collector only builds these candles live
+
+function StartControl({ disabled, onStart }: { disabled: boolean; onStart: (body: Record<string, unknown>) => void }) {
+  const [saved, setSaved] = useState<SavedStrategy[]>([]);
+  const [pick, setPick] = useState("");
+  const [unders, setUnders] = useState<string[]>(["NIFTY"]);
+
+  useEffect(() => {
+    getJSON<SavedStrategy[]>("/strategies").then(setSaved).catch(() => setSaved([]));
+  }, []);
+
+  const chosen = saved.find((s) => s.id === pick);
+  const blocked = chosen && !LIVE_TIMEFRAMES.includes(chosen.spec.timeframe);
+  const toggle = (u: string) => setUnders((cur) => (cur.includes(u) ? cur.filter((x) => x !== u) : [...cur, u]));
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <select value={pick} onChange={(e) => {
+        setPick(e.target.value);
+        const s = saved.find((x) => x.id === e.target.value);
+        if (s) setUnders(s.spec.underlyings.length ? s.spec.underlyings : ["NIFTY"]);
+      }}
+        className="max-w-[240px] rounded border border-ink-700 bg-ink-850 px-2 py-1.5 text-xs text-ink-100" aria-label="Strategy to run">
+        <option value="">Built-in momentum</option>
+        {saved.map((s) => (
+          <option key={s.id} value={s.id} disabled={!LIVE_TIMEFRAMES.includes(s.spec.timeframe)}>
+            {s.name} · v{s.version} · {s.spec.timeframe}{LIVE_TIMEFRAMES.includes(s.spec.timeframe) ? "" : " (not live yet)"}
+          </option>
+        ))}
+      </select>
+      {["NIFTY", "BANKNIFTY"].map((u) => (
+        <label key={u} className="flex items-center gap-1 text-[11px] text-ink-300">
+          <input type="checkbox" checked={unders.includes(u)} onChange={() => toggle(u)} /> {u}
+        </label>
+      ))}
+      <button
+        disabled={disabled || unders.length === 0 || !!blocked}
+        onClick={() => onStart(pick ? { strategy_id: pick, underlyings: unders } : { underlyings: unders })}
+        className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-ink-950 hover:brightness-110 disabled:opacity-50"
+      >
+        Start runner
+      </button>
+    </div>
   );
 }
 
@@ -265,7 +326,7 @@ function Positions({ positions }: { positions: PaperPosition[] }) {
           <table className="num w-full text-xs">
             <thead className="text-[10px] uppercase tracking-wider text-ink-400">
               <tr>
-                {["Contract", "State", "Qty", "Entry", "Now", "Stop", "Target", "P&L", "Held"].map((h) => (
+                {["Contract", "State", "Qty", "Entry time", "Entry", "Now", "Stop", "Target", "P&L", "Held"].map((h) => (
                   <th key={h} className="px-3 py-1.5 text-right font-medium first:text-left">{h}</th>
                 ))}
               </tr>
@@ -279,6 +340,7 @@ function Positions({ positions }: { positions: PaperPosition[] }) {
                   </td>
                   <td className="px-3 text-right">{p.state === "EXIT" ? `exiting: ${p.exit_reason ?? ""}` : p.state.toLowerCase()}</td>
                   <td className="px-3 text-right">{p.quantity}</td>
+                  <td className="px-3 text-right">{p.entry_time ? istTime(p.entry_time) : "—"}</td>
                   <td className="px-3 text-right">{fmtPrice(p.entry_price)}</td>
                   <td className="px-3 text-right">{fmtPrice(p.current_price)}</td>
                   <td className="px-3 text-right text-down">{fmtPrice(p.stop)}</td>
@@ -458,7 +520,7 @@ function Journal({ refreshKey }: { refreshKey: number }) {
           <table className="num w-full text-xs">
             <thead className="sticky top-0 bg-ink-900 text-[10px] uppercase tracking-wider text-ink-400">
               <tr>
-                {["Day", "Time", "Contract", "Strategy", "Entry", "Exit", "Reason", "Net P&L", "Data"].map((h) => (
+                {["Day", "Entry time", "Exit time", "Contract", "Strategy", "Entry", "Exit", "Reason", "Net P&L", "Data"].map((h) => (
                   <th key={h} className="px-3 py-1.5 text-right font-medium first:text-left">{h}</th>
                 ))}
               </tr>
@@ -468,7 +530,8 @@ function Journal({ refreshKey }: { refreshKey: number }) {
                 <tr key={t.id} onClick={() => open(t.correlation_id)} title="Show the audit trail for this trade"
                   className="cursor-pointer border-t border-ink-800 hover:bg-ink-850">
                   <td className="px-3 py-1.5">{t.trading_day}</td>
-                  <td className="px-3 text-right">{istTime(t.entry_time)}–{istTime(t.exit_time)}</td>
+                  <td className="px-3 text-right">{istTime(t.entry_time)}</td>
+                  <td className="px-3 text-right">{istTime(t.exit_time)}</td>
                   <td className="px-3 text-right">
                     <span className={t.direction === "LONG" ? "text-up" : "text-down"}>{t.direction === "LONG" ? "CE" : "PE"}</span> {t.symbol}
                   </td>

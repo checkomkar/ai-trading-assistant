@@ -1,9 +1,19 @@
+"""Request dependencies: who is calling, and the meter. The account always comes from the session cookie, never from a
+request field (PRD §23.3). With AUTH_ENABLED=false everyone is the unlimited local owner."""
+
 from __future__ import annotations
 
-from fastapi import HTTPException, Request
+from typing import Annotated
 
+from fastapi import Depends, HTTPException, Request, WebSocket
+
+from trader.accounts import repo as accounts
+from trader.accounts.repo import Principal
+from trader.billing.meter import Meter
 from trader.instruments.specs import UNDERLYINGS
 from trader.market_data.service import MarketDataService
+
+COOKIE = "striktek_session"
 
 
 def get_md(request: Request) -> MarketDataService:
@@ -15,3 +25,44 @@ def normalize_underlying(underlying: str) -> str:
     if u not in UNDERLYINGS:
         raise HTTPException(404, f"Unknown underlying '{underlying}'. Supported: {', '.join(UNDERLYINGS)}")
     return u
+
+
+async def _principal(sessionmaker, token: str | None) -> Principal | None:
+    if not token:
+        return None
+    async with sessionmaker() as s:
+        return await accounts.principal_for_token(s, token)
+
+
+async def current_principal(request: Request) -> Principal:
+    if not request.app.state.settings.auth_enabled:
+        return accounts.local_principal()
+    p = await _principal(request.app.state.sessionmaker, request.cookies.get(COOKIE))
+    if p is None:
+        raise HTTPException(401, "Sign in to continue.")
+    return p
+
+
+async def require_admin(p: Annotated[Principal, Depends(current_principal)]) -> Principal:
+    if not p.is_admin:
+        raise HTTPException(403, "This is only available to the operator.")
+    return p
+
+
+def get_meter(request: Request) -> Meter:
+    return request.app.state.meter
+
+
+CurrentUser = Annotated[Principal, Depends(current_principal)]
+AdminUser = Annotated[Principal, Depends(require_admin)]
+MeterDep = Annotated[Meter, Depends(get_meter)]
+
+
+async def ws_allowed(ws: WebSocket) -> bool:
+    """Call before `accept()`-ing a socket. Closes it (policy violation) when a login is required and missing."""
+    if not ws.app.state.settings.auth_enabled:
+        return True
+    if await _principal(ws.app.state.sessionmaker, ws.cookies.get(COOKIE)) is None:
+        await ws.close(code=4401)
+        return False
+    return True

@@ -50,6 +50,14 @@ def test_candles(client):
     assert r["candles"] and r["candles"][-1]["high"] >= r["candles"][-1]["low"]
     assert client.get("/market/candles", params={"symbol": "NIFTY-FUT"}).status_code == 200
     assert client.get("/market/candles", params={"timeframe": "3m"}).status_code == 400
+    # `day` keeps only that IST trading day's candles; a day with no data is empty, not an error
+    last = r["candles"][-1]["ts"]
+    from datetime import datetime, timedelta, timezone
+    ist_day = (datetime.fromisoformat(last) + timedelta(hours=5, minutes=30)).date()
+    one = client.get("/market/candles", params={"symbol": "NIFTY", "timeframe": "1m", "limit": 5000,
+                                                "day": ist_day.isoformat()}).json()["candles"]
+    assert one and all((datetime.fromisoformat(c["ts"]) + timedelta(hours=5, minutes=30)).date() == ist_day for c in one)
+    assert client.get("/market/candles", params={"day": "2001-01-01"}).json()["candles"] == []
 
 
 def test_option_chain_and_resolver(client):

@@ -323,8 +323,8 @@ class MarketDataService:
         return True
 
     def _should_store(self, tick: Tick) -> bool:
-        if tick.token not in self.token_to_id:
-            return False
+        if not self.settings.store_ticks or tick.token not in self.token_to_id:
+            return False  # candles and option snapshots are kept either way; backtests only need those
         inst = self.registry.by_token(tick.token)
         if inst is None or not inst.is_option:
             return True

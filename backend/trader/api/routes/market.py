@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -48,6 +49,7 @@ async def candles(
     symbol: str = Query("NIFTY", description="NIFTY | BANKNIFTY | INDIAVIX | NIFTY-FUT | BANKNIFTY-FUT"),
     timeframe: str = Query("5m"),
     limit: int = Query(300, ge=1, le=5000),
+    day: date | None = Query(None, description="Only candles of this IST trading day"),
     md: MarketDataService = Depends(get_md),
 ) -> dict:
     if timeframe not in md.candles.timeframes:
@@ -56,15 +58,22 @@ async def candles(
     if inst is None:
         raise HTTPException(404, f"Unknown symbol {symbol}")
     rows = []
+    day_start = day_end = None
+    if day is not None:
+        ist = ZoneInfo("Asia/Kolkata")
+        day_start = datetime.combine(day, time.min, ist).astimezone(timezone.utc)
+        day_end = day_start + timedelta(days=1)
     inst_id = md.token_to_id.get(inst.token)
     if inst_id is not None:
         async with request.app.state.sessionmaker() as s:
-            for r in await repo.get_candles(s, inst_id, timeframe, limit):
+            for r in await repo.get_candles(s, inst_id, timeframe, limit, end=day_end):
                 ts = r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc)  # SQLite returns naive
+                if day_start is not None and ts < day_start:
+                    continue
                 rows.append(dict(ts=ts.isoformat(), open=r.open, high=r.high, low=r.low,
                                  close=r.close, volume=r.volume, closed=True))
     live = md.candles.current(inst.token, timeframe)
-    if live is not None:
+    if live is not None and (day_start is None or day_start <= live.ts < day_end):
         live_d = live.to_dict()
         rows = [r for r in rows if r["ts"] != live_d["ts"]]
         rows.append({k: live_d[k] for k in ("ts", "open", "high", "low", "close", "volume", "closed")})

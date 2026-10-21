@@ -2,12 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getJSON,
   postJSON,
+  uploadFile,
   type BacktestResult,
   type SavedStrategy,
   type Translation,
+  type TranslatorInfo,
   type Validation,
 } from "../api";
 import { Results } from "../components/backtest/Results";
+import { MicButton } from "../components/MicButton";
+import { StrategyLibrary } from "../components/StrategyLibrary";
 
 const EXAMPLES = [
   "NIFTY 5 min: buy the ATM call when futures are above VWAP, EMA 9 crosses above EMA 21 and RSI(14) is above 60. Mirror it for puts. Only 9:45 to 14:30, skip if ADX(14) is below 20. Stop 20%, target 40%, trail 10% after 25% profit, max 2 trades a day.",
@@ -25,6 +29,8 @@ export function StrategiesPage() {
   const [saved, setSaved] = useState<SavedStrategy[]>([]);
   const [current, setCurrent] = useState<SavedStrategy | null>(null);
   const [versions, setVersions] = useState<SavedStrategy[]>([]);
+  const [ai, setAi] = useState<TranslatorInfo | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
@@ -32,6 +38,10 @@ export function StrategiesPage() {
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
   const refreshSaved = () => getJSON<SavedStrategy[]>("/strategies").then(setSaved).catch(() => {});
+  useEffect(() => {
+    getJSON<TranslatorInfo>("/strategies/translator").then(setAi).catch(() => setAi(null));
+  }, []);
+
   useEffect(() => {
     refreshSaved();
   }, []);
@@ -150,7 +160,7 @@ export function StrategiesPage() {
         <section className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
           <h1 className="mb-1 text-sm font-semibold">Describe a strategy</h1>
           <p className="mb-3 text-[11px] leading-relaxed text-ink-400">
-            Claude translates your description into rules. It never runs or trades anything: you review the rules, then
+            AI translates your description into rules. It never runs or trades anything: you review the rules, then
             the deterministic engine backtests them.
           </p>
           <textarea
@@ -166,12 +176,44 @@ export function StrategiesPage() {
               disabled={!!busy || text.trim().length < 5}
               className="rounded-md bg-accent px-3 py-1.5 font-semibold text-ink-950 hover:brightness-110 disabled:opacity-50"
             >
-              {busy === "translate" ? "Translating…" : "Translate with Claude"}
+              {busy === "translate" ? "Translating…" : "Translate with AI"}
             </button>
+            <input ref={fileRef} type="file" accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.json,.png,.jpg,.jpeg,.webp" className="hidden"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setBusy("attach");
+                setError(null);
+                try {
+                  const r = (await uploadFile(f, false)) as unknown as { text: string; status: string };
+                  if (!r.text.trim()) throw new Error(r.status === "no_text" ? "No text found in that file (is it a scan?)." : "Nothing readable in that file.");
+                  setText((cur) => (cur.trim() ? `${cur.trim()}
+
+${r.text.trim()}` : r.text.trim()));
+                } catch (er) {
+                  setError((er as Error).message);
+                } finally {
+                  setBusy(null);
+                  e.target.value = "";
+                }
+              }} />
+            <button onClick={() => fileRef.current?.click()} disabled={!!busy} title="Attach a PDF, Word, Excel, text or image file describing the strategy"
+              className="rounded-md border border-ink-700 px-3 py-1.5 text-ink-300 hover:text-ink-100 disabled:opacity-50">
+              {busy === "attach" ? "Reading…" : "Attach file"}
+            </button>
+            <MicButton disabled={!!busy} onError={setError}
+              onText={(t) => setText((cur) => (cur.trim() ? `${cur.trim()} ${t}` : t))} />
             <button onClick={loadTemplate} disabled={!!busy} className="rounded-md border border-ink-700 px-3 py-1.5 text-ink-300 hover:text-ink-100">
               Start from Momentum #1
             </button>
           </div>
+          {ai && (
+            <p className={`num mt-2 text-[10px] ${ai.configured ? "text-ink-400" : "text-down"}`}>
+              {ai.provider
+                ? `AI: ${ai.provider} · ${ai.model}${ai.fallbacks?.length ? ` · then ${ai.fallbacks.join(", ")}` : ""}${ai.note ? ` — ${ai.note}` : ""}`
+                : ai.configured ? "" : "AI translation is not available right now."}
+            </p>
+          )}
           <details className="mt-3 text-[11px] text-ink-400">
             <summary className="cursor-pointer hover:text-ink-100">Example descriptions</summary>
             <ul className="mt-2 flex flex-col gap-2">
@@ -186,23 +228,7 @@ export function StrategiesPage() {
           </details>
         </section>
 
-        <section className="rounded-lg border border-ink-800 bg-ink-900 text-xs">
-          <h2 className="border-b border-ink-800 px-3 py-2 text-sm font-semibold">Saved strategies</h2>
-          {saved.length === 0 && <p className="px-3 py-3 text-ink-400">None yet.</p>}
-          <ul>
-            {saved.map((s) => (
-              <li key={s.id}>
-                <button
-                  onClick={() => open(s)}
-                  className={`flex w-full items-center justify-between gap-2 border-b border-ink-800/60 px-3 py-2 text-left hover:bg-ink-850 ${current?.name === s.name ? "bg-ink-850" : ""}`}
-                >
-                  <span className="truncate">{s.name}</span>
-                  <span className="num shrink-0 text-[10px] text-ink-400">v{s.version}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <StrategyLibrary saved={saved} current={current} onOpen={open} onChanged={refreshSaved} />
       </aside>
 
       <div className="flex min-w-0 flex-col gap-4">
@@ -367,10 +393,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function TranslationNotes({ t }: { t: Translation }) {
   const blocks: [string, string[], string][] = [
-    ["Claude needs an answer before it can build the rules", t.questions, "border-accent/40 bg-accent/5"],
+    ["The AI needs an answer before it can build the rules", t.questions, "border-accent/40 bg-accent/5"],
     ["Not supported", t.unsupported, "border-down/40 bg-down/10"],
     ["Still invalid after one repair attempt", t.errors, "border-down/40 bg-down/10"],
-    ["Assumptions Claude made, check these", t.assumptions, "border-ink-700 bg-ink-900"],
+    ["Assumptions the AI made, check these", t.assumptions, "border-ink-700 bg-ink-900"],
   ];
   return (
     <div className="flex flex-col gap-2">

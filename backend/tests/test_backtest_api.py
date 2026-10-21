@@ -94,6 +94,11 @@ def test_chart_endpoint_matches_trades(client):
         assert int(_dt.fromisoformat(t["entry_time"]).timestamp()) in times  # markers land on real bars
         assert int(_dt.fromisoformat(t["exit_bar_time"]).timestamp()) in times
     assert client.get("/backtests/nope/chart").status_code == 404
+    c15 = client.get(f"/backtests/{res['id']}/chart", params={"timeframe": "15m"}).json()
+    assert c15["timeframe"] == "15m" and len(c15["bars"]) == len(ch["bars"]) // 3
+    last = client.get(f"/backtests/{res['id']}/chart", params={"timeframe": "15m", "last_days": 2}).json()
+    assert len(last["bars"]) == 2 * 25
+    assert client.get(f"/backtests/{res['id']}/chart", params={"timeframe": "7m"}).status_code == 400
 
 
 def test_prefers_timeframe_with_more_coverage(tmp_path):

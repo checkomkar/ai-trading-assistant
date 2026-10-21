@@ -123,6 +123,7 @@ class BacktestRunRow(Base):
     __tablename__ = "backtest_runs"
 
     id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     underlying: Mapped[str] = mapped_column(String(32), nullable=False)
     start: Mapped[date] = mapped_column(Date, nullable=False)
@@ -141,6 +142,7 @@ class StrategyRow(Base):
     __tablename__ = "strategies"
 
     id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     spec: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -151,7 +153,7 @@ class StrategyRow(Base):
     translator_model: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
-    __table_args__ = (Index("ux_strategies_name_version", "name", "version", unique=True),)
+    __table_args__ = (Index("ux_strategies_owner_name_version", "owner", "name", "version", unique=True),)
 
 
 class PaperTradeRow(Base):
@@ -197,3 +199,166 @@ class PaperStateRow(Base):
     saved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     data_source: Mapped[str] = mapped_column(String(16), nullable=False)  # fyers | simulated | replay
     state: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# ---- assistant: conversations, uploaded knowledge, memory (all owner-scoped; owner is "local" until accounts) ----
+class ChatConversationRow(Base):
+    __tablename__ = "chat_conversations"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ChatMessageRow(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(String(16), ForeignKey("chat_conversations.id", ondelete="CASCADE"),
+                                                 nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(12), nullable=False)  # user | assistant
+    content: Mapped[str] = mapped_column(String, nullable=False)
+    cards: Mapped[list] = mapped_column(JSON, default=list)  # e.g. strategy drafts the user can save
+    doc_ids: Mapped[list] = mapped_column(JSON, default=list)  # files attached to this message
+    provider: Mapped[str | None] = mapped_column(String(96))  # which model answered
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class KnowledgeDocRow(Base):
+    """An uploaded file, reduced to text. The original bytes are not kept."""
+
+    __tablename__ = "knowledge_docs"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
+    filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    mime: Mapped[str] = mapped_column(String(96), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # pdf | docx | xlsx | text | image
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # ready | no_text | no_vision
+    text: Mapped[str] = mapped_column(String, nullable=False, default="")
+    summary: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class KnowledgeChunkRow(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    doc_id: Mapped[str] = mapped_column(String(16), ForeignKey("knowledge_docs.id", ondelete="CASCADE"),
+                                        nullable=False, index=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class MemoryNoteRow(Base):
+    """A fact the assistant keeps about the trader's setup. Visible and deletable in the UI."""
+
+    __tablename__ = "memory_notes"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
+    text: Mapped[str] = mapped_column(String(500), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="assistant")  # assistant | user
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+# ---- strategy folders: grouping for the Strategies page. Keyed by strategy *name*, so every version stays together ----
+class StrategyFolderRow(Base):
+    __tablename__ = "strategy_folders"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class StrategyFolderItemRow(Base):
+    """A strategy sits in at most one folder per owner; no row means "ungrouped"."""
+
+    __tablename__ = "strategy_folder_items"
+
+    owner: Mapped[str] = mapped_column(String(32), primary_key=True, default="local")
+    strategy_name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    folder_id: Mapped[str] = mapped_column(String(16), ForeignKey("strategy_folders.id"), nullable=False, index=True)
+
+
+# ---- SaaS: accounts, sessions, usage ledger, billing events (PRD §23) ----
+class AccountRow(Base):
+    __tablename__ = "accounts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # the `owner` value on every owned row
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    plan: Mapped[str] = mapped_column(String(16), nullable=False, default="trial")
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # paid plans: start of this billing month
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # paid-until; passing it drops the plan to trial
+    billing_customer: Mapped[str | None] = mapped_column(String(64))  # payment provider's ids
+    billing_subscription: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class AuthSessionRow(Base):
+    """A login. Only a hash of the token is stored, so a database leak does not hand out sessions."""
+
+    __tablename__ = "auth_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(32), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UsageEventRow(Base):
+    """Append-only ledger of metered work. One row per generation / chat message / backtest / speech request, and
+    cost-only rows (units=0) for incidental model calls. `status` is "held" while the call runs, then "done";
+    a call that fails before it costs anything is deleted (refunded)."""
+
+    __tablename__ = "usage_events"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)  # generations | chat_messages | speech_requests | backtests | ai_other
+    units: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    model: Mapped[str | None] = mapped_column(String(128))
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="done")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (Index("ix_usage_owner_kind_ts", "owner", "kind", "created_at"),)
+
+
+class BillingEventRow(Base):
+    """Webhook deliveries already applied, so a retried webhook is idempotent."""
+
+    __tablename__ = "billing_events"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)  # the provider's event id
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    account_id: Mapped[str | None] = mapped_column(String(32))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BrokerConnectionRow(Base):
+    """A customer's own broker API keys. `public` holds the non-secret fields (shown back to them); `secret_blob` is
+    Fernet ciphertext of everything, written once and never returned (trader/accounts/vault.py)."""
+
+    __tablename__ = "broker_connections"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    broker: Mapped[str] = mapped_column(String(16), nullable=False)
+    public: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret_blob: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (Index("ux_broker_owner_broker", "owner", "broker", unique=True),)
