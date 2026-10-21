@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import { brand } from "../brand";
+import { Logo } from "./Logo";
 import type { SocketStatus } from "../hooks/useSocket";
 import type { FeedStatus } from "../api";
 import { istTime } from "../format";
+import { UserMenu } from "./UserMenu";
 
 const SESSION_STYLE: Record<string, string> = {
   PRE_OPEN: "bg-accent/15 text-accent ring-accent/30",
@@ -26,10 +29,11 @@ interface Props {
   socket: SocketStatus;
   feed: FeedStatus | null;
   mode: string | null;
-  view: "market" | "paper" | "backtest" | "strategies";
+  view: "market" | "paper" | "strategies" | "assistant" | "pricing" | "brokers";
+  showPaper?: boolean;
 }
 
-export function Header({ session, simulated, provider, socket, feed, mode, view }: Props) {
+export function Header({ session, simulated, provider, socket, feed, mode, view, showPaper = true }: Props) {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -39,13 +43,12 @@ export function Header({ session, simulated, provider, socket, feed, mode, view 
   const live = socket === "open" && feed?.connected;
   return (
     <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-ink-800 bg-ink-900/80 px-4 py-2.5 backdrop-blur sm:px-6">
-      <div className="flex items-center gap-2.5">
-        <div className="grid h-7 w-7 place-items-center rounded-md bg-accent text-[13px] font-bold text-ink-950">N</div>
-        <span className="font-semibold tracking-tight">NIFTY AI Trader</span>
-      </div>
+      <a href="#/" aria-label={`${brand.name} home`} className="flex items-center">
+        <Logo size={30} />
+      </a>
 
       <nav className="flex gap-1 rounded-md bg-ink-850 p-0.5 text-xs" aria-label="Sections">
-        {([["market", "Market", "#/"], ["paper", "Paper", "#/paper"], ["strategies", "Strategies", "#/strategies"], ["backtest", "Backtest", "#/backtest"]] as const).map(([id, label, href]) => (
+        {([["market", "Market", "#/"], ["paper", "Paper", "#/paper"], ["strategies", "Strategies", "#/strategies"], ["assistant", "Assistant", "#/assistant"], ["brokers", "Brokers", "#/brokers"]] as const).filter(([id]) => showPaper || id !== "paper").map(([id, label, href]) => (
           <a
             key={id}
             href={href}
@@ -106,6 +109,7 @@ export function Header({ session, simulated, provider, socket, feed, mode, view 
         <span className="num text-ink-300" title="India Standard Time">
           {istTime(now)} <span className="text-ink-400">IST</span>
         </span>
+        <UserMenu pricingActive={view === "pricing"} />
       </div>
     </header>
   );

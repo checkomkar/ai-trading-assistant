@@ -1,6 +1,6 @@
 """Natural language -> Strategy Spec (PRD §19.2, §19.4).
 
-Claude only *translates*. Its answer is treated as untrusted input: the spec is parsed with
+The model only *translates*. Its answer is treated as untrusted input: the spec is parsed with
 the strict Pydantic models and the semantic validator, and anything that fails gets exactly one
 repair round with the errors fed back. Ambiguity comes back as questions, never as guesses.
 """
@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
 
 from pydantic import ValidationError
 
+from trader.ai.providers import LLMProvider, TranslatorUnavailable
 from trader.strategy.spec import INDICATORS, MOMENTUM_V1, StrategySpec, render_english, semantic_errors
 
 ENVELOPE_SCHEMA = {
@@ -76,10 +76,6 @@ spec_json: {json.dumps(MOMENTUM_V1, separators=(',', ':'))}
 """
 
 
-class TranslatorUnavailable(RuntimeError):
-    """No Anthropic credentials, or the API could not be reached."""
-
-
 @dataclass
 class Translation:
     spec: dict | None
@@ -113,70 +109,38 @@ def _user_message(text: str, base_spec: dict | None) -> str:
 
 
 class StrategyTranslator:
-    def __init__(self, model: str, api_key: str = "", client: Any = None) -> None:
-        self.model = model
-        self._api_key = api_key
-        self._client = client
+    """Translation logic only; which model answers is the provider's business (see ai/providers.py)."""
 
-    def _get_client(self) -> Any:
-        if self._client is None:
-            import anthropic
-
-            try:
-                self._client = anthropic.Anthropic(api_key=self._api_key) if self._api_key else anthropic.Anthropic()
-            except anthropic.AnthropicError as exc:  # no credentials of any kind
-                raise TranslatorUnavailable(
-                    "No Anthropic credentials. Set ANTHROPIC_API_KEY in .env (or run `ant auth login`).") from exc
-        return self._client
+    def __init__(self, provider: LLMProvider) -> None:
+        self.provider = provider
 
     def _call(self, messages: list[dict]) -> dict:
-        import anthropic
-
+        reply = self.provider.complete(SYSTEM_PROMPT, messages, ENVELOPE_SCHEMA)
         try:
-            resp = self._get_client().beta.messages.create(
-                model=self.model,
-                max_tokens=16000,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-                output_config={"effort": "medium",
-                               "format": {"type": "json_schema", "schema": ENVELOPE_SCHEMA}},
-                # Route policy declines to a fallback model instead of failing the request.
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-            )
-        except anthropic.AuthenticationError as exc:
-            raise TranslatorUnavailable("Anthropic rejected the API key (ANTHROPIC_API_KEY).") from exc
-        except TypeError as exc:
-            # The SDK raises TypeError("Could not resolve authentication method...") when no
-            # API key, auth token or CLI profile exists at all.
-            if "authentication" not in str(exc).lower():
-                raise
-            raise TranslatorUnavailable(
-                "No Anthropic credentials. Set ANTHROPIC_API_KEY in .env (or run `ant auth login`).") from exc
-        except anthropic.APIConnectionError as exc:
-            raise TranslatorUnavailable("Could not reach the Anthropic API.") from exc
-        if resp.stop_reason == "refusal":
-            raise TranslatorUnavailable("The model declined this request.")
-        if resp.stop_reason == "max_tokens":
-            raise TranslatorUnavailable("The translation was cut off (max_tokens); simplify the description.")
-        text = next(b.text for b in resp.content if b.type == "text")
-        return {"envelope": json.loads(text), "content": resp.content}
+            env = json.loads(reply.text)
+        except json.JSONDecodeError as exc:
+            raise TranslatorUnavailable(f"The model's answer was not valid JSON: {exc}") from exc
+        if not isinstance(env, dict):
+            raise TranslatorUnavailable("The model's answer was not a JSON object.")
+        return {"envelope": env, "text": reply.text}
 
     def translate(self, text: str, base_spec: dict | None = None) -> Translation:
         messages: list[dict] = [{"role": "user", "content": _user_message(text, base_spec)}]
         first = self._call(messages)
         env = first["envelope"]
         out = Translation(None, None, env.get("assumptions", []), env.get("questions", []),
-                          env.get("unsupported", []), model=self.model)
+                          env.get("unsupported", []))
+        out.model = self.provider.label  # with fallbacks: whoever actually answered
         if not env.get("spec_json"):
             return out  # questions / unsupported only
         spec, errs = validate_spec_json(env["spec_json"])
         if errs:
             # One repair round, append-only: show the model exactly what failed validation.
-            messages += [{"role": "assistant", "content": first["content"]},
+            messages += [{"role": "assistant", "content": first["text"]},
                          {"role": "user", "content": "That spec failed validation:\n- " + "\n- ".join(errs)
                           + "\nReturn a corrected spec_json (or ask questions if the request is ambiguous)."}]
             env = self._call(messages)["envelope"]
+            out.model = self.provider.label
             out.repaired = True
             out.assumptions = env.get("assumptions", out.assumptions)
             out.questions = env.get("questions", [])

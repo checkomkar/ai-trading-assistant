@@ -1,4 +1,7 @@
-# NIFTY AI Trader
+# STRIKTEK
+
+*Focus and succeed.* Intraday NIFTY/BANKNIFTY option research and paper trading (formerly "NIFTY AI Trader"). Planned home: `striktek.si` (see `docs/deploy-striktek-si.md`).
+
 
 A quantitative research and paper-trading platform for NIFTY and BANKNIFTY index options. The full product spec is [requirements.md](requirements.md). §14 covers implementation decisions, §15 the broker choice, and §16 the milestone roadmap.
 

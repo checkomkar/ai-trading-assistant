@@ -25,7 +25,7 @@ def svc(request: Request) -> PaperService:
 
 class StartIn(BaseModel):
     underlyings: list[Literal["NIFTY", "BANKNIFTY"]] | None = None
-    timeframe: Literal["1m", "5m"] | None = None
+    timeframe: str | None = None  # default: the saved strategy's own timeframe, else the configured one
     strategy: Literal["momentum", "spec"] | None = None
     strategy_id: str | None = None  # saved strategy version; implies strategy="spec"
     strategy_params: dict = Field(default_factory=dict)
@@ -61,8 +61,13 @@ async def start(request: Request, body: StartIn | None = None) -> dict:
         if row is None:
             raise HTTPException(404, "strategy not found")
         spec, version, strategy = row.spec, row.id, "spec"
+    # A saved strategy trades on its own candle size; the live feed only builds some of them.
+    timeframe = body.timeframe or (spec["timeframe"] if spec else p.settings.paper_timeframe)
+    if timeframe not in p.md.candles.timeframes:
+        raise HTTPException(400, f"{timeframe} candles are not built live (only {', '.join(p.md.candles.timeframes)}), "
+                                 "so this strategy cannot run in paper trading yet")
     try:
-        lanes = [LaneConfig(underlying=u, timeframe=body.timeframe or p.settings.paper_timeframe, strategy=strategy,
+        lanes = [LaneConfig(underlying=u, timeframe=timeframe, strategy=strategy,
                             strategy_params=body.strategy_params, spec=spec, strategy_version_id=version,
                             engine_params=body.engine_params)
                  for u in (body.underlyings or [ln.underlying for ln in base])]

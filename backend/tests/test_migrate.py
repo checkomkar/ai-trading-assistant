@@ -24,7 +24,7 @@ def test_legacy_create_all_db_is_stamped_and_upgraded(tmp_path):
     version = con.execute("SELECT version_num FROM alembic_version").fetchone()[0]
     kept = con.execute("SELECT count(*) FROM candles").fetchone()[0]
     con.close()
-    assert "oi" in cols and version == "d4a7f1b93c58" and kept == 1
+    assert "oi" in cols and version == "b3e8f1a47c05" and kept == 1
 
 
 def test_fresh_db_upgrades_to_head(tmp_path):
@@ -34,4 +34,5 @@ def test_fresh_db_upgrades_to_head(tmp_path):
     con = sqlite3.connect(tmp_path / "fresh.db")
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     con.close()
-    assert {"instruments", "market_ticks", "candles", "option_snapshots", "events"} <= tables
+    assert {"instruments", "market_ticks", "candles", "option_snapshots", "events",
+            "chat_conversations", "chat_messages", "knowledge_docs", "knowledge_chunks", "memory_notes"} <= tables

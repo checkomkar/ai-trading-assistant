@@ -1,4 +1,6 @@
-# NIFTY AI Trader
+# STRIKTEK (formerly NIFTY AI Trader)
+
+Product name **STRIKTEK** (brand lives in `web/src/brand.ts`), tagline "Focus and succeed", planned address `striktek.si`. Code names are unchanged (`backend/trader/`).
 
 Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. Spec: `requirements.md` (PRD). §16 lists milestones; §17–21 record build notes and current status. Read the relevant PRD section before starting a milestone.
 
@@ -16,6 +18,12 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
 
 ## Product direction
 Intended to become a hosted multi-user (SaaS) product, paper and research only until the regulatory questions in PRD §23 are settled. Until stage S1 lands (§23.4), keep new code *tenant-ready* without building tenancy: don't add new module-level singletons or process-wide state that belongs to one trader, keep per-account settings out of `os.environ` reads, and put owner-scoped data behind the repository/store layer so an `account_id` can be added later.
+
+## SaaS layer (2026-10-21; details in `docs/pricing-and-saas.md`)
+- `AUTH_ENABLED=false` (default) = local single user, owner `"local"`, no limits. `true` = cookie sessions, per-account data, plans.
+- Every owned row carries `owner` (= `accounts.id`); routes take it from `CurrentUser` (`api/deps.py`), never from a request field. Market data needs a login; **paper and admin routes are operator-only** until per-account runners exist.
+- Metering: `billing/meter.py` (`Meter.metered` for model calls, `counted` for backtests/speech, `check_stock` for stock limits). 402 `quota_exceeded` is the UI's upgrade prompt. Plans and the AI cost ceiling: `billing/plans.py` (a test enforces the margin). Payments: `billing/razorpay.py`; access is granted only by the signed webhook.
+- New AI call sites must go through `meter.metered(...)`; new owned tables need an `owner` column and repo-level filtering.
 
 ## Non-negotiables
 - **Safety:** the default path is DATA → ANALYSIS → PAPER. No code path may let LLM output place orders (PRD §2). Risk limits are enforced by the engine, not by strategies.

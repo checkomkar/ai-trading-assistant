@@ -18,6 +18,7 @@ from datetime import date
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 
+from trader.api.deps import ws_allowed
 from trader.instruments.specs import UNDERLYINGS, VIX_SYMBOL
 from trader.market_data.service import MarketDataService
 
@@ -57,6 +58,8 @@ async def _run(ws: WebSocket, state: dict, push) -> None:  # noqa: ANN001
 
 @router.websocket("/ws/market")
 async def ws_market(ws: WebSocket) -> None:
+    if not await ws_allowed(ws):
+        return
     await ws.accept()
     md: MarketDataService = ws.app.state.md
     state: dict = {"_interval": MARKET_PUSH_SECONDS, "candles": {"symbol": "NIFTY", "timeframe": "5m"}}
@@ -88,6 +91,8 @@ async def ws_market(ws: WebSocket) -> None:
 
 @router.websocket("/ws/options")
 async def ws_options(ws: WebSocket) -> None:
+    if not await ws_allowed(ws):
+        return
     await ws.accept()
     md: MarketDataService = ws.app.state.md
     state: dict = {"_interval": OPTIONS_PUSH_SECONDS, "underlying": "NIFTY", "expiry": None, "strikes": 15}
@@ -111,6 +116,8 @@ async def ws_options(ws: WebSocket) -> None:
 @router.websocket("/ws/signals")
 async def ws_signals(ws: WebSocket) -> None:
     """Reserved for Phase 7. Sends heartbeats so clients can wire up the connection now."""
+    if not await ws_allowed(ws):
+        return
     await ws.accept()
     md: MarketDataService = ws.app.state.md
     state: dict = {"_interval": 5.0}

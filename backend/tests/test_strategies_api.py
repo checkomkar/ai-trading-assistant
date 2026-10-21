@@ -7,7 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trader.ai import strategy_translator as st
-from trader.ai.strategy_translator import StrategyTranslator, TranslatorUnavailable
+from trader.ai.providers import AnthropicProvider, TranslatorUnavailable
+from trader.ai.strategy_translator import StrategyTranslator
 from trader.api.main import create_app
 from trader.config import Settings
 from trader.db.migrate import upgrade_db
@@ -39,7 +40,7 @@ def env(spec=None, assumptions=(), questions=(), unsupported=()):
 
 def test_translate_valid_spec():
     fake = FakeClaude(env(MOMENTUM_V1, assumptions=["RSI period 14"]))
-    out = StrategyTranslator("claude-opus-5-5", client=fake).translate("momentum on nifty ...")
+    out = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=fake)).translate("momentum on nifty ...")
     assert out.spec["name"] == MOMENTUM_V1["name"] and out.assumptions == ["RSI period 14"]
     assert "Buy the ATM call" in out.english and not out.repaired and out.errors == []
     req = fake.calls[0]
@@ -50,7 +51,7 @@ def test_translate_valid_spec():
 def test_translate_repairs_once_with_validation_errors():
     bad = dict(MOMENTUM_V1, sides={"long": {"option": "CE", "entry": {"cmp": [{"ind": "close"}, ">", {"ind": "vwap"}]}}})
     fake = FakeClaude(env(bad), env(MOMENTUM_V1))
-    out = StrategyTranslator("m", client=fake).translate("price above vwap ...")
+    out = StrategyTranslator(AnthropicProvider("m", client=fake)).translate("price above vwap ...")
     assert out.repaired and out.spec is not None and out.errors == []
     second = fake.calls[1]["messages"]
     assert second[0]["role"] == "user" and second[1]["role"] == "assistant"  # append-only history
@@ -59,19 +60,19 @@ def test_translate_repairs_once_with_validation_errors():
 
 def test_translate_returns_questions_without_guessing():
     fake = FakeClaude(env(questions=["Breakout of what: previous day's high or opening range?"]))
-    out = StrategyTranslator("m", client=fake).translate("buy on breakout")
+    out = StrategyTranslator(AnthropicProvider("m", client=fake)).translate("buy on breakout")
     assert out.spec is None and out.questions and len(fake.calls) == 1
 
 
 def test_translate_still_invalid_after_repair_reports_errors():
     bad = dict(MOMENTUM_V1, exits={"stop_loss_pct": 150, "target_pct": 50})
-    out = StrategyTranslator("m", client=FakeClaude(env(bad), env(bad))).translate("x" * 10)
+    out = StrategyTranslator(AnthropicProvider("m", client=FakeClaude(env(bad), env(bad)))).translate("x" * 10)
     assert out.spec is None and out.errors
 
 
 def test_translate_refusal_raises():
     with pytest.raises(TranslatorUnavailable):
-        StrategyTranslator("m", client=FakeClaude(env(MOMENTUM_V1), stop_reason="refusal")).translate("hello there")
+        StrategyTranslator(AnthropicProvider("m", client=FakeClaude(env(MOMENTUM_V1), stop_reason="refusal"))).translate("hello there")
 
 
 def test_system_prompt_mentions_rules():
@@ -143,4 +144,56 @@ def test_missing_credentials_become_translator_unavailable():
             raise TypeError('"Could not resolve authentication method. Expected one of api_key, auth_token..."')
 
     with pytest.raises(TranslatorUnavailable, match="ANTHROPIC_API_KEY"):
-        StrategyTranslator("m", client=NoAuth()).translate("buy calls on a breakout")
+        StrategyTranslator(AnthropicProvider("m", client=NoAuth())).translate("buy calls on a breakout")
+
+
+# ---- folders ---------------------------------------------------------------------------------------
+def test_folders_group_strategies_by_name_and_survive_new_versions(client):
+    spec = dict(MOMENTUM_V1, name="Folder test A")
+    a1 = client.post("/strategies", json={"spec": spec}).json()
+    client.post("/strategies", json={"spec": dict(MOMENTUM_V1, name="Folder test B")})
+    f = client.post("/strategies/folders", json={"name": "  Scalps  "}).json()
+    assert f["name"] == "Scalps" and f["count"] == 0  # whitespace trimmed
+    assert client.post("/strategies/folders", json={"name": "scalps"}).status_code == 422  # case-insensitive duplicate
+    assert client.post("/strategies/folders", json={"name": "   "}).status_code == 422
+    assert client.post("/strategies/folders", json={"name": "x" * 61}).status_code == 422
+
+    r = client.put("/strategies/folder-assignment", json={"strategy_name": "Folder test A", "folder_id": f["id"]})
+    assert r.status_code == 200
+    by_name = {s["name"]: s["folder_id"] for s in client.get("/strategies").json()}
+    assert by_name["Folder test A"] == f["id"] and by_name["Folder test B"] is None
+    assert [x["count"] for x in client.get("/strategies/folders").json() if x["id"] == f["id"]] == [1]
+
+    # a new version of the strategy stays in its folder (grouping is by name, not by version row)
+    a2 = client.post("/strategies", json={"spec": {**spec, "risk": {"max_trades_per_day": 1}}}).json()
+    assert a2["version"] == 2 and a1["id"] != a2["id"]
+    assert {s["name"]: s["folder_id"] for s in client.get("/strategies").json()}["Folder test A"] == f["id"]
+
+    # moving between folders, and back to ungrouped
+    g = client.post("/strategies/folders", json={"name": "Trend"}).json()
+    client.put("/strategies/folder-assignment", json={"strategy_name": "Folder test A", "folder_id": g["id"]})
+    counts = {x["name"]: x["count"] for x in client.get("/strategies/folders").json()}
+    assert counts["Scalps"] == 0 and counts["Trend"] == 1
+    client.put("/strategies/folder-assignment", json={"strategy_name": "Folder test A", "folder_id": None})
+    assert {s["name"]: s["folder_id"] for s in client.get("/strategies").json()}["Folder test A"] is None
+
+
+def test_folder_rename_delete_and_unknowns(client):
+    f = client.post("/strategies/folders", json={"name": "Temp"}).json()
+    o = client.post("/strategies/folders", json={"name": "Other"}).json()
+    assert client.patch(f"/strategies/folders/{f['id']}", json={"name": "Renamed"}).json()["name"] == "Renamed"
+    assert client.patch(f"/strategies/folders/{f['id']}", json={"name": "other"}).status_code == 422  # clashes with Other
+    assert client.patch("/strategies/folders/nope", json={"name": "x"}).status_code == 404
+    client.post("/strategies", json={"spec": dict(MOMENTUM_V1, name="Folder test C")})
+    client.put("/strategies/folder-assignment", json={"strategy_name": "Folder test C", "folder_id": f["id"]})
+    assert client.delete(f"/strategies/folders/{f['id']}").status_code == 200
+    # deleting a folder keeps its strategies: they are just ungrouped
+    st = {s["name"]: s["folder_id"] for s in client.get("/strategies").json()}
+    assert "Folder test C" in st and st["Folder test C"] is None
+    assert client.delete(f"/strategies/folders/{f['id']}").status_code == 404
+    bad = client.put("/strategies/folder-assignment", json={"strategy_name": "No such strategy", "folder_id": o["id"]})
+    assert bad.status_code == 404
+    bad = client.put("/strategies/folder-assignment", json={"strategy_name": "Folder test C", "folder_id": "nope"})
+    assert bad.status_code == 404
+    # "folders" is a real route, not mistaken for a strategy id
+    assert client.get("/strategies/folders").status_code == 200

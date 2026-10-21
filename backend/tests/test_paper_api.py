@@ -60,6 +60,21 @@ def test_runner_refuses_to_trade_a_closed_market_but_starts_cleanly(client):
     assert client.post("/paper/stop").json() == {"running": False}
 
 
+def test_runner_starts_a_saved_strategy_on_its_own_timeframe(client):
+    from trader.strategy.library import LIBRARY
+
+    def save(raw):
+        return client.post("/strategies", json={"spec": raw, "source_text": "t"}).json()["id"]
+
+    five = next(s for s in LIBRARY if s["timeframe"] == "5m")
+    fifteen = next(s for s in LIBRARY if s["timeframe"] == "15m")
+    bad = client.post("/paper/start", json={"strategy_id": save(fifteen)})
+    assert bad.status_code == 400 and "15m" in bad.json()["detail"]  # not built live: refused, not silently 5m
+    ok = client.post("/paper/start", json={"strategy_id": save(five), "underlyings": ["NIFTY"]})
+    assert ok.status_code == 200 and ok.json()["lanes"][0]["timeframe"] == "5m"
+    client.post("/paper/stop")
+
+
 def test_no_endpoint_accepts_an_order(client):
     """Orders come only from the runner via the risk engine; the API has nothing that takes one."""
     paths = client.get("/openapi.json").json()["paths"]

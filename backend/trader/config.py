@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/trader.db"
     tick_store_strike_window: int = 3
+    store_ticks: bool = True  # raw ticks are ~600k rows/day and nothing reads them; turn off on a small hosted database
     option_snapshot_interval_seconds: int = 60
     redis_url: str = ""
 
@@ -59,10 +60,27 @@ class Settings(BaseSettings):
     # with "Invalid input". Prime serves 5+ years; raise this if you subscribe.
     fyers_intraday_history_days: int = 364
 
-    # Natural-language strategy translator (PRD §19). The Anthropic SDK also finds credentials
-    # from `ant auth login` profiles, so an empty key here does not necessarily disable it.
+    # Natural-language strategy translator (PRD §19). LLM_PROVIDER picks who answers: anthropic (default),
+    # openrouter, groq, openai, or custom (any OpenAI-compatible server via LLM_BASE_URL). The Anthropic SDK
+    # also finds credentials from `ant auth login` profiles, so an empty key there does not disable it.
+    llm_provider: str = "anthropic"
+    llm_model: str = ""  # empty = the provider's default (anthropic: STRATEGY_TRANSLATOR_MODEL)
+    llm_api_key: str = Field(default="", repr=False)  # overrides the provider-specific keys below
+    llm_base_url: str = ""
+    llm_fallbacks: str = ""  # comma list tried in order if the provider fails, e.g. "groq,openrouter:meta-llama/llama-3.3-70b"
     anthropic_api_key: str = Field(default="", repr=False)
+    openrouter_api_key: str = Field(default="", repr=False)
+    openrouter_free_pool: int = 4  # other free OpenRouter models tried when one fails (0 = only the chosen model)
+    openrouter_free_only: bool = True  # refuse OpenRouter models that bill credits (ids not ending in ":free")
+    groq_api_key: str = Field(default="", repr=False)
+    openai_api_key: str = Field(default="", repr=False)
     strategy_translator_model: str = "claude-opus-5-5"
+
+    # Speech-to-text for describing a strategy by voice. Audio goes to Deepgram; the transcript only fills
+    # the text box, the user still reviews it before anything is translated.
+    deepgram_api_key: str = Field(default="", repr=False)
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "en-IN"
 
     shoonya_user_id: str = ""
     shoonya_password: str = Field(default="", repr=False)
@@ -96,6 +114,23 @@ class Settings(BaseSettings):
 
     risk_free_rate: float = 0.065
 
+    # SaaS (PRD §23). AUTH_ENABLED=false is the local single-user mode: no login, everything belongs to the
+    # "local" owner and no limits apply. Turn it on for a hosted deployment.
+    # Per-user broker API keys are encrypted with this Fernet key (generate: python -m trader.scripts.accounts gen-key).
+    credential_key: str = Field(default="", repr=False)
+    auth_enabled: bool = False
+    auth_session_days: int = 30
+    auth_cookie_secure: bool = False  # true behind HTTPS
+    signup_open: bool = True
+    signup_invite_code: str = Field(default="", repr=False)  # non-empty = sign-up needs this code (closed beta)
+    admin_emails: str = ""  # comma list; these accounts are admins and have the unlimited "owner" plan
+    # Razorpay subscriptions. Create the plans in the dashboard (monthly, INR) and paste their ids here.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = Field(default="", repr=False)
+    razorpay_webhook_secret: str = Field(default="", repr=False)
+    razorpay_plan_pro: str = ""
+    razorpay_plan_max: str = ""
+
     api_cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
 
@@ -123,6 +158,10 @@ class Settings(BaseSettings):
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.market_timezone)
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
 
     @property
     def cors_origins(self) -> list[str]:

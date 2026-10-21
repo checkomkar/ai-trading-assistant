@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from trader.api.routes import backtests, health, market, options, paper, strategies, ws
+from trader.api.deps import current_principal, require_admin
+from trader.api.routes import auth, backtests, billing, brokers, chat, health, market, options, paper, speech, strategies, ws
+from trader.billing.meter import Meter, QuotaExceeded
 from trader.config import Settings, get_settings
 from trader.db.migrate import upgrade_db
 from trader.execution.service import PaperService
@@ -31,6 +34,7 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         engine = create_engine(settings.resolved_database_url)
         app.state.engine = engine
         app.state.sessionmaker = create_sessionmaker(engine)
+        app.state.meter = Meter(app.state.sessionmaker)
         provider = create_provider(settings, app.state.sessionmaker)
         # A replay has its own clock and must never write its synthetic ticks into the real tables.
         md = MarketDataService(provider, app.state.sessionmaker if provider.persist_market_data else None,
@@ -56,15 +60,27 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
                 await md.stop()
             await engine.dispose()
 
-    app = FastAPI(title="NIFTY AI Trader", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="STRIKTEK", version="0.1.0", lifespan=lifespan)
+    app.state.settings = settings
+
+    @app.exception_handler(QuotaExceeded)
+    async def quota_exceeded(_: Request, exc: QuotaExceeded) -> JSONResponse:
+        return JSONResponse(status_code=402, content={"detail": exc.body()})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    for r in (health.router, market.router, options.router, backtests.router, strategies.router, paper.router, ws.router):
+    # Public: health, sign-in, plans and the payment webhook. Market data needs a login; the paper runner is the
+    # operator's single shared runner until per-account runners exist (PRD §23.4 S1), so it is admin-only.
+    # Strategies, backtests, chat and speech resolve the caller themselves because their data is per account.
+    for r in (health.router, auth.router, billing.router, strategies.router, backtests.router, brokers.router, chat.router, speech.router, ws.router):
         app.include_router(r)
+    for r in (market.router, options.router):
+        app.include_router(r, dependencies=[Depends(current_principal)])
+    app.include_router(paper.router, dependencies=[Depends(require_admin)])
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict:

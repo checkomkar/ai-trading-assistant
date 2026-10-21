@@ -11,6 +11,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.30",
     "aiosqlite>=0.20",
     "asyncpg>=0.29",
+    "cryptography>=42",
     "alembic>=1.13",
     "pyyaml>=6.0",
     "tzdata>=2024.1",
