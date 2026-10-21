@@ -311,7 +311,11 @@ export async function uploadFile(file: File, save = true): Promise<KnowledgeDoc>
     body: file,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw failure(res, data);
+  if (!res.ok) {
+    if (res.status >= 502 && res.status <= 504)
+      throw new ApiError("The server could not finish reading this file (it may be too large or too complex). Try a smaller file, or split the PDF.", res.status);
+    throw failure(res, data);
+  }
   usageChanged();
   return data as KnowledgeDoc;
 }

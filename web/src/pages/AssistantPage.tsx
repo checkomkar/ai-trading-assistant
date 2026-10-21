@@ -127,6 +127,7 @@ export function AssistantPage() {
   const [text, setText] = useState("");
   const [pending, setPending] = useState<KnowledgeDoc[]>([]); // files attached to the message being written
   const [busy, setBusy] = useState<"send" | "upload" | null>(null);
+  const [reading, setReading] = useState<string | null>(null); // name of the file being uploaded and read
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Record<string, string>>({}); // card key -> confirmation
   const [newNote, setNewNote] = useState("");
@@ -183,6 +184,7 @@ export function AssistantPage() {
     setBusy("upload");
     setError(null);
     for (const f of Array.from(files)) {
+      setReading(f.name);
       try {
         const d = await uploadFile(f);
         setPending((p) => [...p, d]);
@@ -191,6 +193,7 @@ export function AssistantPage() {
         setError(`${f.name}: ${(e as Error).message}`);
       }
     }
+    setReading(null);
     setBusy(null);
     if (fileInput.current) fileInput.current.value = "";
   };
@@ -265,6 +268,13 @@ export function AssistantPage() {
     <div className="mx-auto w-full max-w-3xl px-4">
       {error && <p className="mb-2 rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-xs text-down" role="alert">{error}</p>}
       <div className="rounded-2xl border border-ink-700 bg-ink-850 p-2 shadow-lg shadow-black/20 focus-within:border-ink-600">
+        {reading && (
+          <div className="flex items-center gap-2 px-2 pb-2 pt-1 text-[12px] text-ink-300" role="status">
+            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
+            <span className="max-w-[260px] truncate">Reading {reading}…</span>
+            <span className="text-ink-400">large PDFs can take a minute</span>
+          </div>
+        )}
         {pending.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-1 pb-2 pt-1">
             {pending.map((d) => (
@@ -309,7 +319,7 @@ export function AssistantPage() {
             aria-label="Attach files"
             className="grid h-9 w-9 place-items-center rounded-full text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-50"
           >
-            {busy === "upload" ? <span className="text-[10px]">…</span> : <Icon d={I.clip} size={18} />}
+            {busy === "upload" ? <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-ink-600 border-t-accent" /> : <Icon d={I.clip} size={18} />}
           </button>
           <div className="ml-auto flex items-center gap-1">
             <MicButton compact disabled={!!busy} onError={setError} onText={(t) => setText((cur) => (cur.trim() ? `${cur.trim()} ${t}` : t))} />
