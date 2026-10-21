@@ -22,10 +22,19 @@ interface Connection {
   public: Record<string, string>;
   status: string;
   created_at: string;
+  session: { state: "signed_in" | "expired" | "none"; expires_at: string | null } | null;
+}
+interface TestResult {
+  ok: boolean;
+  needs_login?: boolean;
+  message?: string;
+  name?: string;
+  fy_id?: string;
+  nifty?: number | null;
 }
 
 export function BrokersPage() {
-  const [catalog, setCatalog] = useState<{ vault_ready: boolean; brokers: BrokerInfo[] } | null>(null);
+  const [catalog, setCatalog] = useState<{ vault_ready: boolean; fyers_redirect_uri: string; brokers: BrokerInfo[] } | null>(null);
   const [conns, setConns] = useState<Connection[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -33,7 +42,7 @@ export function BrokersPage() {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(() => {
-    getJSON<{ vault_ready: boolean; brokers: BrokerInfo[] }>("/brokers/catalog").then(setCatalog).catch((e) => setMsg({ ok: false, text: (e as Error).message }));
+    getJSON<{ vault_ready: boolean; fyers_redirect_uri: string; brokers: BrokerInfo[] }>("/brokers/catalog").then(setCatalog).catch((e) => setMsg({ ok: false, text: (e as Error).message }));
     getJSON<Connection[]>("/brokers/connections").then(setConns).catch(() => setConns([]));
   }, []);
   useEffect(load, [load]);
@@ -52,6 +61,28 @@ export function BrokersPage() {
       setMsg({ ok: false, text: (err as Error).message });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const [tests, setTests] = useState<Record<string, TestResult>>({});
+
+  const fyersSignIn = async () => {
+    setMsg(null);
+    try {
+      const r = await postJSON<{ url: string }>("/brokers/fyers/login-url", {});
+      window.location.href = r.url; // Fyers' own page; we never see the password
+    } catch (err) {
+      setMsg({ ok: false, text: (err as Error).message });
+    }
+  };
+  const fyersTest = async (id: string) => {
+    setMsg(null);
+    try {
+      const r = await postJSON<TestResult>("/brokers/fyers/test", {});
+      setTests((t) => ({ ...t, [id]: r }));
+      load();
+    } catch (err) {
+      setMsg({ ok: false, text: (err as Error).message });
     }
   };
 
@@ -98,8 +129,30 @@ export function BrokersPage() {
               <p className="mt-1 text-xs text-ink-400">{b.data_note} Check the broker's current pricing. {b.daily_login && "Sign-in is repeated daily, because the broker's token expires."}</p>
               {c && <p className="num mt-2 text-xs text-ink-300">{Object.entries(c.public).map(([k, v]) => `${k}: ${v}`).join(" · ")} · secrets saved</p>}
 
+              {c && b.id === "fyers" && c.session && (
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <span className={`rounded px-2 py-0.5 font-semibold ring-1 ${c.session.state === "signed_in" ? "bg-up/10 text-up ring-up/30" : "bg-sim/10 text-sim ring-sim/40"}`}>
+                    {c.session.state === "signed_in" ? `Signed in${c.session.expires_at ? ` until ${new Date(c.session.expires_at).toLocaleString()}` : ""}` : "Not signed in today"}
+                  </span>
+                  <button onClick={fyersSignIn} className="rounded-md bg-accent px-3 py-1.5 font-semibold text-ink-950">
+                    {c.session.state === "signed_in" ? "Sign in again" : "Sign in to Fyers"}
+                  </button>
+                  <button onClick={() => fyersTest(c.id)} className="rounded-md border border-ink-700 px-3 py-1.5 text-ink-100 hover:bg-ink-800">Test connection</button>
+                  {tests[c.id] && (
+                    <span className={tests[c.id].ok ? "text-up" : "text-down"} role="status">
+                      {tests[c.id].ok ? `Connected as ${tests[c.id].name} (${tests[c.id].fy_id})${tests[c.id].nifty ? ` · NIFTY ${tests[c.id].nifty}` : ""}` : tests[c.id].message}
+                    </span>
+                  )}
+                </div>
+              )}
               {editing === b.id ? (
                 <form onSubmit={(e) => save(e, b)} className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {b.id === "fyers" && catalog?.fyers_redirect_uri && (
+                    <p className="text-[11px] text-ink-400 sm:col-span-2">
+                      In your Fyers app (myapi.fyers.in), set the Redirect URL to exactly:{" "}
+                      <code className="select-all break-all rounded bg-ink-800 px-1.5 py-0.5 text-ink-100">{catalog.fyers_redirect_uri}</code>
+                    </p>
+                  )}
                   {b.fields.map((f) => (
                     <label key={f.key} className="block text-xs text-ink-300">
                       {f.label}

@@ -79,6 +79,7 @@ class MarketDataService:
         self.ref_prev_close: dict[str, float] = {}
         self._candle_tokens: set[str] = set()
         self._tasks: list[asyncio.Task] = []
+        self.memory_history: dict[tuple[str, str], list[Candle]] = {}  # (token, timeframe) -> closed candles, feeds that do not persist
         self._tick_times: deque[float] = deque(maxlen=5000)
         self._last_snapshot = 0.0
         self.started_at: datetime | None = None
@@ -123,6 +124,37 @@ class MarketDataService:
             asyncio.create_task(self._flush_loop(), name="md-flush"),
             asyncio.create_task(self._rebalance_loop(), name="md-rebalance"),
         ]
+
+    async def load_recent_history(self, days: int) -> None:
+        """For a feed with no database: keep the last few days of candles in memory so charts open with history."""
+        if self.sessionmaker or days <= 0:
+            return
+        now = self.now()
+        for inst in self._core_instruments():
+            for tf in self.candles.timeframes:
+                try:
+                    got = await self.provider.history(inst, tf, now - timedelta(days=days), now)
+                except ProviderAuthError:
+                    return  # same failure for every request
+                except Exception as exc:  # noqa: BLE001 - history is a convenience; live data matters more
+                    log.warning("memory history failed", event="history.memory_failed", symbol=inst.symbol, error=str(exc))
+                    continue
+                tf_len = TIMEFRAMES[tf]
+                self.memory_history[(inst.token, tf)] = [c for c in got if c.ts + tf_len <= now]
+
+    async def restart(self) -> None:
+        """Reconnect the feed with fresh credentials (the daily broker sign-in) without restarting the process."""
+        for t in self._tasks:
+            t.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
+        try:
+            await self.provider.disconnect()
+        except Exception:  # noqa: BLE001 - already broken is fine
+            pass
+        self.provider.reopen()
+        await self.start()
+        log.info("collector restarted", event="collector.restarted")
 
     # ---- subscriptions (PRD §17.3) ----------------------------------------------------
     def _core_instruments(self) -> list[Instrument]:

@@ -93,3 +93,22 @@ LIBRARY: list[dict] = [
 ]
 
 assert MOMENTUM_V1  # the PRD reference spec stays the first saved strategy
+
+
+CATEGORIES = ("Momentum", "Trend", "Scalp", "Sideways")
+
+
+def catalogue() -> list[dict]:
+    """The ready-made strategies for the Strategies tab, grouped by style. The style is the description's first word
+    (Momentum / Trend / Scalp / Sideways); the PRD reference spec is listed under Momentum."""
+    from trader.strategy.spec import StrategySpec, render_english
+
+    out = []
+    for raw in [MOMENTUM_V1, *LIBRARY]:
+        spec = StrategySpec.model_validate(raw)
+        head = (raw.get("description") or "").split(":", 1)[0].strip()
+        category = head if head in CATEGORIES else "Momentum"
+        out.append({"name": spec.name, "category": category, "description": raw.get("description", ""),
+                    "timeframe": spec.timeframe, "english": render_english(spec),
+                    "spec": spec.model_dump(mode="json", by_alias=True, exclude_none=True)})
+    return sorted(out, key=lambda e: CATEGORIES.index(e["category"]))

@@ -32,6 +32,7 @@ HISTORY_PAUSE_S = 0.35  # stay well under the per-second rate limit
 QUOTES_BATCH = 50
 SYMBOL_LIMIT_CODE = 51001
 CONTROL_TYPES = {"cn", "ful", "lit", "sub", "unsub", "cp", "cr", "msg"}
+_INSTRUMENT_CACHE: dict = {}
 AUTH_HINT = "Run: python -m trader.brokers.fyers.login"
 
 
@@ -165,6 +166,10 @@ class FyersMarketDataProvider(MarketDataProvider):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue | None = None
 
+    def reopen(self) -> None:
+        super().reopen()
+        self._rest = None  # built with the old token; the next call makes one with the fresh token
+
     # ---- credentials / clients ---------------------------------------------------------
     def _token(self) -> str:
         if not self.settings.fyers_client_id:
@@ -182,9 +187,15 @@ class FyersMarketDataProvider(MarketDataProvider):
 
     # ---- discovery -----------------------------------------------------------------------
     async def discover_instruments(self) -> list[Instrument]:
-        rows = await asyncio.to_thread(self._master_loader)
         today = self._now().astimezone(IST).date()
-        instruments, self._prev_oi = build_instruments(rows, today)
+        cached = _INSTRUMENT_CACHE.get(today)
+        if cached is None:  # parsed once per day however many feeds run; Instrument is immutable, so sharing is safe
+            rows = await asyncio.to_thread(self._master_loader)
+            cached = _INSTRUMENT_CACHE[today] = build_instruments(rows, today)
+            for old in [d for d in _INSTRUMENT_CACHE if d != today]:
+                del _INSTRUMENT_CACHE[old]
+        instruments, prev_oi = cached
+        self._prev_oi = dict(prev_oi)
         self._check_expiries(instruments)
         return instruments
 

@@ -1,0 +1,27 @@
+# For the 1 GB Oracle AMD Micro: SQLite instead of PostgreSQL, images built on your PC (see ship.sh).
+# On a bigger machine use docker-compose.prod.yml at the repo root instead.
+services:
+  api:
+    image: striktek-api:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AUTH_ENABLED: "true"
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}  # set false in .env only while testing over plain http
+      STORE_TICKS: "false"
+    volumes: [apidata:/app/data]
+    mem_limit: 600m
+
+  web:
+    image: striktek-web:latest
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports: ["80:80", "443:443"]
+    depends_on: [api]
+    volumes: [caddy:/data]
+    mem_limit: 150m
+
+volumes:
+  apidata:
+  caddy:

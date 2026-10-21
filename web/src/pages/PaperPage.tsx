@@ -28,7 +28,7 @@ const OUTCOME: Record<string, { label: string; cls: string }> = {
 const SOURCE_NOTE: Record<string, string> = {
   replay: "REPLAY · synthetic option quotes",
   simulated: "SIMULATED data",
-  fyers: "LIVE quotes · Fyers",
+  fyers: "LIVE DATA · SHADOW (no real orders)",
 };
 
 export function PaperPage() {
@@ -106,6 +106,7 @@ export function PaperPage() {
           <h1 className="text-sm font-semibold">Paper trading</h1>
           <p className="text-[11px] text-ink-400">
             Virtual money. Orders come only from strategies, through the risk engine.
+            On live data, each entry also logs the exact order a broker would receive (Events: shadow.order). It is never sent.
           </p>
         </div>
         {status && (

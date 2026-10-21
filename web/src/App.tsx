@@ -11,7 +11,9 @@ import { PaperPage } from "./pages/PaperPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { PricingPage } from "./pages/PricingPage";
 import { BrokersPage } from "./pages/BrokersPage";
+import { RISK_WARNING } from "./pages/LegalPage";
 import { UpgradePrompt } from "./components/UpgradePrompt";
+import { ConnectBrokerCard } from "./components/ConnectBrokerCard";
 import { useAuth } from "./auth";
 import { brand } from "./brand";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -62,7 +64,7 @@ export default function App() {
     <div className={view === "assistant" ? "flex h-dvh flex-col overflow-hidden" : "flex min-h-full flex-col"}>
       <Header session={market?.session ?? null} simulated={market?.simulated ?? null} provider={market?.provider ?? null} socket={socket} feed={market?.feed ?? null} mode={mode} view={view} showPaper={showPaper} />
 
-      {market?.feed.error && !market.feed.connected && (
+      {market?.feed.error && !market.feed.connected && !market.feed.action && (
         <div className="border-b border-down/30 bg-down/10 px-4 py-2 text-xs text-down sm:px-6" role="alert">
           <span className="font-semibold">Market data stopped:</span> {market.feed.error}
         </div>
@@ -88,6 +90,8 @@ export default function App() {
         <ErrorBoundary label="Assistant page">
           <AssistantPage />
         </ErrorBoundary>
+      ) : market?.feed.action ? (
+        <ConnectBrokerCard action={market.feed.action} message={market.feed.error} />
       ) : (
       <main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 gap-4 p-4 sm:p-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
         <div className="flex min-w-0 flex-col gap-4">
@@ -111,8 +115,11 @@ export default function App() {
       </main>
       )}
 
-      <footer className="border-t border-ink-800 px-6 py-2 text-[11px] text-ink-400">
-        {brand.name} · {brand.tagline}. Paper trading only: virtual money, no live orders. Data → Analysis → Paper.
+      <footer className="border-t border-ink-800 px-6 py-3 text-[11px] text-ink-400">
+        <p className="font-medium text-down/90">Risk warning: {RISK_WARNING}</p>
+        <p className="mt-1">
+          {brand.name} · {brand.tagline}. Data → Analysis → Paper, no real orders. <a className="underline hover:text-ink-100" href="#/terms">Terms</a> · <a className="underline hover:text-ink-100" href="#/privacy">Privacy</a>
+        </p>
       </footer>
       <UpgradePrompt />
     </div>

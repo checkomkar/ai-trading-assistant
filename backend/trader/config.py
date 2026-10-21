@@ -119,11 +119,26 @@ class Settings(BaseSettings):
     # Per-user broker API keys are encrypted with this Fernet key (generate: python -m trader.scripts.accounts gen-key).
     credential_key: str = Field(default="", repr=False)
     auth_enabled: bool = False
+    # The public address of the site (https://striktek.si). Broker sign-ins send the browser back here; empty = use the request's own host.
+    public_url: str = ""
+    # Per-customer live feeds (market_data/feeds.py): how many may run at once on this machine, how long an unused one
+    # stays up, and how many days of candles it loads for charts.
+    max_user_feeds: int = 4
+    feed_idle_seconds: int = 600
+    feed_history_days: int = 3
     auth_session_days: int = 30
     auth_cookie_secure: bool = False  # true behind HTTPS
     signup_open: bool = True
     signup_invite_code: str = Field(default="", repr=False)  # non-empty = sign-up needs this code (closed beta)
     admin_emails: str = ""  # comma list; these accounts are admins and have the unlimited "owner" plan
+    # Google sign-in: the OAuth "Web client" id from Google Cloud Console (public, not a secret). Empty = button hidden.
+    google_client_id: str = ""
+    # Phone OTP sign-in. sms_provider: "" (off) | "console" (logs the code: local testing only) | "twilio".
+    sms_provider: str = ""
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = Field(default="", repr=False)
+    twilio_from: str = ""  # a Twilio number or messaging service sender
+    otp_ttl_seconds: int = 300
     # Razorpay subscriptions. Create the plans in the dashboard (monthly, INR) and paste their ids here.
     razorpay_key_id: str = ""
     razorpay_key_secret: str = Field(default="", repr=False)

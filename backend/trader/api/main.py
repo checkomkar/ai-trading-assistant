@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from trader.api.deps import current_principal, require_admin
 from trader.api.routes import auth, backtests, billing, brokers, chat, health, market, options, paper, speech, strategies, ws
+from trader.accounts.sms import build_sender
 from trader.billing.meter import Meter, QuotaExceeded
 from trader.config import Settings, get_settings
 from trader.db.migrate import upgrade_db
@@ -18,6 +19,7 @@ from trader.execution.service import PaperService
 from trader.db.session import create_engine, create_sessionmaker
 from trader.logging import configure_logging, get_logger
 from trader.market_data.factory import create_provider
+from trader.market_data.feeds import FeedManager
 from trader.market_data.service import MarketDataService
 
 log = get_logger("api")
@@ -35,6 +37,8 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         app.state.engine = engine
         app.state.sessionmaker = create_sessionmaker(engine)
         app.state.meter = Meter(app.state.sessionmaker)
+        app.state.sms = build_sender(settings)
+        app.state.feeds = FeedManager(settings, app.state.sessionmaker)
         provider = create_provider(settings, app.state.sessionmaker)
         # A replay has its own clock and must never write its synthetic ticks into the real tables.
         md = MarketDataService(provider, app.state.sessionmaker if provider.persist_market_data else None,
@@ -54,6 +58,7 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         try:
             yield
         finally:
+            await app.state.feeds.stop_all()
             if start_collector:
                 await app.state.paper.stop()
                 await app.state.paper.store.flush()

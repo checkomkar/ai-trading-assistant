@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 
-from trader.api.deps import get_md
+from trader.api.deps import get_md, get_user_md
 from trader.instruments.specs import UNDERLYINGS, VIX_SYMBOL
 from trader.market_data.service import MarketDataService
 
@@ -31,7 +31,7 @@ async def health(request: Request, md: MarketDataService = Depends(get_md)) -> d
 
 
 @router.get("/feed")
-async def feed(md: MarketDataService = Depends(get_md)) -> dict:
+async def feed(md: MarketDataService = Depends(get_user_md)) -> dict:
     h = md.provider.health
     now = md.now()
     ages = {}
@@ -57,7 +57,7 @@ async def feed(md: MarketDataService = Depends(get_md)) -> dict:
 
 
 @router.get("/data")
-async def data(md: MarketDataService = Depends(get_md)) -> dict:
+async def data(md: MarketDataService = Depends(get_user_md)) -> dict:
     snap = md.quality.snapshot()
     snap["stale_symbols"] = [
         (md.registry.by_token(t).symbol if md.registry.by_token(t) else t) for t in snap["stale_tokens"]
