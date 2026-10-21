@@ -264,11 +264,12 @@ export interface Coverage {
   simulated: { candles: number; from: string | null; to: string | null; stored_timeframes: string[]; built_from: string | null };
 }
 
-export async function postJSON<T>(path: string, body: unknown): Promise<T> {
+export async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw failure(res, data);

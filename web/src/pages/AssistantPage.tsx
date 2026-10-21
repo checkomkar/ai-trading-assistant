@@ -52,6 +52,7 @@ const I = {
   plus: "M12 5v14M5 12h14",
   clip: "M21.4 11.1l-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8",
   up: "M12 19V5M5 12l7-7 7 7",
+  stop: "M7 7h10v10H7z",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
   copy: "M9 9h11v11H9zM5 15H4V4h11v1",
   sidebar: "M3 4h18v16H3zM9 4v16",
@@ -140,6 +141,7 @@ export function AssistantPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  const abort = useRef<AbortController | null>(null); // the reply being waited for, so Stop can cancel it
 
   const loadSide = useCallback(async () => {
     const [c, d, m] = await Promise.all([
@@ -261,6 +263,7 @@ export function AssistantPage() {
     setBusy("send");
     setError(null);
     let id = active;
+    let tmpId = "";
     try {
       if (!id) {
         id = (await postJSON<{ id: string }>("/chat/conversations", {})).id;
@@ -269,17 +272,25 @@ export function AssistantPage() {
       const docIds = pending.map((d) => d.id);
       const lower = body.toLowerCase();
       const focusIds = docs.filter((d) => lower.includes(`@${d.filename.toLowerCase()}`)).map((d) => d.id); // files named with @
-      setMsgs((m) => [...m, { id: `tmp${Date.now()}`, role: "user", content: body, cards: [], doc_ids: docIds }]);
+      tmpId = `tmp${Date.now()}`;
+      setMsgs((m) => [...m, { id: tmpId, role: "user", content: body, cards: [], doc_ids: docIds }]);
       setText("");
       setMention(null);
       setPending([]);
-      const reply = await postJSON<Msg>(`/chat/conversations/${id}/messages`, { text: body, doc_ids: docIds, focus_doc_ids: focusIds });
+      abort.current = new AbortController();
+      const reply = await postJSON<Msg>(`/chat/conversations/${id}/messages`, { text: body, doc_ids: docIds, focus_doc_ids: focusIds }, abort.current.signal);
       setMsgs((m) => [...m, reply]);
       await loadSide();
     } catch (e) {
-      setError((e as Error).message);
-      if (id) open(id); // drop the optimistic message if the server stored nothing
+      if ((e as Error).name === "AbortError") {
+        setText(body); // stopped: the server drops the turn, so the question goes back into the box
+        setMsgs((m) => m.filter((x) => x.id !== tmpId));
+      } else {
+        setError((e as Error).message);
+        if (id) open(id); // drop the optimistic message if the server stored nothing
+      }
     } finally {
+      abort.current = null;
       setBusy(null);
     }
   };
@@ -403,15 +414,26 @@ export function AssistantPage() {
           </button>
           <div className="ml-auto flex items-center gap-1">
             <MicButton compact disabled={!!busy} onError={setError} onText={(t) => setText((cur) => (cur.trim() ? `${cur.trim()} ${t}` : t))} />
-            <button
-              onClick={() => send()}
-              disabled={!!busy || !text.trim()}
-              aria-label="Send message"
-              title="Send (Enter)"
-              className="grid h-9 w-9 place-items-center rounded-full bg-accent text-ink-950 transition hover:brightness-110 disabled:bg-ink-700 disabled:text-ink-400"
-            >
-              <Icon d={I.up} size={18} />
-            </button>
+            {busy === "send" ? (
+              <button
+                onClick={() => abort.current?.abort()}
+                aria-label="Stop"
+                title="Stop"
+                className="grid h-9 w-9 place-items-center rounded-full bg-ink-100 text-ink-950 transition hover:brightness-90"
+              >
+                <Icon d={I.stop} size={16} />
+              </button>
+            ) : (
+              <button
+                onClick={() => send()}
+                disabled={!!busy || !text.trim()}
+                aria-label="Send message"
+                title="Send (Enter)"
+                className="grid h-9 w-9 place-items-center rounded-full bg-accent text-ink-950 transition hover:brightness-110 disabled:bg-ink-700 disabled:text-ink-400"
+              >
+                <Icon d={I.up} size={18} />
+              </button>
+            )}
           </div>
         </div>
       </div>

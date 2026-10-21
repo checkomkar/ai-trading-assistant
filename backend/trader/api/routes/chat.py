@@ -273,6 +273,8 @@ async def send(request: Request, conv_id: str, body: MessageIn, user: CurrentUse
             result = await run_chat(mp, tools, history, model_text, memory_notes, docs_all, attached, await _snapshot(tools))
     except TranslatorUnavailable as exc:
         raise HTTPException(503, str(exc)) from None
+    if await request.is_disconnected():  # the trader pressed Stop: keep nothing from this turn
+        raise HTTPException(499, "cancelled")
     async with sm() as s, s.begin():
         conv = await repo.get_conversation(s, conv_id, user.id)
         if conv is None:  # deleted while the model was thinking
