@@ -165,6 +165,10 @@ class FyersMarketDataProvider(MarketDataProvider):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue | None = None
 
+    def reopen(self) -> None:
+        super().reopen()
+        self._rest = None  # built with the old token; the next call makes one with the fresh token
+
     # ---- credentials / clients ---------------------------------------------------------
     def _token(self) -> str:
         if not self.settings.fyers_client_id:

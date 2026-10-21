@@ -298,3 +298,56 @@ def test_ready_made_strategies_need_a_login_and_do_not_use_up_the_strategy_limit
     assert lib["categories"] == ["Momentum", "Trend", "Scalp", "Sideways"] and len(lib["strategies"]) >= 11
     assert client.get("/strategies").json() == []  # browsing the catalogue saves nothing
     assert client.get("/billing/usage").json()["usage"]["strategies"]["used"] == 0
+
+
+def test_operator_fyers_sign_in_restarts_the_shared_feed_but_a_customers_does_not(tmp_path, monkeypatch):
+    import base64
+    import time
+
+    from trader.accounts import vault
+    from trader.api.routes import brokers as br
+
+    jwt = lambda: "h." + base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode()).decode().rstrip("=") + ".s"  # noqa: E731
+    key = vault.generate_key()
+    st = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{(tmp_path / 'o.db').as_posix()}", market_data_provider="fyers",
+                  fyers_client_id="OP-100", fyers_secret_key="x", auth_enabled=True, credential_key=key, admin_emails="boss@x.com",
+                  public_url="https://s.example")
+    monkeypatch.setattr(br, "exchange_auth_code", lambda s, c, post=None: jwt())
+    saved = []
+    monkeypatch.setattr(br.fyers_auth, "save_token", lambda path, cid, tok: saved.append((cid, tok)))
+
+    def sign_in(c, email, client_id):
+        signup(c, email)
+        c.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": client_id, "secret_key": "S"}})
+        import urllib.parse
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(c.post("/brokers/fyers/login-url").json()["url"]).query))
+        return c.get("/brokers/fyers/callback", params={"auth_code": "ok", "state": q["state"]}, follow_redirects=False)
+
+    from trader.market_data.service import MarketDataService
+
+    restarts = []
+
+    async def fake_restart(self):
+        restarts.append(1)
+
+    monkeypatch.setattr(MarketDataService, "restart", fake_restart)
+    app = create_app(st, start_collector=False)
+    with TestClient(app) as c:
+        assert sign_in(c, "cust@x.com", "OP-100").status_code == 303  # same app id, but not the operator
+        assert saved == [] and restarts == []
+        c.post("/auth/logout")
+        assert sign_in(c, "boss@x.com", "OTHER-100").status_code == 303  # operator, but a different app
+        assert saved == []
+        c.post("/auth/logout")
+        c.post("/auth/login", json={"email": "boss@x.com", "password": PW})
+        c.post("/brokers/connections", json={"broker": "fyers", "values": {"client_id": "OP-100", "secret_key": "S"}})
+        import urllib.parse
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(c.post("/brokers/fyers/login-url").json()["url"]).query))
+        assert c.get("/brokers/fyers/callback", params={"auth_code": "ok", "state": q["state"]}, follow_redirects=False).status_code == 303
+        assert saved and saved[0][0] == "OP-100"
+        import time as _t
+        for _ in range(20):
+            if restarts:
+                break
+            _t.sleep(0.1)
+        assert restarts == [1]

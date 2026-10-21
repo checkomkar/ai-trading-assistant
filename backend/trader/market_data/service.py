@@ -124,6 +124,20 @@ class MarketDataService:
             asyncio.create_task(self._rebalance_loop(), name="md-rebalance"),
         ]
 
+    async def restart(self) -> None:
+        """Reconnect the feed with fresh credentials (the daily broker sign-in) without restarting the process."""
+        for t in self._tasks:
+            t.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
+        try:
+            await self.provider.disconnect()
+        except Exception:  # noqa: BLE001 - already broken is fine
+            pass
+        self.provider.reopen()
+        await self.start()
+        log.info("collector restarted", event="collector.restarted")
+
     # ---- subscriptions (PRD §17.3) ----------------------------------------------------
     def _core_instruments(self) -> list[Instrument]:
         core = [i for sym in (*UNDERLYINGS, VIX_SYMBOL) if (i := self.registry.index(sym))]

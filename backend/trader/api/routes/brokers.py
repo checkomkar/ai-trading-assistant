@@ -186,7 +186,26 @@ async def fyers_callback(request: Request, user: CurrentUser, auth_code: str = "
             return _page(f"Fyers refused the sign-in: {exc}", False)
         keys["access_token"] = token
         row.secret_blob = vault.seal(keys, request.app.state.settings.credential_key)
+    _feed_with_owner_token(request, user, keys["client_id"], token)
     return RedirectResponse("/#/brokers", status_code=303)
+
+
+def _feed_with_owner_token(request: Request, user, client_id: str, token: str) -> None:
+    """The site's one shared live feed runs on the OPERATOR's Fyers app. When the operator signs in here with that same app,
+    hand the token to the feed and restart it, so the daily sign-in needs no file copying. A customer's token never reaches
+    the shared feed (it would put their account behind everyone's data)."""
+    st = request.app.state.settings
+    if not (user.is_admin and st.market_data_provider == "fyers" and client_id == st.fyers_client_id):
+        return
+    fyers_auth.save_token(fyers_auth.token_path(st), client_id, token)
+
+    async def go() -> None:
+        try:
+            await request.app.state.md.restart()
+        except Exception as exc:  # noqa: BLE001 - the sign-in itself succeeded; the feed error shows in /health/feed
+            request.app.state.md.provider.health.last_error = f"restart failed: {exc}"
+
+    request.app.state.feed_restart = asyncio.create_task(go())  # kept so it is not garbage-collected mid-run
 
 
 exchange_auth_code = fyers_auth.exchange_auth_code  # module-level so tests can replace it

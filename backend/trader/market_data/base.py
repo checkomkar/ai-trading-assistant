@@ -148,6 +148,11 @@ class MarketDataProvider(ABC):
         if self._subscribed:
             await self._on_subscribe(set(self._subscribed))
 
+    def reopen(self) -> None:
+        """Allow a provider that was shut down (or gave up on bad credentials) to connect again."""
+        self._closing = False
+        self.health.last_error = None
+
     def heartbeat(self) -> None:
         self.health.last_heartbeat_at = datetime.now(timezone.utc)
 

@@ -39,3 +39,7 @@ It builds both images here, copies them over SSH, copies `.env` and the compose 
 - Updates: run `ship.sh` again; data survives in the `apidata` volume.
 - Memory: `docker stats` and `free -m`. If the API restarts under load, this machine is too small; use an A1 or a paid VPS and the portability guide.
 - Fyers: the daily 06:00 IST sign-in still needs you (see the Fyers connect-and-test work in the roadmap).
+
+## Daily Fyers sign-in (no file copying)
+Sign in as the operator (an `ADMIN_EMAILS` account) on the **Brokers** page, save the Fyers app that matches `FYERS_CLIENT_ID` in `.env`, and press **Sign in to Fyers** each morning after 06:00 IST.
+The token goes to the site's shared feed and the collector restarts by itself. A customer's sign-in never reaches the shared feed. `push-fyers-token.sh` remains as a fallback.
