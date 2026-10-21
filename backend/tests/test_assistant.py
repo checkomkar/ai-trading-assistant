@@ -137,6 +137,61 @@ async def test_engine_survives_unknown_tool_and_tool_errors():
     assert "unknown tool" in p.calls[1][1][-1]["content"] and "db down" in p.calls[2][1][-1]["content"]
 
 
+def test_blank_pages_are_found_and_ocr_text_is_merged_back_in_place():
+    from trader.ai import knowledge as k
+
+    text = "[page 1]\nReal text on page one is long enough.\n\n[page 2]\n\n\n[page 3]\n\n\n[page 4]\nAnother page with real text here."
+    assert k.blank_pdf_pages(text) == [2, 3]
+    merged = k.merge_page_text(text, {2: "Scanned rule: buy the pullback"})
+    assert "[page 2]\nScanned rule: buy the pullback" in merged and "Real text on page one" in merged and "Another page" in merged
+    assert k.blank_pdf_pages(merged) == [3]
+
+
+def test_ocr_reads_images_on_the_requested_pages_and_survives_a_bad_page(monkeypatch):
+    import pypdf
+
+    from trader.ai import knowledge as k
+
+    class Img:
+        def __init__(self, image):
+            self.image = image
+
+    class Page:
+        def __init__(self, images):
+            self.images = images
+
+    class Reader:
+        def __init__(self, _):
+            self.pages = [Page([Img("a")]), Page([Img("bad")]), Page([Img("c")])]
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+
+    def fake(img):
+        if img == "bad":
+            raise RuntimeError("tesseract timeout")
+        return f" text-{img} "
+
+    assert k.ocr_pdf_pages(b"x", [1, 2, 3], ocr=fake) == {1: "text-a", 3: "text-c"}
+
+
+def test_scanned_pdf_is_stored_at_once_then_filled_in_by_ocr(client, monkeypatch):
+    import time
+
+    from trader.api.routes import chat as chat_routes
+
+    monkeypatch.setattr(chat_routes, "ocr_available", lambda: True)
+    monkeypatch.setattr(chat_routes, "extract_text", lambda f, c, d: ("pdf", "[page 1]\nA page with plenty of real text.\n\n[page 2]\n"))
+    monkeypatch.setattr(chat_routes, "ocr_pdf_pages", lambda data, pages: {p: f"Scanned rule {p}: wait for the pullback" for p in pages})
+    doc = upload(client, "book.pdf", b"%PDF-fake").json()
+    assert doc["status"] == "ocr"
+    for _ in range(50):
+        docs = client.get("/knowledge/docs").json()["docs"]
+        if docs[0]["status"] != "ocr":
+            break
+        time.sleep(0.1)
+    assert docs[0]["status"] == "ready" and docs[0]["chars"] > doc["chars"]  # the scanned page's text was added
+
+
 async def test_engine_asks_for_a_final_answer_instead_of_running_out_of_steps():
     p = Scripted(*[tool("t")] * (chat_mod.MAX_STEPS - 1), answer("Summary of the files."))
     r = await chat_mod.run_chat(p, {"t": chat_mod.Tool("t", _noop)}, [], "q", [], [])

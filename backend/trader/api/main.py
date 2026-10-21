@@ -38,6 +38,9 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         app.state.sessionmaker = create_sessionmaker(engine)
         app.state.meter = Meter(app.state.sessionmaker)
         app.state.sms = build_sender(settings)
+        app.state.ocr_lock = asyncio.Lock()  # one OCR job at a time
+        app.state.ocr_active = set()
+        app.state.ocr_tasks = set()
         app.state.feeds = FeedManager(settings, app.state.sessionmaker)
         provider = create_provider(settings, app.state.sessionmaker)
         # A replay has its own clock and must never write its synthetic ticks into the real tables.

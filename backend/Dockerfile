@@ -2,6 +2,8 @@
 FROM python:3.10-slim
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
+# OCR for scanned PDFs (free, runs on the server itself)
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY trader ./trader
 RUN pip install -e .

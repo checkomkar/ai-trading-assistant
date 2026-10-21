@@ -298,7 +298,7 @@ export interface KnowledgeDoc {
   filename: string;
   kind: string;
   size_bytes: number;
-  status: "ready" | "no_text" | "no_vision";
+  status: "ready" | "no_text" | "no_vision" | "ocr";
   summary: string;
   chars: number;
 }

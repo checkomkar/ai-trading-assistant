@@ -10,7 +10,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from trader.ai.chat import run_chat
-from trader.ai.knowledge import MAX_UPLOAD_BYTES, UnsupportedFile, extract_text, image_mime
+from trader.ai.knowledge import (MAX_OCR_PAGES, MAX_UPLOAD_BYTES, UnsupportedFile, blank_pdf_pages, extract_text, image_mime,
+                                 merge_page_text, ocr_available, ocr_pdf_pages)
 from trader.ai.providers import LLMProvider, TranslatorUnavailable, build_provider
 from trader.api.chat_tools import build_tools
 from trader.api.deps import CurrentUser, MeterDep
@@ -65,6 +66,31 @@ async def _summarise(meter: Meter, user, provider: LLMProvider, filename: str, t
         return excerpt
 
 
+OCR_BATCH = 10  # pages per step; the text becomes searchable after each step
+
+
+async def _ocr_job(app, doc_id: str, owner: str, data: bytes, text: str, pages: list[int]) -> None:
+    """Read the scanned pages of a stored PDF in the background (one job at a time: tesseract is heavy on a small server)."""
+    active = app.state.ocr_active
+    active.add(doc_id)
+    try:
+        async with app.state.ocr_lock:
+            for i in range(0, len(pages), OCR_BATCH):
+                found = await asyncio.to_thread(ocr_pdf_pages, data, pages[i:i + OCR_BATCH])
+                text = merge_page_text(text, found)
+                done = i + OCR_BATCH >= len(pages)
+                async with app.state.sessionmaker() as s, s.begin():
+                    left = bool(blank_pdf_pages(text)) and not done
+                    status = "ocr" if left else ("ready" if text.strip() else "no_text")
+                    await repo.replace_doc_text(s, doc_id, text=text, status=status,
+                                                summary=" ".join(text[:300].split()) if done else None, owner=owner)
+    except Exception:  # noqa: BLE001 - whatever was read stays; the file just stops being "reading"
+        async with app.state.sessionmaker() as s, s.begin():
+            await repo.replace_doc_text(s, doc_id, text=text, status="ready" if text.strip() else "no_text", owner=owner)
+    finally:
+        active.discard(doc_id)
+
+
 @router.post("/knowledge/upload")
 async def upload(request: Request, user: CurrentUser, meter: MeterDep, filename: str = Query(..., max_length=200),
                  save: bool = True) -> dict:
@@ -102,17 +128,34 @@ async def upload(request: Request, user: CurrentUser, meter: MeterDep, filename:
         status = "no_text"  # e.g. a scanned PDF
     if not save:
         return {"filename": filename, "kind": kind, "status": status, "text": text[:20000]}
+    scanned = blank_pdf_pages(text)[:MAX_OCR_PAGES] if kind == "pdf" and ocr_available() else []
+    if scanned:
+        status = "ocr"  # scanned pages are read in the background; the rest of the file is usable at once
     summary = await _summarise(meter, user, provider, filename, text) if provider is not None else " ".join(text[:300].split())
     async with request.app.state.sessionmaker() as s, s.begin():
         doc = await repo.add_doc(s, filename=filename, mime=ctype or "application/octet-stream", kind=kind,
                                  size=len(data), status=status, text=text, summary=summary, owner=user.id)
-        return _doc(doc)
+        out = _doc(doc)
+    if scanned:
+        app = request.app
+        task = asyncio.create_task(_ocr_job(app, out["id"], user.id, data, text, scanned))
+        app.state.ocr_tasks.add(task)
+        task.add_done_callback(app.state.ocr_tasks.discard)
+    return out
 
 
 @router.get("/knowledge/docs")
 async def docs(request: Request, user: CurrentUser) -> dict:
+    active = request.app.state.ocr_active
     async with request.app.state.sessionmaker() as s:
-        return {"docs": [_doc(d) for d in await repo.list_docs(s, user.id)]}
+        rows = await repo.list_docs(s, user.id)
+    out = []
+    for d in rows:
+        item = _doc(d)
+        if d.status == "ocr" and d.id not in active:  # the server restarted mid-way: keep what was read
+            item["status"] = "ready" if d.text.strip() else "no_text"
+        out.append(item)
+    return {"docs": out}
 
 
 @router.delete("/knowledge/docs/{doc_id}")

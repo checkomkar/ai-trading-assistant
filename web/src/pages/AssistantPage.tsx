@@ -153,6 +153,19 @@ export function AssistantPage() {
     loadSide().catch((e) => setError((e as Error).message));
   }, [loadSide]);
 
+  // Scanned PDFs are read in the background: while any file is still being read, refresh the list every few seconds.
+  const anyReading = docs.some((d) => d.status === "ocr");
+  useEffect(() => {
+    if (!anyReading) return;
+    const t = setInterval(() => {
+      getJSON<{ docs: KnowledgeDoc[] }>("/knowledge/docs").then((d) => {
+        setDocs(d.docs);
+        setPending((p) => p.map((x) => d.docs.find((y) => y.id === x.id) ?? x));
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [anyReading]);
+
   useEffect(() => {
     // Scroll only the message list; scrollIntoView would also scroll the whole page.
     const el = scroller.current;
@@ -281,7 +294,8 @@ export function AssistantPage() {
               <span key={d.id} className="flex items-center gap-1.5 rounded-lg border border-ink-700 bg-ink-900 py-1 pl-2 pr-1 text-[12px] text-ink-300">
                 <Icon d={I.file} size={13} />
                 <span className="max-w-[180px] truncate">{d.filename}</span>
-                {d.status !== "ready" && <span className="text-down">{d.status === "no_vision" ? "can't read image yet" : "no text found"}</span>}
+                {d.status === "ocr" && <span className="text-accent">reading scanned pages…</span>}
+                {d.status !== "ready" && d.status !== "ocr" && <span className="text-down">{d.status === "no_vision" ? "can't read image yet" : "no text found"}</span>}
                 <button onClick={() => setPending((p) => p.filter((x) => x.id !== d.id))} aria-label="Remove attachment" className="rounded p-0.5 text-ink-400 hover:bg-ink-800 hover:text-down">
                   <Icon d={I.x} size={12} />
                 </button>
@@ -563,7 +577,7 @@ export function AssistantPage() {
                         </button>
                       </div>
                       <div className="mt-1 text-[11px] text-ink-400">
-                        {d.kind} · {d.status === "ready" ? d.summary || `${d.chars} characters` : d.status === "no_vision" ? "no image model available to read this" : "no text found (scanned document?)"}
+                        {d.kind} · {d.status === "ready" ? d.summary || `${d.chars} characters` : d.status === "ocr" ? "reading scanned pages in the background…" : d.status === "no_vision" ? "no image model available to read this" : "no text found (scanned document?)"}
                       </div>
                     </li>
                   ))}

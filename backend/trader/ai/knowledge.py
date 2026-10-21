@@ -9,11 +9,16 @@ import csv
 import io
 import math
 import re
+import shutil
 from collections import Counter
+from typing import Callable
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_TEXT_CHARS = 400_000
 MAX_PDF_PAGES = 600
+MIN_PAGE_CHARS = 25  # a page with less text than this is treated as a scan
+MAX_OCR_PAGES = 150
+OCR_MAX_SIDE = 2000  # downscale big scans before OCR: faster, and plenty for printed text
 CHUNK_CHARS = 1200
 CHUNK_OVERLAP = 150
 
@@ -73,6 +78,66 @@ def _pdf(data: bytes) -> str:
         total += len(text)
         parts.append(f"[page {i}]\n{text}")
     return "\n\n".join(parts)
+
+
+_PAGE_MARK = re.compile(r"^\[page (\d+)\]\n", re.M)
+
+
+def blank_pdf_pages(text: str) -> list[int]:
+    """Page numbers whose extracted text is (nearly) empty: scanned pages that OCR could read."""
+    marks = list(_PAGE_MARK.finditer(text))
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        if len(text[m.end():end].strip()) < MIN_PAGE_CHARS:
+            out.append(int(m.group(1)))
+    return out
+
+
+def merge_page_text(text: str, found: dict[int, str]) -> str:
+    """Put OCR text into the matching '[page N]' sections of an extracted PDF text."""
+    marks = list(_PAGE_MARK.finditer(text))
+    parts = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        n = int(m.group(1))
+        body = found.get(n) or text[m.end():end].strip()
+        parts.append(f"[page {n}]\n{body}")
+    return "\n\n".join(parts)
+
+
+def ocr_available() -> bool:
+    """OCR needs the tesseract program (apt install tesseract-ocr) and the pytesseract package."""
+    try:
+        import pytesseract  # noqa: F401
+    except ImportError:
+        return False
+    return shutil.which("tesseract") is not None
+
+
+def _tesseract(image) -> str:
+    import pytesseract
+
+    if max(image.size) > OCR_MAX_SIDE:
+        image.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE))
+    return pytesseract.image_to_string(image.convert("L"), timeout=90)
+
+
+def ocr_pdf_pages(data: bytes, pages: list[int], ocr: Callable | None = None) -> dict[int, str]:
+    """OCR the pictures on the given (1-based) pages. A page that fails is skipped, never fatal."""
+    from pypdf import PdfReader
+
+    ocr = ocr or _tesseract
+    reader = PdfReader(io.BytesIO(data))
+    found: dict[int, str] = {}
+    for n in pages:
+        try:
+            texts = [ocr(img.image).strip() for img in reader.pages[n - 1].images]
+        except Exception:  # noqa: BLE001 - odd image, tesseract timeout...
+            continue
+        if any(texts):
+            found[n] = "\n".join(t for t in texts if t)
+    return found
 
 
 def _docx(data: bytes) -> str:
