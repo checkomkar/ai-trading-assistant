@@ -8,7 +8,8 @@ import time
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from trader.accounts import repo as accounts
+from trader.accounts import google, otp, repo as accounts
+from trader.accounts.sms import SmsUnavailable
 from trader.api.deps import COOKIE, CurrentUser
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -28,6 +29,22 @@ def _throttled(key: str) -> bool:
 class SignupIn(BaseModel):
     email: str = Field(max_length=254)
     password: str = Field(max_length=256)
+    name: str = Field("", max_length=80)
+    invite_code: str = Field("", max_length=64)
+
+
+class GoogleIn(BaseModel):
+    credential: str = Field(max_length=4096)
+    invite_code: str = Field("", max_length=64)
+
+
+class OtpSendIn(BaseModel):
+    phone: str = Field(max_length=32)
+
+
+class OtpVerifyIn(BaseModel):
+    phone: str = Field(max_length=32)
+    code: str = Field(max_length=12)
     name: str = Field("", max_length=80)
     invite_code: str = Field("", max_length=64)
 
@@ -57,7 +74,8 @@ async def me(request: Request) -> dict:
 
     p = await _principal(request.app.state.sessionmaker, request.cookies.get(COOKIE))
     return {**(_me(p, True) if p else {"auth_enabled": True}), "signed_in": p is not None,
-            "signup_open": st.signup_open, "invite_required": bool(st.signup_invite_code)}
+            "signup_open": st.signup_open, "invite_required": bool(st.signup_invite_code),
+            "google_client_id": st.google_client_id or None, "phone_login": request.app.state.sms is not None}
 
 
 @router.post("/signup")
@@ -113,3 +131,74 @@ async def logout(request: Request, response: Response) -> dict:
 @router.get("/session")
 async def session_info(user: CurrentUser, request: Request) -> dict:
     return _me(user, request.app.state.settings.auth_enabled)
+
+
+def _may_create(request: Request, invite_code: str) -> bool:
+    """Whether a NEW account may be made by this request (existing accounts can always sign in)."""
+    st = request.app.state.settings
+    if not st.signup_open:
+        return False
+    return not st.signup_invite_code or hmac.compare_digest(invite_code.encode(), st.signup_invite_code.encode())
+
+
+@router.post("/google")
+async def google_login(request: Request, response: Response, body: GoogleIn) -> dict:
+    st = request.app.state.settings
+    if not st.auth_enabled:
+        raise HTTPException(404, "Accounts are not enabled on this server.")
+    verify = getattr(request.app.state, "google_verify", None) or google.verify_id_token
+    try:
+        who = await verify(body.credential, st.google_client_id)
+    except google.GoogleError as exc:
+        raise HTTPException(401, str(exc)) from None
+    async with request.app.state.sessionmaker() as s, s.begin():
+        row = await accounts.account_for_google(s, who["sub"], who["email"], who["name"], st.admin_email_set,
+                                                may_create=_may_create(request, body.invite_code))
+        if row is None:
+            raise HTTPException(403, "Sign-up is closed, or the invite code is missing.")
+        token = await accounts.create_session(s, row.id, st.auth_session_days)
+        p = accounts.principal_from_row(row)
+    _set_cookie(request, response, token)
+    return _me(p, True)
+
+
+@router.post("/otp/send")
+async def otp_send(request: Request, body: OtpSendIn) -> dict:
+    st = request.app.state.settings
+    sender = request.app.state.sms
+    if not st.auth_enabled or sender is None:
+        raise HTTPException(404, "Phone sign-in is not available on this server.")
+    try:
+        phone = otp.normalise_phone(body.phone)
+        async with request.app.state.sessionmaker() as s, s.begin():
+            await otp.purge(s)
+            code = await otp.issue(s, phone, st.otp_ttl_seconds)
+        await sender.send(phone, f"{code} is your {request.app.title} sign-in code. It expires in {st.otp_ttl_seconds // 60} minutes. Do not share it.")
+    except accounts.AccountError as exc:
+        raise HTTPException(429 if "Too many" in str(exc) or "just sent" in str(exc) else 422, str(exc)) from None
+    except SmsUnavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+    return {"sent": True, "phone": phone, "expires_in": st.otp_ttl_seconds}
+
+
+@router.post("/otp/verify")
+async def otp_verify(request: Request, response: Response, body: OtpVerifyIn) -> dict:
+    st = request.app.state.settings
+    if not st.auth_enabled or request.app.state.sms is None:
+        raise HTTPException(404, "Phone sign-in is not available on this server.")
+    try:
+        phone = otp.normalise_phone(body.phone)
+    except accounts.AccountError as exc:
+        raise HTTPException(422, str(exc)) from None
+    async with request.app.state.sessionmaker() as s, s.begin():
+        problem = await otp.check(s, phone, body.code)  # commits the attempt count even when the code is wrong
+    if problem:
+        raise HTTPException(401, problem)
+    async with request.app.state.sessionmaker() as s, s.begin():
+        row = await accounts.account_for_phone(s, phone, body.name, may_create=_may_create(request, body.invite_code))
+        if row is None:
+            raise HTTPException(403, "Sign-up is closed, or the invite code is missing.")
+        token = await accounts.create_session(s, row.id, st.auth_session_days)
+        p = accounts.principal_from_row(row)
+    _set_cookie(request, response, token)
+    return _me(p, True)

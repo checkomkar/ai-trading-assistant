@@ -509,6 +509,8 @@ export interface Me {
   plan?: string;
   signup_open?: boolean;
   invite_required?: boolean;
+  google_client_id?: string | null;
+  phone_login?: boolean;
 }
 
 export interface UsageLine {

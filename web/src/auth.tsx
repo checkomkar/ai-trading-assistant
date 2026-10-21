@@ -6,6 +6,9 @@ interface AuthState {
   usage: Usage | null;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, name: string, inviteCode: string) => Promise<void>;
+  signInWithGoogle: (credential: string, inviteCode: string) => Promise<void>;
+  sendOtp: (phone: string) => Promise<string>;
+  verifyOtp: (phone: string, code: string, name: string, inviteCode: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshUsage: () => void;
 }
@@ -69,6 +72,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     signUp: async (email, password, name, invite_code) => {
       await postJSON("/auth/signup", { email, password, name, invite_code });
+      await loadMe();
+    },
+    signInWithGoogle: async (credential, invite_code) => {
+      await postJSON("/auth/google", { credential, invite_code });
+      await loadMe();
+    },
+    sendOtp: async (phone) => (await postJSON<{ phone: string }>("/auth/otp/send", { phone })).phone,
+    verifyOtp: async (phone, code, name, invite_code) => {
+      await postJSON("/auth/otp/verify", { phone, code, name, invite_code });
       await loadMe();
     },
     signOut: async () => {

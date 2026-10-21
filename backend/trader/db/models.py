@@ -292,9 +292,11 @@ class AccountRow(Base):
     __tablename__ = "accounts"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)  # the `owner` value on every owned row
-    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True)
+    email: Mapped[str | None] = mapped_column(String(254), unique=True)  # None for a phone-only account
     name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
-    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(String(256))  # None for Google / phone-only accounts
+    phone: Mapped[str | None] = mapped_column(String(20), unique=True)  # E.164, verified by OTP
+    google_sub: Mapped[str | None] = mapped_column(String(64), unique=True)  # Google account id
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     plan: Mapped[str] = mapped_column(String(16), nullable=False, default="trial")
     period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # paid plans: start of this billing month
@@ -362,3 +364,17 @@ class BrokerConnectionRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (Index("ux_broker_owner_broker", "owner", "broker", unique=True),)
+
+
+class LoginOtpRow(Base):
+    """A one-time code sent by SMS. Only a hash is kept; it expires in minutes and allows a few guesses."""
+
+    __tablename__ = "login_otps"
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    phone: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consumed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

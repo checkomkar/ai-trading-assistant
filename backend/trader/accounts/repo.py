@@ -30,7 +30,7 @@ class Principal:
     """Who is making the request, with the plan that applies to them right now."""
 
     id: str
-    email: str
+    email: str  # the email, else the phone number, else empty
     name: str
     is_admin: bool
     plan: str  # effective plan id (a lapsed paid plan reads as the trial)
@@ -54,7 +54,7 @@ def principal_from_row(row: AccountRow, now: datetime | None = None) -> Principa
             start += timedelta(days=30)
     if plan == FREE_PLAN or plan == "owner":
         start = _utc(row.created_at) if plan == FREE_PLAN else None
-    return Principal(row.id, row.email, row.name, row.is_admin, plan, start, end, subscription=row.billing_subscription)
+    return Principal(row.id, row.email or row.phone or "", row.name, row.is_admin, plan, start, end, subscription=row.billing_subscription)
 
 
 def local_principal() -> Principal:
@@ -79,7 +79,8 @@ async def create_account(s: AsyncSession, email: str, password: str, name: str, 
 
 async def authenticate(s: AsyncSession, email: str, password: str) -> AccountRow | None:
     row = (await s.execute(select(AccountRow).where(AccountRow.email == security.normalise_email(email)))).scalars().first()
-    ok = security.verify_password(password, row.password_hash if row else security.DUMMY_HASH)
+    ok = security.verify_password(password, (row.password_hash if row else None) or security.DUMMY_HASH)
+    ok = ok and row is not None and row.password_hash is not None  # Google / phone-only accounts have no password
     return row if (row is not None and ok and not row.disabled) else None
 
 
@@ -119,3 +120,36 @@ async def set_plan(s: AsyncSession, row: AccountRow, plan: str, days: int = 30, 
         row.period_start, row.period_end = now, now + timedelta(days=days)
     else:
         row.period_start = row.period_end = None
+
+
+async def account_for_google(s: AsyncSession, sub: str, email: str, name: str, admin_emails: set[str],
+                             *, may_create: bool = True) -> AccountRow | None:
+    """The account for a Google-verified identity. Matches the Google id first, then a verified email (so someone who
+    signed up with a password can also use Google). Creates one unless `may_create` is false (closed sign-up)."""
+    row = (await s.execute(select(AccountRow).where(AccountRow.google_sub == sub))).scalars().first()
+    email = security.normalise_email(email)
+    if row is None:
+        row = (await s.execute(select(AccountRow).where(AccountRow.email == email))).scalars().first()
+        if row is not None:
+            row.google_sub = sub
+    if row is None:
+        if not may_create:
+            return None
+        is_admin = email in admin_emails
+        row = AccountRow(id=uuid.uuid4().hex[:16], email=email, name=name.strip()[:80], google_sub=sub, is_admin=is_admin,
+                         plan="owner" if is_admin else FREE_PLAN, created_at=datetime.now(timezone.utc))
+        s.add(row)
+    await s.flush()
+    return None if row.disabled else row
+
+
+async def account_for_phone(s: AsyncSession, phone: str, name: str, *, may_create: bool = True) -> AccountRow | None:
+    row = (await s.execute(select(AccountRow).where(AccountRow.phone == phone))).scalars().first()
+    if row is None:
+        if not may_create:
+            return None
+        row = AccountRow(id=uuid.uuid4().hex[:16], phone=phone, name=name.strip()[:80], plan=FREE_PLAN,
+                         created_at=datetime.now(timezone.utc))
+        s.add(row)
+        await s.flush()
+    return None if row.disabled else row
