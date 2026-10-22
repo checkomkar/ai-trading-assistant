@@ -68,6 +68,7 @@ INDICATORS: dict[str, tuple[bool, tuple[int, int] | None, str, str]] = {
     "daily_sma": (True, (2, 200), "daily SMA({p})", "index"),
     "daily_rsi": (True, (2, 100), "daily RSI({p})", "osc"),
 }
+from trader.strategy.htf import TF_MINUTES  # noqa: E402
 from trader.strategy.extra_operands import (  # noqa: E402
     EXTRA_INDICATORS, MIRROR as _EXTRA_MIRROR, MULT_DEFAULTS, REFLECT_100, REFLECT_NEG,
 )
@@ -91,9 +92,15 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+TfName = Literal[tuple(TF_MINUTES)]  # type: ignore[valid-type]
+
+
 class Ind(_Strict):
     ind: IndicatorName
     period: int | None = None
+    # evaluate this operand on higher-timeframe candles built from the strategy's own bars (completed candles only);
+    # `shift` then counts those candles. Omitted = the strategy's own timeframe.
+    tf: TfName | None = None
     # second setting of a few indicators (Supertrend factor, Keltner / Bollinger multiplier); omitted = TradingView's default
     mult: float | None = Field(None, ge=0.1, le=10)
     shift: int = Field(0, ge=0, le=20, description="bars back; 0 = current closed bar")
@@ -118,8 +125,8 @@ class Ind(_Strict):
         return self.mult if self.mult is not None else MULT_DEFAULTS.get(self.ind)
 
     @property
-    def key(self) -> tuple[str, int | None, float | None]:
-        return (self.ind, self.period, self.effective_mult)
+    def key(self) -> tuple[str, int | None, float | None, str | None]:
+        return (self.ind, self.period, self.effective_mult, self.tf)
 
 
 class Const(_Strict):
@@ -333,6 +340,7 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
                             f"({a.ind} vs {b.ind}); they differ by the futures basis. Use fut_close with vwap.")
             if isinstance(a, Const) and isinstance(b, Const):
                 errs.append(f"{where}: compares two constants")
+    errs += _tf_errors(spec, conds)
     if spec.market == "equity":
         return errs + _equity_errors(spec, conds)
     if spec.timeframe == "1d":
@@ -349,6 +357,31 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
     if tw_end > time.fromisoformat(spec.exits.eod):
         errs.append("entries are allowed after the EOD exit time")
     return errs
+
+
+TF_BLOCKED = {  # operands that exist only for the strategy's own bars (session or daily context), not for built candles
+    "or_high", "or_low", "prev_day_high", "prev_day_low", "prev_day_close", "fut_close", "vwap", "vix", "daily_ema", "daily_sma",
+    "daily_rsi", "pivot", "pivot_r1", "pivot_r2", "pivot_s1", "pivot_s2",
+}
+
+
+def _tf_errors(spec: StrategySpec, conds: list[tuple[str, object]]) -> list[str]:
+    from trader.market_data.resample import SUPPORTED
+
+    errs: list[str] = []
+    base = SUPPORTED.get(spec.timeframe)
+    for where, c in conds:
+        for o in walk_operands(c):
+            if not (isinstance(o, Ind) and o.tf):
+                continue
+            if spec.market == "equity" or base is None:
+                errs.append(f"{where}: other timeframes are for intraday strategies (the stock strategy already runs on daily candles)")
+            elif TF_MINUTES[o.tf] <= base or TF_MINUTES[o.tf] % base:
+                errs.append(f"{where}: {o.ind} on {o.tf} candles needs a timeframe that is a whole multiple of the strategy's "
+                            f"own {spec.timeframe} candles and larger than it")
+            if o.ind in TF_BLOCKED:
+                errs.append(f"{where}: `{o.ind}` cannot be used on another timeframe (it is a session or daily value)")
+    return list(dict.fromkeys(errs))
 
 
 EQUITY_BLOCKED = {  # operands that only exist for intraday index/option data
@@ -385,7 +418,7 @@ def mirror_condition(c: object) -> object:
     """Long <-> short: flip comparisons, swap high/low-type operands, reflect bounded oscillators."""
     def mo(o: Operand) -> Operand:
         if isinstance(o, Ind):
-            return Ind(ind=MIRROR_NAME.get(o.ind, o.ind), period=o.period, mult=o.mult, shift=o.shift)
+            return Ind(ind=MIRROR_NAME.get(o.ind, o.ind), period=o.period, mult=o.mult, tf=o.tf, shift=o.shift)
         return o
 
     def reflect(ind: Operand, const: Operand) -> Operand:
@@ -438,6 +471,8 @@ def _op_text(o: Operand) -> str:
         return f"{o.const:g}"
     _, _, label, _ = INDICATORS[o.ind]
     txt = label.format(p=o.period, m=f"{o.effective_mult:g}" if o.effective_mult is not None else "")
+    if o.tf:
+        txt += f" on {o.tf} candles"
     if o.shift:
         txt += f" {o.shift} bar{'s' if o.shift > 1 else ''} ago"
     return txt

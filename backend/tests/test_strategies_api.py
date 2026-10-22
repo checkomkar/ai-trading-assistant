@@ -228,5 +228,5 @@ def test_the_translator_prompt_stays_small_enough_for_free_model_tiers():
     from trader.ai.providers import MAX_REPLY_TOKENS
     from trader.ai.strategy_translator import SYSTEM_PROMPT
 
-    assert len(SYSTEM_PROMPT) < 16_500 and MAX_REPLY_TOKENS <= 2500  # Groq's free tier allows 8,000 tokens per request in all
+    assert len(SYSTEM_PROMPT) < 17_500 and MAX_REPLY_TOKENS <= 2500  # Groq's free tier allows 8,000 tokens per request in all
     assert '"enum":["open"' not in SYSTEM_PROMPT  # the operand names are listed once, not twice

@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import date, time
+from typing import Any
+
+from trader.market_data.resample import minutes
 
 from trader.indicators import extra as X
 from trader.indicators.extra import pivot_levels
 from trader.strategy.extra_operands import PIVOTS, SOURCE
+from trader.strategy.htf import TF_MINUTES, HTFAggregator, label
 from trader.indicators import ADX, ATR, EMA, MACD, ROC, RSI, SMA, BollingerBands, Pivots, RollingExtreme, candle_patterns
 from trader.strategy.base import Direction, MarketState, NoTrade, Signal, Strategy
 from trader.strategy.spec import (
@@ -59,7 +63,15 @@ FACTORIES = {  # kind -> indicator object, from the operand's period and mult
 class _Bank:
     """Indicators requested by a spec, keyed by (name, period); updated once per bar."""
 
-    def __init__(self, keys: set[tuple[str, int | None, float | None]]) -> None:
+    def __init__(self, keys: set[tuple], base_minutes: int = 1) -> None:
+        # Operands on a higher timeframe are served by their own bank, fed with candles built from these bars.
+        self.htf_keys = [k for k in keys if k[3]]
+        by_tf: dict[str, set] = {}
+        for k in self.htf_keys:
+            by_tf.setdefault(k[3], set()).add((*k[:3], None))
+        self.htf: dict[str, tuple[HTFAggregator, "_Bank", deque]] = {
+            tf: (HTFAggregator(TF_MINUTES[tf], base_minutes), _Bank(ks), deque(maxlen=21)) for tf, ks in by_tf.items()}
+        keys = {k[:3] for k in keys if not k[3]}
         self.keys = keys
         self.objs: dict[tuple[str, int | None], object] = {}
         self.extras: dict[tuple, object] = {}  # indicator objects shared by every operand that reads them
@@ -101,7 +113,10 @@ class _Bank:
             elif name in ("macd", "macd_signal", "macd_hist"):
                 self.objs[("macd", None)] = self.objs.get(("macd", None)) or MACD()
 
-    def update(self, f) -> dict[tuple[str, int | None, float | None], float | None]:  # noqa: ANN001
+    def update(self, f) -> dict[tuple, Any]:  # noqa: ANN001
+        for agg, bank, hist in self.htf.values():  # a candle completed by this bar becomes visible now, not before
+            for candle in agg.update(f):
+                hist.appendleft(bank.update(candle))
         if self.daily and f.day != self._day:  # a new day began: yesterday's close is now final
             self._day = f.day
             if f["prev_day_close"] is not None:
@@ -132,7 +147,7 @@ class _Bank:
             rel[per] = vol / (sum(dq) / per) if vol and len(dq) == per and sum(dq) > 0 else None
             if vol:
                 dq.append(vol)
-        snap: dict[tuple[str, int | None, float | None], float | None] = {}
+        snap: dict[tuple, Any] = {}
         for name, p, m in self.keys:
             if name in SOURCE:
                 v = self.extras[(SOURCE[name][0], p, m)].values.get(SOURCE[name][1])  # type: ignore[attr-defined]
@@ -178,7 +193,9 @@ class _Bank:
                 v = {"macd": o.macd, "macd_signal": o.signal, "macd_hist": o.histogram}[name]  # type: ignore[attr-defined]
             else:  # pragma: no cover - schema whitelist makes this unreachable
                 raise KeyError(name)
-            snap[(name, p, m)] = v
+            snap[(name, p, m, None)] = v
+        for k in self.htf_keys:  # higher-timeframe operands: the latest completed candles, newest first (shift indexes into this)
+            snap[k] = [h.get((*k[:3], None)) for h in self.htf[k[3]][2]]
         return snap
 
 
@@ -192,7 +209,7 @@ class RuleStrategy(Strategy):
         if spec.exits.conditions is not None:
             conds.append(spec.exits.conditions)
         refs = [o for c in conds for o in walk_operands(c) if isinstance(o, Ind)]
-        self.bank = _Bank({o.key for o in refs})
+        self.bank = _Bank({o.key for o in refs}, minutes(spec.timeframe) if spec.timeframe != "1d" else 375)
         depth = max([o.shift for o in refs] + [0]) + 2  # +1 for crosses
         self.hist: deque[dict] = deque(maxlen=depth)
         self.window = tuple(time.fromisoformat(x) for x in spec.filters.time_window)
@@ -211,6 +228,11 @@ class RuleStrategy(Strategy):
     def _val(self, o, extra_shift: int = 0) -> float | None:  # noqa: ANN001
         if isinstance(o, Const):
             return o.const
+        if o.tf:  # higher timeframe: `shift` counts that timeframe's candles; extra_shift steps back one BASE bar (for crosses)
+            if extra_shift >= len(self.hist):
+                return None
+            vals = self.hist[extra_shift].get(o.key)
+            return vals[o.shift] if vals and o.shift < len(vals) else None
         i = o.shift + extra_shift
         if i >= len(self.hist):
             return None
@@ -275,8 +297,9 @@ class RuleStrategy(Strategy):
                 return Signal(d, 0.5, state.underlying, "ATM", f.close, self.spec.exits.stop_loss_pct,
                               self.spec.exits.target_pct, f"{self.spec.name}: {d.value.lower()} rules met",
                               f.ts, f"spec:{self.spec.hash}",
-                              {f"{k[0]}{'' if k[1] is None else k[1]}": (round(v, 4) if isinstance(v, float) else v)
-                               for k, v in (self.hist[0] if self.hist else {}).items()},
+                              {label(k): (round(v, 4) if isinstance(v, float) else v)
+                               for k, v in ((k, v[0] if isinstance(v, list) else v)
+                                            for k, v in (self.hist[0] if self.hist else {}).items())},
                               risk_pct=self.spec.risk.risk_per_trade_pct)
         return None
 

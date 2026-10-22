@@ -259,7 +259,7 @@ class EquityEngine:
                 if self._entry_ok(st.strategy) is True:
                     signals += 1
                     snap = {f"{k[0]}{'' if k[1] is None else k[1]}": (round(v, 4) if isinstance(v, float) else v)
-                            for k, v in (st.strategy.hist[0] if st.strategy.hist else {}).items()}
+                            for k, v in (st.strategy.hist[0] if st.strategy.hist else {}).items() if not isinstance(v, list)}
                     st.pending_entry = {"day": d, "features": snap, "reason": f"{self.spec.name}: entry rules met"}
                 else:
                     st.pending_entry = None
