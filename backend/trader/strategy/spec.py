@@ -143,6 +143,9 @@ class Cmp(_Strict):
 
 class Cross(_Strict):
     cross: tuple[Operand, Literal["above", "below"], Operand]
+    # true if the cross happened on this bar OR on any of the previous `within` - 1 bars (a cross is a single-bar event, so
+    # asking for several crosses at the same moment almost never happens; "crossed recently" is usually what is meant)
+    within: int | None = Field(None, ge=2, le=120)
 
 
 class Between(_Strict):
@@ -443,7 +446,7 @@ def mirror_condition(c: object) -> object:
         return Cmp(cmp=(mo(reflect(b, a)), MIRROR_OP[op], mo(reflect(a, b))))
     if isinstance(c, Cross):
         a, d, b = c.cross
-        return Cross(cross=(mo(reflect(b, a)), "below" if d == "above" else "above", mo(reflect(a, b))))
+        return Cross(cross=(mo(reflect(b, a)), "below" if d == "above" else "above", mo(reflect(a, b))), within=c.within)
     if isinstance(c, Between):
         v, lo, hi = c.between
         return Between(between=(mo(v), mo(reflect(v, hi)), mo(reflect(v, lo))))
@@ -504,7 +507,8 @@ def render_condition(c: object, depth: int = 0) -> str:
         return f"{pad}- {flag or f'{_op_text(a)} {_OPS[op]} {_op_text(b)}'}"
     if isinstance(c, Cross):
         a, d, b = c.cross
-        return f"{pad}- {_op_text(a)} crosses {d} {_op_text(b)} (on this bar's close)"
+        when = f"on this bar or any of the previous {c.within - 1} bars" if c.within else "on this bar's close"
+        return f"{pad}- {_op_text(a)} crosses {d} {_op_text(b)} ({when})"
     if isinstance(c, Between):
         v, lo, hi = c.between
         return f"{pad}- {_op_text(v)} is between {_op_text(lo)} and {_op_text(hi)}"

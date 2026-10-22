@@ -245,3 +245,59 @@ def test_a_backtest_runs_a_strategy_that_reads_a_higher_timeframe(client):
     bad = client.post("/strategies/validate", json={"spec": {**mtf, "timeframe": "5m", "sides": {"long": {"option": "CE", "entry": {
         "cmp": [{"ind": "close", "tf": "9m"}, ">", {"const": 1}]}}}}}).json()
     assert not bad["valid"] and any("whole multiple" in e for e in bad["errors"])
+
+
+# ---- "crossed recently" and warm-up ------------------------------------------------------------------------------------
+def test_a_cross_within_n_bars_stays_true_for_n_bars_then_expires():
+    from trader.strategy.base import Direction
+
+    ramp = [(100 + (i if i < 10 else 10), 0, 0, 100 + (i if i < 10 else 10), 1) for i in range(30)]  # close rises through a flat 105
+    base = {"cross": [{"ind": "close"}, "above", {"ind": "sma", "period": 2}]}  # placeholder so the spec validates
+    now = spec({"cross": [{"ind": "close"}, "above", {"const": 104.5}]})
+    rec = spec({"cross": [{"ind": "close"}, "above", {"const": 104.5}], "within": 4})
+    seen = {"now": [], "rec": []}
+    s_now, s_rec = RuleStrategy(now), RuleStrategy(rec)
+    for b in ramp:
+        o, h, l, c, v = b
+        f = FeatureEngine(1).update(Candle("NIFTY", "1m", datetime(2026, 10, 19, 3, 45, tzinfo=timezone.utc) + timedelta(minutes=len(seen["now"])),
+                                           c, c + 1, c - 1, c, 1, closed=True))
+        for key, st in (("now", s_now), ("rec", s_rec)):
+            st._observe(MarketState("NIFTY", f))
+            seen[key].append(st.eval(st.entries[Direction.LONG]))
+    cross_at = seen["now"].index(True)
+    assert seen["now"].count(True) == 1  # the plain cross is a single bar
+    assert [i for i, v in enumerate(seen["rec"]) if v is True] == list(range(cross_at, cross_at + 4))  # this bar and the next three
+    assert render_english(rec).count("any of the previous 3 bars") == 1
+    from trader.strategy.spec import mirror_condition
+
+    assert mirror_condition(rec.sides.long.entry).within == 4
+    assert base  # (kept: shows the operand form the spec accepts)
+
+
+def test_cross_within_is_bounded():
+    for bad in (0, 1, 500):
+        with pytest.raises(Exception):
+            spec({"cross": [{"ind": "close"}, "above", {"const": 1}], "within": bad})
+
+
+def test_backtest_warm_up_days_prime_the_indicators_but_never_trade():
+    from tests.test_backtest import FREE, NO_FRICTION, LinearPricer, Scripted, bars_for
+    from trader.backtest.engine import BacktestEngine, EngineConfig
+    from trader.strategy.base import Direction
+
+    d1, d2 = date(2026, 10, 20), date(2026, 10, 21)
+    closes = [25000, 25010, 25020, 25030, 25040, 25050]
+    bars = bars_for(d1, closes) + bars_for(d2, closes)
+    calls = []
+
+    class Counting(Scripted):
+        def generate_signal(self, state):
+            calls.append(state.features.day)
+            return super().generate_signal(state)
+
+    strat = Counting({bars[0].ts: Direction.LONG, bars[len(closes)].ts: Direction.LONG})  # a signal on each day
+    eng = BacktestEngine("NIFTY", strat, LinearPricer(), FREE, 5, EngineConfig(trail_activate_pct=None, trail_pct=None, max_daily_loss=1e9),
+                         NO_FRICTION)
+    res = eng.run(bars, trade_from=d2)
+    assert [t.entry_time[:10] for t in res.trades] == ["2026-10-21"] and res.days == 1 and res.bars == len(closes) and res.signals == 1
+    assert calls.count(d1) == len(closes)  # the strategy still saw every warm-up bar

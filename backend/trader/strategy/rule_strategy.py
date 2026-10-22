@@ -60,6 +60,19 @@ FACTORIES = {  # kind -> indicator object, from the operand's period and mult
 }
 
 
+def _within(c) -> int:  # noqa: ANN001
+    """The furthest back any `cross ... within N` in this condition looks (0 if none)."""
+    if isinstance(c, Cross):
+        return c.within or 0
+    if isinstance(c, All):
+        return max((_within(x) for x in c.all), default=0)
+    if isinstance(c, Any_):
+        return max((_within(x) for x in c.any), default=0)
+    if isinstance(c, Not):
+        return _within(c.not_)
+    return 0
+
+
 class _Bank:
     """Indicators requested by a spec, keyed by (name, period); updated once per bar."""
 
@@ -210,7 +223,7 @@ class RuleStrategy(Strategy):
             conds.append(spec.exits.conditions)
         refs = [o for c in conds for o in walk_operands(c) if isinstance(o, Ind)]
         self.bank = _Bank({o.key for o in refs}, minutes(spec.timeframe) if spec.timeframe != "1d" else 375)
-        depth = max([o.shift for o in refs] + [0]) + 2  # +1 for crosses
+        depth = max([o.shift for o in refs] + [0]) + max(_within(c) for c in conds) + 2  # +1 for crosses, + how far back they look
         self.hist: deque[dict] = deque(maxlen=depth)
         self.window = tuple(time.fromisoformat(x) for x in spec.filters.time_window)
         self.event_days = {date.fromisoformat(d) for d in spec.filters.event_days}
@@ -249,8 +262,11 @@ class RuleStrategy(Strategy):
             a, d, b = c.cross
             now = Cmp(cmp=(a, ">" if d == "above" else "<", b))
             before = Cmp(cmp=(a, "<=" if d == "above" else ">=", b))
-            n, p = self.eval(now, shift), self.eval(before, shift + 1)
-            return None if n is None or p is None else (n and p)
+            seen: list[bool | None] = []
+            for k in range(c.within or 1):  # "within N": did it cross on any of the last N bars
+                n, p = self.eval(now, shift + k), self.eval(before, shift + k + 1)
+                seen.append(None if n is None or p is None else (n and p))
+            return True if True in seen else (None if None in seen else False)
         if isinstance(c, Between):
             v, lo, hi = (self._val(o, shift) for o in c.between)
             return None if None in (v, lo, hi) else lo <= v <= hi  # type: ignore[operator]

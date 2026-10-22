@@ -126,7 +126,9 @@ class BacktestEngine:
         self.features = FeatureEngine(timeframe_minutes, features)
 
     def run(self, bars: list[Candle], futures: dict[datetime, Candle] | None = None,
-            vix: dict[datetime, float] | None = None) -> BacktestResult:
+            vix: dict[datetime, float] | None = None, trade_from: date | None = None) -> BacktestResult:
+        """`bars` may begin before `trade_from`: those days only warm the indicators up (a 61-period Hull MA on 9-minute candles
+        needs a day and a half of history); no signal, entry or day is counted before it."""
         futures, vix = futures or {}, vix or {}
         trades: list[Trade] = []
         no_trade: Counter[str] = Counter()
@@ -140,8 +142,16 @@ class BacktestEngine:
         last_vix: float | None = None
         days: set[date] = set()
 
+        warm_bars = 0
         for i, bar in enumerate(bars):
             local = bar.ts.astimezone(IST)
+            if trade_from is not None and local.date() < trade_from:
+                v = vix.get(bar.ts)
+                last_vix = v if v is not None else last_vix
+                feats = self.features.update(bar, futures.get(bar.ts), v)
+                self.strategy.generate_signal(MarketState(self.u, feats))  # keeps the strategy's own indicators warm
+                warm_bars += 1
+                continue
             if local.date() != day:
                 day, trades_today, day_pnl, loss_hit = local.date(), 0, 0.0, False
                 pending = None  # signals never carry across days
@@ -207,7 +217,7 @@ class BacktestEngine:
                     pending = decision
 
         warnings = self._warnings(trades)
-        return BacktestResult(trades, dict(no_trade), signals, dict(skipped), len(bars), len(days),
+        return BacktestResult(trades, dict(no_trade), signals, dict(skipped), len(bars) - warm_bars, len(days),
                               self.pricer.mode, warnings)
 
     # ---- position lifecycle -------------------------------------------------------------------
