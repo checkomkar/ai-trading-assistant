@@ -151,7 +151,7 @@ async def _lookups(tools: dict[str, Tool], user_text: str, result: "ChatResult")
 
 async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[dict], user_text: str,
                    memory: list[str], docs: list[dict], attached: list[dict] | None = None,
-                   snapshot: str = "") -> ChatResult:
+                   snapshot: str = "", prefetch: bool = True) -> ChatResult:
     """`history` is prior [{role, content}] turns. `attached` = [{filename, text}] files the user just attached."""
     system = system_prompt(tools, memory, docs, snapshot)
     nudged = forced = False
@@ -162,7 +162,7 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
         budget -= len(body)
         content += f"\n\n<attached_file name={json.dumps(a['filename'])}>\n{body}\n</attached_file>"
     result = ChatResult("")
-    if tools and _DATA_WORDS.search(user_text):
+    if prefetch and tools and _DATA_WORDS.search(user_text):
         # Fetch the obvious data up front (cheap database reads): one model call instead of a look-up round trip first,
         # and every extra call re-sends the whole prompt.
         pre = await _lookups(tools, user_text, result)
@@ -180,7 +180,7 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
             assert isinstance(act, dict)
         except (json.JSONDecodeError, AssertionError):
             raise TranslatorUnavailable(f"The model's reply was not a valid JSON action: {reply.text[:120]!r}") from None
-        ungrounded = (act.get("action") == "answer" and not result.tools_used and tools
+        ungrounded = (prefetch and act.get("action") == "answer" and not result.tools_used and tools
                       and _DATA_WORDS.search(user_text) and step < MAX_STEPS - 2)
         if ungrounded and not nudged:
             nudged = True  # first: ask it to check the data instead of answering from imagination

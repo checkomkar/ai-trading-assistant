@@ -15,7 +15,10 @@ from trader.ai.knowledge import (MAX_OCR_PAGES, MAX_UPLOAD_BYTES, UnsupportedFil
                                  merge_page_text, ocr_available, ocr_pdf_pages)
 from trader.ai.providers import LLMProvider, TranslatorUnavailable, build_provider
 from trader.api.chat_tools import build_tools
+from trader.api import strategy_context
 from trader.api.deps import CurrentUser, MeterDep
+from trader.api.strategy_context import StrategyContextIn
+from trader.db.models import BacktestRunRow
 from trader.billing.meter import Meter
 from trader.db import chat_repo as repo
 
@@ -204,6 +207,7 @@ class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
     doc_ids: list[str] = Field(default_factory=list, max_length=10)
     focus_doc_ids: list[str] = Field(default_factory=list, max_length=10)  # files the trader pointed at with @
+    context: StrategyContextIn | None = None  # the Strategies page: talk about the strategy that is open
 
 
 @router.get("/chat/conversations")
@@ -265,12 +269,19 @@ async def send(request: Request, conv_id: str, body: MessageIn, user: CurrentUse
         focus = await repo.get_docs(s, body.focus_doc_ids, user.id)
     tools = build_tools(request, user, meter, focus_doc_ids=[d.id for d in focus])
     model_text = body.text
+    if body.context is not None:
+        async with sm() as s:
+            run = await s.get(BacktestRunRow, body.context.backtest_id) if body.context.backtest_id else None
+        if run is not None and run.owner != user.id:
+            run = None  # never describe someone else's run
+        model_text = strategy_context.build(body.context, run) + chr(10) * 2 + "The trader asks: " + body.text
     if focus:  # the trader named files with @: search only those, and say so
         names = ", ".join(json.dumps(d.filename) for d in focus)
         model_text += f"\n\n[The trader referred to these files with @: {names}. search_knowledge is limited to them.]"
     try:
         async with meter.metered(user, "chat_messages", provider) as mp:  # 402 when the plan's messages are used up
-            result = await run_chat(mp, tools, history, model_text, memory_notes, docs_all, attached, await _snapshot(tools))
+            result = await run_chat(mp, tools, history, model_text, memory_notes, docs_all, attached, await _snapshot(tools),
+                                   prefetch=body.context is None)
     except TranslatorUnavailable as exc:
         raise HTTPException(503, str(exc)) from None
     if await request.is_disconnected():  # the trader pressed Stop: keep nothing from this turn

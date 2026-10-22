@@ -67,7 +67,7 @@ function groupLabel(iso: string): string {
   return days < 1 ? "Today" : days < 2 ? "Yesterday" : days < 8 ? "Previous 7 days" : "Older";
 }
 
-const md = {
+export const md = {
   p: ({ children }: { children?: ReactNode }) => <p className="mb-3 last:mb-0">{children}</p>,
   ul: ({ children }: { children?: ReactNode }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
   ol: ({ children }: { children?: ReactNode }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,

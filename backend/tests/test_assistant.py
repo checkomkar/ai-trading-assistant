@@ -414,3 +414,39 @@ def test_history_keeps_recent_turns_in_full_and_shortens_older_replies():
     assert len(out) == chat_mod.MAX_HISTORY
     assert len(out[0]["content"]) <= chat_mod.OLD_REPLY_CHARS + 1 or out[0]["role"] == "user"
     assert out[-1]["content"] == long  # the latest reply is untouched
+
+
+# ---- talking about the strategy open on the Strategies page ----------------------------------
+def test_strategy_context_is_built_from_the_rules_and_the_owners_own_backtest():
+    from datetime import date, datetime, timezone
+
+    from trader.api import strategy_context as sc
+    from trader.db.models import BacktestRunRow
+    from trader.strategy.spec import MOMENTUM_V1
+
+    ctx = sc.StrategyContextIn(spec=MOMENTUM_V1, backtest_id=None)
+    text = sc.build(ctx, None)
+    assert "NOT been backtested" in text and "draft_strategy" in text and "Buy the ATM call" in text
+    run = BacktestRunRow(id="r1", owner="u", created_at=datetime.now(timezone.utc), underlying="NIFTY", start=date(2026, 1, 1),
+                         end=date(2026, 6, 1), timeframe="5m", strategy="x", data_source="real", pricing_mode="synthetic",
+                         result={"metrics": {"trades": 12, "total_net_pnl": -500, "win_rate": 33.3, "exit_reasons": {"stop loss": 8}},
+                                 "trades": [{"contract": "C", "entry_time": "2026-02-02T04:00:00", "exit_reason": "stop loss", "net_pnl": -900}],
+                                 "params": {"strategy": {}}, "warnings": ["w"]})
+    text = sc.build(ctx, run)
+    assert "id r1" in text and "net P&L -500" in text and "stop loss" in text and "worst trades" in text
+    assert "not valid yet" in sc.build(sc.StrategyContextIn(spec={"nope": 1}), None)
+
+
+def test_talking_about_a_strategy_sends_the_rules_but_stores_only_the_question(client):
+    from trader.strategy.spec import MOMENTUM_V1
+
+    conv = client.post("/chat/conversations").json()["id"]
+    client.provider.actions = [answer("Tighten the stop and add an ADX filter.")]
+    r = client.post(f"/chat/conversations/{conv}/messages",
+                    json={"text": "How can I improve this?", "context": {"spec": MOMENTUM_V1, "backtest_id": "someone-elses"}})
+    assert r.status_code == 200 and r.json()["content"].startswith("Tighten")
+    sent = client.provider.calls[0][1][-1]["content"]
+    assert "Buy the ATM call" in sent and "How can I improve this?" in sent and "NOT been backtested" in sent
+    assert len(client.provider.calls) == 1  # no look-up round trip: the context already has the data
+    stored = client.get(f"/chat/conversations/{conv}").json()["messages"]
+    assert stored[0]["content"] == "How can I improve this?"  # the long context is not kept in the history

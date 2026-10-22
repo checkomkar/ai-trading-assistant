@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { Results } from "../components/backtest/Results";
 import { QuestionDialog } from "../components/QuestionDialog";
+import { StrategyChat } from "../components/StrategyChat";
 import { MicButton } from "../components/MicButton";
 import { StrategyLibrary } from "../components/StrategyLibrary";
 import { ReadyMade } from "../components/ReadyMade";
@@ -455,6 +456,15 @@ ${r.text.trim()}` : r.text.trim()));
               )}
             </section>
           </>
+        )}
+
+        {parsed && validation?.valid && (
+          <StrategyChat
+            key={String(parsed.name ?? "draft")}
+            spec={parsed}
+            backtestId={result?.id ?? null}
+            onLoadSpec={setSpec}
+          />
         )}
 
         {result && <Results r={result} />}
