@@ -207,7 +207,7 @@ def test_sign_in_stores_only_the_session_and_lists_it_as_signed_in(client):
     conns = client.get("/brokers/connections").json()
     assert conns[0]["session"]["state"] == "none" and "APIKEY123" not in json.dumps(conns)
     bad = client.post("/brokers/shoonya/login", json={"password": "wrong", "totp": "000000"})
-    assert bad.status_code == 401 and "nope" in bad.json()["detail"]
+    assert bad.status_code == 400 and "nope" in bad.json()["detail"]
     ok = client.post("/brokers/shoonya/login", json={"password": "good", "totp": "123456"})
     assert ok.status_code == 200 and ok.json()["name"] == "Omkar"
     assert "good" not in ok.text and "SESSION" not in ok.text  # neither the password nor the session token goes back out
@@ -232,7 +232,7 @@ def test_five_bad_sign_ins_are_a_pause_not_an_account_lock(client):
     signup(client, "b@example.com")
     client.post("/brokers/connections", json={"broker": "shoonya", "values": KEYS})
     codes = [client.post("/brokers/shoonya/login", json={"password": "wrong", "totp": "000000"}).status_code for _ in range(6)]
-    assert codes == [401] * 5 + [429]
+    assert codes == [400] * 5 + [429]
 
 
 def test_catalog_lists_shoonya_as_supported_with_a_password_sign_in(client):

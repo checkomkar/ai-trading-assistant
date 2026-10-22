@@ -163,7 +163,7 @@ async def shoonya_login(request: Request, user: CurrentUser, body: ShoonyaLoginI
         sess = await asyncio.to_thread(shoonya_auth.sign_in, keys["user_id"], body.password, body.totp, keys["vendor_code"],
                                        keys["api_key"], keys.get("imei") or "striktek")
     except shoonya_auth.ShoonyaAuthError as exc:
-        raise HTTPException(401, str(exc)) from None
+        raise HTTPException(400, str(exc)) from None
     except ConnectionError as exc:
         raise HTTPException(502, "Shoonya could not be reached. Try again in a minute.") from exc
     async with request.app.state.sessionmaker() as s, s.begin():
