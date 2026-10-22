@@ -65,8 +65,9 @@ class BacktestIn(BaseModel):
     def _range(self) -> "BacktestIn":
         if self.end < self.start:
             raise ValueError("end must be on or after start")
-        if (self.end - self.start).days > 3 * 366:
-            raise ValueError("range is limited to 3 years per run")
+        years = 15 if self.timeframe == "1d" else 3  # daily stock bars are cheap; intraday runs are not
+        if (self.end - self.start).days > years * 366:
+            raise ValueError(f"a single run can cover at most {years} years: choose a later start date")
         return self
 
 

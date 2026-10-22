@@ -23,7 +23,7 @@ from trader.market_data.factory import create_provider
 from trader.market_data.yahoo_daily import YahooDailyProvider
 
 
-async def run(symbols: list[str], years: int, source: str) -> None:
+async def run(symbols: list[str], years: int, source: str, full: bool) -> None:
     settings = get_settings()
     if source == "yahoo":
         provider = YahooDailyProvider()
@@ -34,7 +34,7 @@ async def run(symbols: list[str], years: int, source: str) -> None:
     url = settings.resolved_database_url
     await asyncio.to_thread(upgrade_db, url)
     engine = create_engine(url)
-    out = await equity_daily.refresh(provider, create_sessionmaker(engine), symbols, years)
+    out = await equity_daily.refresh(provider, create_sessionmaker(engine), symbols, years, full=full)
     for sym, n in out["stored"].items():
         print(f"  {sym:<12} {n} candles")
     for sym, why in out["failed"].items():
@@ -49,8 +49,9 @@ def main() -> None:
     p.add_argument("--symbols", default="NIFTY50", help="comma list of symbols and/or the universe name NIFTY50")
     p.add_argument("--source", choices=("yahoo", "fyers"), default="yahoo",
                    help="yahoo: free, no login (default). fyers: your broker's data, needs the daily login")
+    p.add_argument("--full", action="store_true", help="re-fetch the whole range (to reach further back than what is stored)")
     a = p.parse_args()
-    asyncio.run(run(eq.expand(a.symbols.split(",")), a.years, a.source))
+    asyncio.run(run(eq.expand(a.symbols.split(",")), a.years, a.source, a.full))
 
 
 if __name__ == "__main__":

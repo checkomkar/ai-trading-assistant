@@ -244,3 +244,13 @@ def test_equities_only_merge_adds_stock_history_without_touching_the_rest(tmp_pa
     first = merge(src, dst, equities_only=True)
     assert first == {"instruments": 3, "candles": 3 * DAYS, "option_snapshots": 0}
     assert merge(src, dst, equities_only=True) == {"instruments": 0, "candles": 0, "option_snapshots": 0}  # safe to repeat
+
+
+def test_daily_stock_runs_may_span_many_years_but_intraday_runs_stay_at_three():
+    from pydantic import ValidationError as VE
+
+    from trader.api.routes.backtests import BacktestIn
+
+    BacktestIn(start="2016-01-01", end="2026-10-01", timeframe="1d")
+    with pytest.raises(VE, match="at most 3 years"):
+        BacktestIn(start="2016-01-01", end="2026-10-01", timeframe="5m")

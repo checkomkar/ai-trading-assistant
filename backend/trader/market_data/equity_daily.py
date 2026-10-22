@@ -26,8 +26,13 @@ def _ist_midnight(d: date) -> datetime:
 
 
 async def refresh(provider, sessionmaker: async_sessionmaker, symbols: list[str], years: int = 5,
-                  today: date | None = None) -> dict:
+                  today: date | None = None, full: bool = False) -> dict:
     """Fetch daily candles for `symbols`. Returns {"stored": {symbol: n}, "failed": {symbol: reason}}.
+
+    `full` re-fetches the whole `years` range instead of resuming after the last stored day (to reach further back;
+    existing days are just updated in place).
+
+    A resume re-fetches the last stored day too, in case it was saved before the close settled.
 
     Only completed days are stored: today's candle is skipped until the market has closed (15:30 IST)."""
     now = datetime.now(IST)
@@ -43,7 +48,7 @@ async def refresh(provider, sessionmaker: async_sessionmaker, symbols: list[str]
             last = (await s.execute(select(CandleRow.ts).where(CandleRow.instrument_id == ids[inst.token],
                                                                CandleRow.timeframe == eq.DAILY)
                                     .order_by(CandleRow.ts.desc()).limit(1))).scalar_one_or_none()
-        start_day = eq.day_of(last) + timedelta(days=1) if last else today - timedelta(days=365 * years)
+        start_day = eq.day_of(last) if last and not full else today - timedelta(days=365 * years)
         if start_day > last_complete:
             stored[sym] = 0
             continue
