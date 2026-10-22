@@ -101,6 +101,9 @@ class AnthropicProvider:
                 "No Anthropic credentials. Set ANTHROPIC_API_KEY in .env (or run `ant auth login`).") from exc
         except anthropic.APIConnectionError as exc:
             raise TranslatorUnavailable("Could not reach the Anthropic API.") from exc
+        except anthropic.APIError as exc:  # rate limit, overloaded, out of credit, unknown model, permission, 5xx ...
+            status = getattr(exc, "status_code", "")
+            raise TranslatorUnavailable(f"Anthropic error {status}: {str(getattr(exc, 'message', exc))[:200]}") from exc
         if resp.stop_reason == "refusal":
             raise TranslatorUnavailable("The model declined this request.")
         if resp.stop_reason == "max_tokens":
@@ -120,7 +123,7 @@ class AnthropicProvider:
                                                       messages=[{"role": "user", "content": content}])
         except anthropic.AuthenticationError as exc:
             raise TranslatorUnavailable("Anthropic rejected the API key (ANTHROPIC_API_KEY).") from exc
-        except (anthropic.APIConnectionError, anthropic.APIStatusError, TypeError) as exc:
+        except (anthropic.APIError, TypeError) as exc:
             raise TranslatorUnavailable(f"Anthropic could not read the image: {exc}") from exc
         return "".join(b.text for b in resp.content if b.type == "text").strip()
 
@@ -254,7 +257,10 @@ class OpenAICompatibleProvider:
             if isinstance(args, dict):
                 args = json.dumps(args)
             if native_tools and fn.get("name") == "respond":  # translate native calls into the engine's action format
-                a = json.loads(args or "{}")
+                try:
+                    a = json.loads(args or "{}")
+                except ValueError as exc:
+                    raise TranslatorUnavailable(f"{self.name} sent a malformed tool call.") from exc
                 return json.dumps({"action": "answer", "tool": "", "args_json": "{}", "text": a.get("text", ""),
                                    "remember": a.get("remember") or []})
             if native_tools and fn.get("name"):
@@ -326,6 +332,13 @@ _COOLDOWN: dict[str, float] = {}
 COOLDOWN_SECONDS = 60.0
 
 
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (TypeError, ValueError):
+        return False
+
+
 class FallbackProvider:
     """Tries each provider in order and moves on when one is unavailable (no key, rate limit, outage, refusal).
     The answer is still validated by the translator, so a different model never changes what is trusted."""
@@ -350,7 +363,9 @@ class FallbackProvider:
         for p in self._order():
             try:
                 reply = p.complete(system, messages, schema, tools)
-            except TranslatorUnavailable as exc:
+                if not _is_json_object(reply.text):  # a model that answers in prose is as useless as one that is down
+                    raise TranslatorUnavailable("returned a reply that is not the required JSON")
+            except Exception as exc:  # noqa: BLE001 - whatever went wrong with this provider, the next one gets its turn
                 failures.append(f"{p.label}: {exc}")
                 if "declined" not in str(exc):  # a refusal says nothing about the model's health
                     _COOLDOWN[p.label] = time.monotonic() + COOLDOWN_SECONDS
@@ -358,6 +373,8 @@ class FallbackProvider:
             _COOLDOWN.pop(p.label, None)
             self.used = p
             return reply
+        if not failures:
+            raise TranslatorUnavailable("No AI model is configured.")
         raise TranslatorUnavailable("; ".join(failures) if len(failures) > 1 else failures[0].split(": ", 1)[1])
 
     def describe_image(self, data: bytes, mime: str, prompt: str) -> str:
@@ -365,7 +382,7 @@ class FallbackProvider:
         for p in self.providers:
             try:
                 text = p.describe_image(data, mime, prompt)
-            except TranslatorUnavailable as exc:
+            except Exception as exc:  # noqa: BLE001 - try the next model
                 failures.append(f"{p.label}: {exc}")
                 continue
             if text:
