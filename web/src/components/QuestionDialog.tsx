@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 const OTHER = "__other__";
 const AI = "__ai__";
+// answers the model offered that our own "Other…" and "Let the AI decide" buttons already cover
+const OWN_OPTIONS = /^(other|none of the above|let the ai|you decide|ai decide)/i;
 const AI_ANSWER = "you choose a sensible default and list it under assumptions";
 
 /** The strategy translator needs answers before it can build the rules: one card per question with tappable
@@ -26,12 +28,16 @@ export function QuestionDialog({
   const [custom, setCustom] = useState<string[]>(() => questions.map(() => ""));
   const box = useRef<HTMLDivElement>(null);
 
+  // The parent passes a new onClose function on every render (each keystroke), so keep it in a ref: depending on it would
+  // re-run the focus line below and pull the cursor out of the answer box.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     box.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   const answer = (i: number) =>
     picked[i] === OTHER ? custom[i].trim() || null : picked[i] === AI ? AI_ANSWER : picked[i];
@@ -64,7 +70,7 @@ export function QuestionDialog({
                 {q}
               </h3>
               <div role="radiogroup" aria-label={q} className="mt-2 flex flex-wrap gap-1.5">
-                {[...(choices[i] ?? []), OTHER, AI].map((c) => {
+                {[...(choices[i] ?? []).filter((c) => !OWN_OPTIONS.test(c)), OTHER, AI].map((c) => {
                   const on = picked[i] === c;
                   return (
                     <button

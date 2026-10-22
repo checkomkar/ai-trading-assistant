@@ -10,6 +10,9 @@ from __future__ import annotations
 from collections import deque
 from datetime import date, time
 
+from trader.indicators import extra as X
+from trader.indicators.extra import pivot_levels
+from trader.strategy.extra_operands import PIVOTS, SOURCE
 from trader.indicators import ADX, ATR, EMA, MACD, ROC, RSI, SMA, BollingerBands, Pivots, RollingExtreme, candle_patterns
 from trader.strategy.base import Direction, MarketState, NoTrade, Signal, Strategy
 from trader.strategy.spec import (
@@ -39,20 +42,38 @@ DAILY = {"daily_ema": EMA, "daily_sma": SMA, "daily_rsi": RSI}
 DIV_PIVOT_BARS = 3  # swing width used for RSI divergence
 
 
+FACTORIES = {  # kind -> indicator object, from the operand's period and mult
+    "wma": lambda p, m: X.WMA(p), "hma": lambda p, m: X.HMA(p), "vwma": lambda p, m: X.VWMA(p), "dema": lambda p, m: X.DEMA(p),
+    "tema": lambda p, m: X.TEMA(p), "rma": lambda p, m: X.RMA(p), "linreg": lambda p, m: X.LinReg(p),
+    "supertrend": lambda p, m: X.Supertrend(p, m), "psar": lambda p, m: X.ParabolicSAR(), "aroon": lambda p, m: X.Aroon(p),
+    "vortex": lambda p, m: X.Vortex(p), "ichimoku": lambda p, m: X.Ichimoku(), "stoch": lambda p, m: X.Stochastic(p),
+    "stoch_rsi": lambda p, m: X.StochRSI(p), "cci": lambda p, m: X.CCI(p), "williams_r": lambda p, m: X.WilliamsR(p),
+    "mfi": lambda p, m: X.MFI(p), "mom": lambda p, m: X.Momentum(p), "cmo": lambda p, m: X.CMO(p),
+    "ao": lambda p, m: X.AwesomeOscillator(), "trix": lambda p, m: X.TRIX(p), "ult_osc": lambda p, m: X.UltimateOscillator(),
+    "obv": lambda p, m: X.OBV(), "ad_line": lambda p, m: X.ADLine(), "cmf": lambda p, m: X.CMF(p),
+    "keltner": lambda p, m: X.Keltner(p, m), "donchian": lambda p, m: X.Donchian(p), "bb_extra": lambda p, m: X.BollingerExtra(p, m),
+    "stddev": lambda p, m: X.StdDev(p), "prices": lambda p, m: X.PriceTransforms(),
+}
+
+
 class _Bank:
     """Indicators requested by a spec, keyed by (name, period); updated once per bar."""
 
-    def __init__(self, keys: set[tuple[str, int | None]]) -> None:
+    def __init__(self, keys: set[tuple[str, int | None, float | None]]) -> None:
         self.keys = keys
         self.objs: dict[tuple[str, int | None], object] = {}
+        self.extras: dict[tuple, object] = {}  # indicator objects shared by every operand that reads them
         self.recent: deque[tuple[float, float, float, float]] = deque(maxlen=3)  # (o, h, l, c) for candle patterns
         self.volumes: dict[int, deque[float]] = {}  # rel_volume: previous volumes per period
         self.daily: dict[tuple[str, int | None], object] = {}  # indicators fed once a day with the previous close
         self._day = None
         self._pats: dict[str, float] = {}
-        for name, p in keys:
+        for name, p, m in keys:
             k = (name, p)
-            if name in DAILY:
+            if name in SOURCE:
+                kind = SOURCE[name][0]
+                self.extras.setdefault((kind, p, m), FACTORIES[kind](p, m))
+            elif name in DAILY:
                 self.daily[k] = DAILY[name](p)
             elif name == "rel_volume":
                 self.volumes[p] = deque(maxlen=p)
@@ -80,14 +101,14 @@ class _Bank:
             elif name in ("macd", "macd_signal", "macd_hist"):
                 self.objs[("macd", None)] = self.objs.get(("macd", None)) or MACD()
 
-    def update(self, f) -> dict[tuple[str, int | None], float | None]:  # noqa: ANN001
+    def update(self, f) -> dict[tuple[str, int | None, float | None], float | None]:  # noqa: ANN001
         if self.daily and f.day != self._day:  # a new day began: yesterday's close is now final
             self._day = f.day
             if f["prev_day_close"] is not None:
                 for o in self.daily.values():
                     o.update(f["prev_day_close"])  # type: ignore[attr-defined]
         self.recent.append((f.open, f.high, f.low, f.close))
-        if any(n in PATTERNS for n, _ in self.keys):
+        if any(n in PATTERNS for n, _, _ in self.keys):
             self._pats = candle_patterns(list(self.recent))
         if ("divrsi", 14) in self.objs:  # first, so the pivots below see this bar's RSI
             self.objs[("divrsi", 14)].update(f.close)  # type: ignore[attr-defined]
@@ -104,14 +125,21 @@ class _Bank:
             else:
                 o.update(f.close)  # type: ignore[attr-defined]
         vol = f["fut_volume"]
+        for ex in self.extras.values():
+            ex.update(f.open, f.high, f.low, f.close, vol)  # type: ignore[attr-defined]
         rel = {}
         for per, dq in self.volumes.items():
             rel[per] = vol / (sum(dq) / per) if vol and len(dq) == per and sum(dq) > 0 else None
             if vol:
                 dq.append(vol)
-        snap: dict[tuple[str, int | None], float | None] = {}
-        for name, p in self.keys:
-            if name in PRICE_OPERANDS:
+        snap: dict[tuple[str, int | None, float | None], float | None] = {}
+        for name, p, m in self.keys:
+            if name in SOURCE:
+                v = self.extras[(SOURCE[name][0], p, m)].values.get(SOURCE[name][1])  # type: ignore[attr-defined]
+            elif name in PIVOTS:
+                ph, pl, pc = f["prev_day_high"], f["prev_day_low"], f["prev_day_close"]
+                v = pivot_levels(ph, pl, pc)[PIVOTS[name]] if None not in (ph, pl, pc) else None
+            elif name in PRICE_OPERANDS:
                 v = getattr(f, name)
             elif name in PATTERNS:
                 v = self._pats.get(PATTERNS[name])
@@ -150,7 +178,7 @@ class _Bank:
                 v = {"macd": o.macd, "macd_signal": o.signal, "macd_hist": o.histogram}[name]  # type: ignore[attr-defined]
             else:  # pragma: no cover - schema whitelist makes this unreachable
                 raise KeyError(name)
-            snap[(name, p)] = v
+            snap[(name, p, m)] = v
         return snap
 
 

@@ -68,6 +68,11 @@ INDICATORS: dict[str, tuple[bool, tuple[int, int] | None, str, str]] = {
     "daily_sma": (True, (2, 200), "daily SMA({p})", "index"),
     "daily_rsi": (True, (2, 100), "daily RSI({p})", "osc"),
 }
+from trader.strategy.extra_operands import (  # noqa: E402
+    EXTRA_INDICATORS, MIRROR as _EXTRA_MIRROR, MULT_DEFAULTS, REFLECT_100, REFLECT_NEG,
+)
+
+INDICATORS.update(EXTRA_INDICATORS)
 IndicatorName = Literal[tuple(INDICATORS)]  # type: ignore[valid-type]
 
 MIRROR_NAME = {"highest": "lowest", "lowest": "highest", "or_high": "or_low", "or_low": "or_high",
@@ -78,6 +83,7 @@ MIRROR_NAME = {"highest": "lowest", "lowest": "highest", "or_high": "or_low", "o
                "cs_morning_star": "cs_evening_star", "cs_evening_star": "cs_morning_star",
                "rsi_bull_div": "rsi_bear_div", "rsi_bear_div": "rsi_bull_div",
                "swing_high": "swing_low", "swing_low": "swing_high"}
+MIRROR_NAME.update(_EXTRA_MIRROR)
 MIRROR_OP = {">": "<", "<": ">", ">=": "<=", "<=": ">="}
 
 
@@ -88,6 +94,8 @@ class _Strict(BaseModel):
 class Ind(_Strict):
     ind: IndicatorName
     period: int | None = None
+    # second setting of a few indicators (Supertrend factor, Keltner / Bollinger multiplier); omitted = TradingView's default
+    mult: float | None = Field(None, ge=0.1, le=10)
     shift: int = Field(0, ge=0, le=20, description="bars back; 0 = current closed bar")
 
     @model_validator(mode="after")
@@ -101,11 +109,17 @@ class Ind(_Strict):
                 raise ValueError(f"{self.ind} period must be between {lo} and {hi}")
         elif self.period is not None:
             raise ValueError(f"{self.ind} takes no period")
+        if self.mult is not None and self.ind not in MULT_DEFAULTS:
+            raise ValueError(f"{self.ind} takes no mult")
         return self
 
     @property
-    def key(self) -> tuple[str, int | None]:
-        return (self.ind, self.period)
+    def effective_mult(self) -> float | None:
+        return self.mult if self.mult is not None else MULT_DEFAULTS.get(self.ind)
+
+    @property
+    def key(self) -> tuple[str, int | None, float | None]:
+        return (self.ind, self.period, self.effective_mult)
 
 
 class Const(_Strict):
@@ -371,16 +385,22 @@ def mirror_condition(c: object) -> object:
     """Long <-> short: flip comparisons, swap high/low-type operands, reflect bounded oscillators."""
     def mo(o: Operand) -> Operand:
         if isinstance(o, Ind):
-            return Ind(ind=MIRROR_NAME.get(o.ind, o.ind), period=o.period, shift=o.shift)
+            return Ind(ind=MIRROR_NAME.get(o.ind, o.ind), period=o.period, mult=o.mult, shift=o.shift)
         return o
 
     def reflect(ind: Operand, const: Operand) -> Operand:
         if not isinstance(const, Const) or not isinstance(ind, Ind):
             return const
-        if ind.ind in ("rsi", "daily_rsi"):
+        if ind.ind in ("rsi", "daily_rsi") or ind.ind in REFLECT_100:
             return Const(const=100 - const.const)
+        if ind.ind == "williams_r":
+            return Const(const=-100 - const.const)
+        if ind.ind == "bb_pctb":
+            return Const(const=1 - const.const)
+        if ind.ind in REFLECT_NEG:
+            return Const(const=0.0 - const.const)
         if ind.ind in ("macd", "macd_signal", "macd_hist", "roc"):
-            return Const(const=-const.const)
+            return Const(const=0.0 - const.const)
         return const
 
     if isinstance(c, Cmp):
@@ -417,7 +437,7 @@ def _op_text(o: Operand) -> str:
     if isinstance(o, Const):
         return f"{o.const:g}"
     _, _, label, _ = INDICATORS[o.ind]
-    txt = label.format(p=o.period)
+    txt = label.format(p=o.period, m=f"{o.effective_mult:g}" if o.effective_mult is not None else "")
     if o.shift:
         txt += f" {o.shift} bar{'s' if o.shift > 1 else ''} ago"
     return txt

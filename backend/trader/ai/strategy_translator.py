@@ -35,7 +35,7 @@ def _operand_table() -> str:
     rows = []
     for name, (needs, bounds, label, level) in INDICATORS.items():
         period = f"period {bounds[0]}-{bounds[1]}" if needs and bounds else "no period"
-        rows.append(f"- `{name}` ({period}; {level} scale): {label.format(p='N')}")
+        rows.append(f"- `{name}` ({period}; {level} scale): {label.format(p='N', m='M')}")
     return "\n".join(rows)
 
 
@@ -62,7 +62,7 @@ Decisions are made on each candle's close and orders fill at the next candle's o
 
 ## Operands (whitelist; anything else is unsupported)
 {_operand_table()}
-Each operand may take "shift": N (N bars ago, 0-20). There is no way to refer to future bars.
+Each operand may take "shift": N (N bars ago, 0-20). Operands whose label shows a second number (Supertrend(N, M), Keltner, Bollinger %B / bandwidth) take an optional "mult": M (default is TradingView's: Supertrend 3, Keltner 2, Bollinger 2). The indicator names and defaults follow TradingView: "Supertrend 10, 3" = {{"ind":"supertrend","period":10,"mult":3}}; use `supertrend_dir` > 0 for "Supertrend is bullish" and "close above Supertrend" is close vs `supertrend`. Stochastic(14,3,3) = stoch_k / stoch_d with period 14. An indicator that is not in this list is not supported: say so in "unsupported" and suggest the closest one. There is no way to refer to future bars.
 
 ## Rules you must follow
 - Conditions: {{"cmp": [a, op, b]}} with op in > < >= <=; {{"cross": [a, "above"|"below", b]}} (true only on the \
