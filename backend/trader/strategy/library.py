@@ -95,7 +95,57 @@ LIBRARY: list[dict] = [
 assert MOMENTUM_V1  # the PRD reference spec stays the first saved strategy
 
 
-CATEGORIES = ("Momentum", "Trend", "Scalp", "Sideways")
+def _stock(name: str, description: str, entry: list[dict], sl: float, target: float, trail: tuple[float, float] | None = None,
+           days: int | None = None, exit_when: dict | None = None, risk_pct: float | None = 1.0, positions: int = 5) -> dict:
+    """A daily-chart, long-only, delivery strategy on the NIFTY 50 (see backtest/equity.py)."""
+    exits: dict = {"stop_loss_pct": sl, "target_pct": target}
+    if trail:
+        exits["trail"] = {"activate_pct": trail[0], "trail_pct": trail[1]}
+    if days:
+        exits["time_exit_bars"] = days
+    if exit_when:
+        exits["conditions"] = exit_when
+    risk: dict = {"max_positions": positions}
+    if risk_pct:
+        risk["risk_per_trade_pct"] = risk_pct
+    return {"market": "equity", "name": name, "description": description, "underlyings": ["NIFTY50"], "timeframe": "1d",
+            "sides": {"long": {"entry": {"all": entry}}}, "exits": exits, "risk": risk}
+
+
+_sma200, _sma50 = _ind("sma", 200), _ind("sma", 50)
+
+STOCK_LIBRARY: list[dict] = [
+    _stock("Pullback in an Uptrend (daily)",
+           "Stocks: buy a dip in a stock above its 200-day average when RSI is low and a bullish engulfing candle forms; "
+           "sold at RSI 70, after 20 days, or at the stop / target.",
+           [_cmp(_close, ">", _sma200), _cmp(_rsi, "<", 40), _cmp(_ind("cs_bull_engulfing"), ">", 0)],
+           6, 18, days=20, exit_when=_cmp(_rsi, ">", 70)),
+    _stock("50-Day Breakout on Volume (daily)",
+           "Stocks: close above the previous 50 days' high on heavy volume while above the 200-day average; a trailing "
+           "stop lets winners run.",
+           [_cmp(_close, ">", _ind("highest", 50)), _cmp(_ind("rel_volume", 20), ">", 1.5), _cmp(_close, ">", _sma200)],
+           7, 30, trail=(10, 6)),
+    _stock("Golden Cross 50/200 (daily)",
+           "Stocks: 50-day average crosses above the 200-day average; held until it crosses back below (a long-term "
+           "trend follower, few trades).",
+           [_cross(_sma50, "above", _sma200)], 12, 80, exit_when=_cross(_sma50, "below", _sma200), risk_pct=None, positions=10),
+    _stock("RSI Oversold Bounce (daily)",
+           "Stocks: RSI under 30 while the stock is still above its 200-day average; exits when RSI recovers above 55 "
+           "or after 10 days.",
+           [_cmp(_rsi, "<", 30), _cmp(_close, ">", _sma200)], 8, 12, days=10, exit_when=_cmp(_rsi, ">", 55)),
+    _stock("Hammer at a Swing Low (daily)",
+           "Stocks: a hammer candle that probes below the latest swing low (3 bars each side) in an uptrend; a 1:3 "
+           "reward-to-risk setup.",
+           [_cmp(_ind("cs_hammer"), ">", 0), _cmp(_ind("low"), "<=", _ind("swing_low", 3)), _cmp(_close, ">", _sma200)],
+           5, 15, days=15),
+    _stock("MACD Trend Follower (daily)",
+           "Stocks: MACD crosses above its signal line while the stock is above its 50-day average; exits when MACD "
+           "crosses back below.",
+           [_cross(_ind("macd"), "above", _ind("macd_signal")), _cmp(_close, ">", _sma50)],
+           8, 40, trail=(12, 7), exit_when=_cross(_ind("macd"), "below", _ind("macd_signal"))),
+]
+
+CATEGORIES = ("Momentum", "Trend", "Scalp", "Sideways", "Stocks")
 
 
 def catalogue() -> list[dict]:
@@ -104,7 +154,7 @@ def catalogue() -> list[dict]:
     from trader.strategy.spec import StrategySpec, render_english
 
     out = []
-    for raw in [MOMENTUM_V1, *LIBRARY]:
+    for raw in [MOMENTUM_V1, *LIBRARY, *STOCK_LIBRARY]:
         spec = StrategySpec.model_validate(raw)
         head = (raw.get("description") or "").split(":", 1)[0].strip()
         category = head if head in CATEGORIES else "Momentum"

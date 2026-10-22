@@ -23,14 +23,16 @@ const COLORS = { up: "#22c55e", down: "#f43f5e", emaFast: "#3987e5", emaSlow: "#
 
 const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "60m"] as const;
 // Trading days of history requested per timeframe, so a 1m chart does not pull a year of minutes.
-const DAYS: Record<string, number> = { "1m": 8, "3m": 25, "5m": 60, "15m": 150, "30m": 250, "60m": 250 };
+const DAYS: Record<string, number> = { "1m": 8, "3m": 25, "5m": 60, "15m": 150, "30m": 250, "60m": 250, "1d": 400 };
 // Bars shown on first paint.
-const VISIBLE: Record<string, number> = { "1m": 375, "3m": 250, "5m": 230, "15m": 200, "30m": 150, "60m": 120 };
+const VISIBLE: Record<string, number> = { "1m": 375, "3m": 250, "5m": 230, "15m": 200, "30m": 150, "60m": 120, "1d": 160 };
 
 interface ChartData {
   underlying: string;
   timeframe: string;
   bars: Bar[];
+  symbol?: string;
+  symbols?: string[];
 }
 
 interface Settings {
@@ -81,15 +83,22 @@ const istDay = (t: number) => new Date((t + IST) * 1000).toISOString().slice(0, 
 
 export function TradeChart({
   runId,
-  trades,
+  trades: allTrades,
   selected,
   onSelect,
+  daily = false,
 }: {
   runId: string;
   trades: BacktestTrade[];
   selected: BacktestTrade | null;
   onSelect: (t: BacktestTrade | null) => void;
+  daily?: boolean; // a stock run: daily candles of one stock at a time
 }) {
+  const [symbol, setSymbol] = useState<string | null>(null);
+  const trades = useMemo(
+    () => (daily ? allTrades.filter((t) => t.contract === (symbol ?? allTrades[0]?.contract)) : allTrades),
+    [daily, allTrades, symbol],
+  );
   const box = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -125,16 +134,27 @@ export function TradeChart({
     let alive = true;
     setError(null);
     const q = new URLSearchParams();
-    if (tf) q.set("timeframe", tf);
+    if (tf && !daily) q.set("timeframe", tf);
+    if (daily && symbol) q.set("symbol", symbol);
     if (fromDate) q.set("from_date", fromDate);
-    else q.set("last_days", String(DAYS[tf ?? "5m"] ?? 60));
+    else q.set("last_days", String(DAYS[daily ? "1d" : (tf ?? "5m")] ?? 60));
     getJSON<ChartData>(`/backtests/${runId}/chart?${q}`)
       .then((d) => alive && setData(d))
       .catch((e: Error) => alive && setError(e.message));
     return () => {
       alive = false;
     };
-  }, [runId, tf, fromDate]);
+  }, [runId, tf, fromDate, symbol, daily]);
+
+  // Picking a trade of another stock switches the chart to that stock.
+  useEffect(() => {
+    if (daily && selected && selected.contract !== (symbol ?? data?.symbol)) {
+      setSymbol(selected.contract);
+      setFromDate(null);
+      setData(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, daily]);
 
   // A selected trade older than the loaded range: load back to it.
   useEffect(() => {
@@ -152,7 +172,7 @@ export function TradeChart({
       grid: { vertLines: { color: "#161b24" }, horzLines: { color: "#161b24" } },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 3 },
+      timeScale: { borderVisible: false, timeVisible: !daily, secondsVisible: false, rightOffset: 3 },
     });
     const cs = c.addCandlestickSeries({
       upColor: COLORS.up, downColor: COLORS.down, borderVisible: false, wickUpColor: COLORS.up, wickDownColor: COLORS.down,
@@ -260,7 +280,7 @@ export function TradeChart({
           shape: long ? "arrowUp" : "arrowDown",
           color: long ? COLORS.up : COLORS.down,
           size: sel ? 1.6 : 1,
-          text: sel ? `${long ? "Buy CE" : "Buy PE"} @${fmtPrice(t.entry_price)}` : "",
+          text: sel ? `${daily ? "Buy" : long ? "Buy CE" : "Buy PE"} @${fmtPrice(t.entry_price)}` : "",
         });
       }
       // On a coarser timeframe the exit minute is not a bar start; snap to the bar that contains it.
@@ -292,7 +312,7 @@ export function TradeChart({
     c.timeScale().setVisibleRange({ from: T(entry - pad), to: T(exit + pad) });
   }, [selected, data]);
 
-  const active = tf ?? data?.timeframe ?? "";
+  const active = daily ? "1d" : (tf ?? data?.timeframe ?? "");
   const toggle = <K extends keyof Settings>(k: K, patch: Partial<Settings[K]>) => setCfg((s) => ({ ...s, [k]: { ...s[k], ...patch } }));
   const pickTf = (x: string) => {
     setTf(x);
@@ -329,7 +349,23 @@ export function TradeChart({
           <p className="text-[11px] text-ink-400">Click a marker or a row in the trade table to zoom in · scroll / drag to pan</p>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div role="group" aria-label="Timeframe" className="flex overflow-hidden rounded-md border border-ink-700">
+          {daily && (
+            <select
+              value={symbol ?? data?.symbol ?? ""}
+              onChange={(e) => {
+                setSymbol(e.target.value);
+                setFromDate(null);
+                setData(null);
+              }}
+              aria-label="Stock"
+              className="rounded-md border border-ink-700 bg-ink-850 px-2 py-1 text-[11px] text-ink-100"
+            >
+              {(data?.symbols ?? []).map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          )}
+          <div role="group" aria-label="Timeframe" className={`flex overflow-hidden rounded-md border border-ink-700 ${daily ? "hidden" : ""}`}>
             {TIMEFRAMES.map((x) => (
               <button
                 key={x}
@@ -363,8 +399,8 @@ export function TradeChart({
           </div>
         </div>
         <ul className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-300" aria-label="Legend">
-          <li className="flex items-center gap-1"><span style={{ color: COLORS.up }}>▲</span>Buy CE</li>
-          <li className="flex items-center gap-1"><span style={{ color: COLORS.down }}>▼</span>Buy PE</li>
+          <li className="flex items-center gap-1"><span style={{ color: COLORS.up }}>▲</span>{daily ? "Buy shares" : "Buy CE"}</li>
+          {!daily && <li className="flex items-center gap-1"><span style={{ color: COLORS.down }}>▼</span>Buy PE</li>}
           <li className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: COLORS.up }} />/<span className="inline-block h-2 w-2 rounded-full" style={{ background: COLORS.down }} />Exit, profit / loss</li>
         </ul>
       </div>
@@ -372,7 +408,9 @@ export function TradeChart({
       <div className="num flex min-h-[20px] flex-wrap gap-x-3 px-3 pt-1 text-[11px] text-ink-400">
         {hover ? (
           <>
-            <span>{new Date(hover.t * 1000).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false })}</span>
+            <span>{new Date(hover.t * 1000).toLocaleString("en-IN", daily
+              ? { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" }
+              : { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false })}</span>
             <span>O <b className="font-normal text-ink-100">{fmtPrice(hover.o)}</b></span>
             <span>H <b className="font-normal text-ink-100">{fmtPrice(hover.h)}</b></span>
             <span>L <b className="font-normal text-ink-100">{fmtPrice(hover.l)}</b></span>

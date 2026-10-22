@@ -3,7 +3,8 @@
     python -m trader.scripts.merge_market_data --from data/trader.db --to data/market_slim.db --create
     python -m trader.scripts.merge_market_data --from /tmp/market_slim.db --to /app/data/trader.db
 
-Copies instruments (matched by token), candles and option snapshots; skips ticks. Rows already present are left as
+Copies instruments (matched by token), candles and option snapshots; skips ticks. `--equities-only` copies just the
+stock instruments and their daily candles (a few MB: how a locally fetched NIFTY 50 history reaches the server). Rows already present are left as
 they are (INSERT OR IGNORE, never DELETE), so it is safe to run again and to run on a database that has accounts and
 strategies. `--create` makes a new, empty target with just the market tables, a small file to upload to a server.
 Run with the API stopped, or at least not writing candles."""
@@ -32,19 +33,20 @@ def create_target(path: Path) -> None:
     eng.dispose()
 
 
-def merge(src_path: Path, dst_path: Path) -> dict[str, int]:
+def merge(src_path: Path, dst_path: Path, equities_only: bool = False) -> dict[str, int]:
     src, dst = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True), sqlite3.connect(dst_path)
     added = {"instruments": 0, "candles": 0, "option_snapshots": 0}
     try:
         cols = ",".join(INSTRUMENT_COLS)
         marks = ",".join("?" * len(INSTRUMENT_COLS))
         before = dst.execute("select count(*) from instruments").fetchone()[0]
-        for row in src.execute(f"select {cols} from instruments"):
+        where = " where instrument_type = 'EQ'" if equities_only else ""
+        for row in src.execute(f"select {cols} from instruments{where}"):
             dst.execute(f"insert or ignore into instruments ({cols}) values ({marks})", row)
         dst.commit()
         added["instruments"] = dst.execute("select count(*) from instruments").fetchone()[0] - before
         dst_ids = dict(dst.execute("select token, id from instruments").fetchall())
-        src_tokens = dict(src.execute("select id, token from instruments").fetchall())
+        src_tokens = dict(src.execute(f"select id, token from instruments{where}").fetchall())
         remap = {sid: dst_ids[tok] for sid, tok in src_tokens.items() if tok in dst_ids}
 
         ccols = ",".join(("instrument_id",) + CANDLE_COLS)
@@ -57,6 +59,8 @@ def merge(src_path: Path, dst_path: Path) -> dict[str, int]:
             dst.commit()
         added["candles"] = dst.execute("select count(*) from candles").fetchone()[0] - before
 
+        if equities_only:
+            return added
         # snapshots have no natural unique key in the table: add one while merging so re-runs do not duplicate
         dst.execute("create unique index if not exists ux_option_snapshots_merge on option_snapshots "
                     "(underlying, expiry, strike, option_type, ts)")
@@ -79,12 +83,13 @@ def main() -> None:
     ap.add_argument("--from", dest="src", required=True, type=Path)
     ap.add_argument("--to", dest="dst", required=True, type=Path)
     ap.add_argument("--create", action="store_true", help="create the target with only the market tables")
+    ap.add_argument("--equities-only", action="store_true", help="only the stock instruments and their candles")
     a = ap.parse_args()
     if a.create:
         if a.dst.exists():
             raise SystemExit(f"{a.dst} already exists")
         create_target(a.dst)
-    for table, n in merge(a.src, a.dst).items():
+    for table, n in merge(a.src, a.dst, a.equities_only).items():
         print(f"{table}: {n} rows added")
 
 

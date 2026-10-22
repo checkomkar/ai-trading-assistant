@@ -221,6 +221,10 @@ export interface BacktestMetrics {
   daily_pnl: { date: string; pnl: number }[];
   monthly_pnl: { month: string; pnl: number }[];
   equity_curve: { ts: string | null; equity: number; drawdown?: number }[];
+  // stock (daily) runs
+  by_symbol?: { symbol: string; trades: number; net_pnl: number; win_rate: number }[];
+  average_holding_days?: number | null;
+  exposure_pct?: number | null;
 }
 
 export interface BacktestResult {
@@ -232,7 +236,7 @@ export interface BacktestResult {
   strategy: string;
   data_source: "real" | "simulated";
   built_from?: string | null;
-  pricing_mode: "synthetic" | "real";
+  pricing_mode: "synthetic" | "real" | "equity delivery";
   bars: number;
   days: number;
   signals: number;

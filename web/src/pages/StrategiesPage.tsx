@@ -35,7 +35,7 @@ export function StrategiesPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
-  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000 });
+  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000, capital: 100000 });
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
   const refreshSaved = () => getJSON<SavedStrategy[]>("/strategies").then(setSaved).catch(() => {});
@@ -147,11 +147,12 @@ export function StrategiesPage() {
         source: bt.source,
         pricing: bt.pricing,
         strategy_id: s.id,
-        engine_params: { lots: bt.lots, max_daily_loss: bt.max_daily_loss },
+        engine_params: isEquity ? { capital: bt.capital } : { lots: bt.lots, max_daily_loss: bt.max_daily_loss },
       });
       setResult(r);
     });
 
+  const isEquity = (parsed as Record<string, unknown> | null | undefined)?.market === "equity";
   const dirty = current && validation?.spec_hash && validation.spec_hash !== current.spec_hash;
   const underlyings = ((parsed as Record<string, unknown> | null | undefined)?.underlyings as string[] | undefined) ?? ["NIFTY", "BANKNIFTY"];
 
@@ -323,35 +324,45 @@ ${r.text.trim()}` : r.text.trim()));
               </div>
 
               <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-ink-800 pt-3">
-                <Field label="Underlying">
-                  <select value={bt.underlying} onChange={(e) => setBt({ ...bt, underlying: e.target.value })} className={inp}>
-                    {underlyings.map((u) => (
-                      <option key={u}>{u}</option>
-                    ))}
-                  </select>
-                </Field>
+                {!isEquity && (
+                  <Field label="Underlying">
+                    <select value={bt.underlying} onChange={(e) => setBt({ ...bt, underlying: e.target.value })} className={inp}>
+                      {underlyings.map((u) => (
+                        <option key={u}>{u}</option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
                 <Field label="From">
                   <input type="date" value={bt.start} onChange={(e) => setBt({ ...bt, start: e.target.value })} className={inp} />
                 </Field>
                 <Field label="To">
                   <input type="date" value={bt.end} onChange={(e) => setBt({ ...bt, end: e.target.value })} className={inp} />
                 </Field>
-                <Field label="Data">
-                  <select value={bt.source} onChange={(e) => setBt({ ...bt, source: e.target.value })} className={inp}>
-                    <option value="auto">Auto</option>
-                    <option value="real">Real</option>
-                    <option value="simulated">Simulated</option>
-                  </select>
-                </Field>
-                <Field label="Option prices">
-                  <select value={bt.pricing} onChange={(e) => setBt({ ...bt, pricing: e.target.value })} className={inp}>
-                    <option value="synthetic">Synthetic</option>
-                    <option value="real">Real candles</option>
-                  </select>
-                </Field>
-                <Field label="Lots">
-                  <input type="number" min={1} max={50} value={bt.lots} onChange={(e) => setBt({ ...bt, lots: Number(e.target.value) || 1 })} className={`${inp} w-16`} />
-                </Field>
+                {isEquity ? (
+                  <Field label="Capital ₹">
+                    <input type="number" min={10000} step={10000} value={bt.capital} onChange={(e) => setBt({ ...bt, capital: Number(e.target.value) || 100000 })} className={`${inp} w-28`} />
+                  </Field>
+                ) : (
+                  <>
+                    <Field label="Data">
+                      <select value={bt.source} onChange={(e) => setBt({ ...bt, source: e.target.value })} className={inp}>
+                        <option value="auto">Auto</option>
+                        <option value="real">Real</option>
+                        <option value="simulated">Simulated</option>
+                      </select>
+                    </Field>
+                    <Field label="Option prices">
+                      <select value={bt.pricing} onChange={(e) => setBt({ ...bt, pricing: e.target.value })} className={inp}>
+                        <option value="synthetic">Synthetic</option>
+                        <option value="real">Real candles</option>
+                      </select>
+                    </Field>
+                    <Field label="Lots">
+                      <input type="number" min={1} max={50} value={bt.lots} onChange={(e) => setBt({ ...bt, lots: Number(e.target.value) || 1 })} className={`${inp} w-16`} />
+                    </Field>
+                  </>
+                )}
                 <button
                   onClick={backtest}
                   disabled={!!busy || !validation?.valid}

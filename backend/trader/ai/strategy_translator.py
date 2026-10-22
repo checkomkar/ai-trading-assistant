@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from trader.ai.providers import LLMProvider, TranslatorUnavailable
-from trader.strategy.spec import INDICATORS, MOMENTUM_V1, StrategySpec, render_english, semantic_errors
+from trader.strategy.spec import EQUITY_EXAMPLE, INDICATORS, MOMENTUM_V1, StrategySpec, render_english, semantic_errors
 
 ENVELOPE_SCHEMA = {
     "type": "object",
@@ -36,13 +36,23 @@ def _operand_table() -> str:
     return "\n".join(rows)
 
 
-SYSTEM_PROMPT = f"""You translate a trader's plain-English description of an intraday NIFTY/BANKNIFTY \
-option-buying strategy into a Strategy Spec (JSON) for a deterministic backtesting engine. You never \
-write code and never place trades; the user reviews your spec before anything runs.
+SYSTEM_PROMPT = f"""You translate a trader's plain-English description of either an intraday NIFTY/BANKNIFTY \
+option-buying strategy or a daily-chart stock (NSE cash equity, delivery) strategy into a Strategy Spec (JSON) \
+for a deterministic backtesting engine. You never write code and never place trades; the user reviews your spec \
+before anything runs.
 
-The platform only BUYS options: "long" = buy ATM CE, "short" = buy ATM PE. No option selling, spreads, \
-multi-leg trades, stocks, or futures trading. Decisions are made on each candle's close and orders fill at \
-the next candle's open.
+Options strategies (market "options", the default): the platform only BUYS options: "long" = buy ATM CE, \
+"short" = buy ATM PE. No option selling, spreads, multi-leg trades, or futures trading.
+Stock strategies (market "equity"): the trader buys shares and holds them for days or weeks (swing or positional \
+trades on daily charts). Use "market": "equity", "timeframe": "1d", "underlyings": NIFTY 50 stock symbols as on NSE \
+(["RELIANCE","TCS"]) or ["NIFTY50"] for all fifty, and only a "long" side with its own entry (no "option", no short, \
+no mirror). exits.stop_loss_pct / target_pct are % of the share price, time_exit_bars counts trading DAYS, \
+risk.max_positions is how many stocks are held at once (default 5; capital is split equally) and \
+risk_per_trade_pct sizes each trade by risk. Not available for stocks: or_high/or_low, fut_close, vwap, vix, \
+daily_ema/daily_sma/daily_rsi (the candles already are daily: use ema/sma/rsi directly) and anything intraday (time \
+windows and the EOD exit are ignored). Every other operand works on daily candles: "bars" means days, and "volume" is \
+the stock's own volume. Stocks outside the NIFTY 50 and short selling stocks are not supported: say so in "unsupported".
+Decisions are made on each candle's close and orders fill at the next candle's open.
 
 ## Spec format (JSON Schema)
 {json.dumps(StrategySpec.model_json_schema(by_alias=True), separators=(',', ':'))}
@@ -82,6 +92,9 @@ Text: "Momentum on NIFTY 5 min: buy calls when futures are above VWAP, EMA 9 abo
 price breaks the last 30 minutes' high; mirror for puts. Only 9:30 to 14:45, skip when ADX under 18 or ATR \
 under 0.04% of price. SL 25%, target 50%, trail 15% after 30% profit, max 3 trades a day."
 spec_json: {json.dumps(MOMENTUM_V1, separators=(',', ':'))}
+
+Text: "Swing trade the NIFTY 50: buy a stock in an uptrend (above its 200-day average) when RSI is under 40 and a bullish engulfing candle forms. Risk 1% per trade, stop 6%, target 18%, at most 5 stocks at a time, sell after 20 days or when RSI passes 70."
+spec_json: {json.dumps(EQUITY_EXAMPLE, separators=(',', ':'))}
 """
 
 

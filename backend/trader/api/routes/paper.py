@@ -61,6 +61,9 @@ async def start(request: Request, body: StartIn | None = None) -> dict:
         if row is None:
             raise HTTPException(404, "strategy not found")
         spec, version, strategy = row.spec, row.id, "spec"
+        if spec.get("market") == "equity":
+            raise HTTPException(400, "Stock strategies paper-trade on the Stocks page (daily candles, end-of-day orders), "
+                                     "not in this intraday runner.")
     # A saved strategy trades on its own candle size; the live feed only builds some of them.
     timeframe = body.timeframe or (spec["timeframe"] if spec else p.settings.paper_timeframe)
     if timeframe not in p.md.candles.timeframes:

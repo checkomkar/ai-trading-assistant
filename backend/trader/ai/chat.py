@@ -88,8 +88,8 @@ def system_prompt(tools: dict[str, Tool], memory: list[str], docs: list[dict], s
     kb = "\n".join(f"- {d['filename']} ({d['kind']}): {d['summary'][:120]}" for d in docs[:MAX_KB_LINES]) or "(no files uploaded)"
     if len(docs) > MAX_KB_LINES:
         kb += f"\n(+{len(docs) - MAX_KB_LINES} more files: search_knowledge finds them)"
-    return f"""You are the trader's private assistant inside their NIFTY/BANKNIFTY option-buying research and paper-trading \
-platform. You know their strategies, backtests, paper trades and uploaded notes, and you help them understand, describe, \
+    return f"""You are the trader's private assistant inside their NIFTY/BANKNIFTY option-buying (intraday) and NIFTY 50 stock (daily charts, delivery) research and \
+paper-trading platform. You know their strategies, backtests, paper trades and uploaded notes, and you help them understand, describe, \
 compare and improve strategies. Today is {date.today().isoformat()}.
 
 ## Hard limits

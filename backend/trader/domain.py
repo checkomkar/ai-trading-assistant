@@ -13,6 +13,7 @@ class InstrumentType(str, Enum):
     INDEX = "INDEX"
     FUT = "FUT"
     OPT = "OPT"
+    EQUITY = "EQ"
 
 
 @dataclass(frozen=True)

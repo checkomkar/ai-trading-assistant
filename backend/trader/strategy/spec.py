@@ -146,7 +146,7 @@ for _m in (All, Any_, Not):
 
 
 class Side(_Strict):
-    option: Literal["CE", "PE"]
+    option: Literal["CE", "PE"] | None = None  # options strategies only; a stock strategy just buys the shares
     entry: Condition | None = None
     mirror_of: Literal["long", "short"] | None = None
 
@@ -216,23 +216,45 @@ class Risk(_Strict):
     risk_per_trade_pct: float | None = Field(None, gt=0, le=5)
     # Refuse the spec unless target % / stop-loss % is at least this (e.g. 3 = reward at least 3x the risk).
     min_reward_risk: float | None = Field(None, ge=1, le=20)
+    # Stock strategies: the most positions held at the same time; each gets an equal share of capital (or less when
+    # risk_per_trade_pct is set).
+    max_positions: int = Field(5, ge=1, le=50)
 
 
 class StrategySpec(_Strict):
     spec_version: Literal[1] = 1
     name: str = Field(min_length=1, max_length=80)
     description: str = ""
-    underlyings: list[Literal["NIFTY", "BANKNIFTY"]] = Field(default_factory=lambda: ["NIFTY"], min_length=1)
-    timeframe: Literal["1m", "2m", "3m", "5m", "10m", "15m", "20m", "30m", "60m"] = "5m"
+    # "options" = intraday NIFTY/BANKNIFTY option buying; "equity" = daily-bar delivery trades in NSE stocks
+    market: Literal["options", "equity"] = "options"
+    underlyings: list[str] = Field(default_factory=lambda: ["NIFTY"], min_length=1)  # equity: stock symbols or NIFTY50
+    timeframe: Literal["1m", "2m", "3m", "5m", "10m", "15m", "20m", "30m", "60m", "1d"] = "5m"
     sides: Sides
     filters: Filters = Field(default_factory=Filters)
     option_selection: OptionSelection = Field(default_factory=OptionSelection)
     exits: Exits
     risk: Risk = Field(default_factory=Risk)
 
+    @model_validator(mode="after")
+    def _universe(self) -> "StrategySpec":
+        from trader.instruments.equities import UNIVERSES, is_equity_symbol
+
+        if self.market == "options":
+            bad = [u for u in self.underlyings if u not in ("NIFTY", "BANKNIFTY")]
+            if bad:
+                raise ValueError(f"options strategies trade NIFTY or BANKNIFTY, not {', '.join(bad)}")
+        else:
+            bad = [u for u in self.underlyings if u not in UNIVERSES and not is_equity_symbol(u)]
+            if bad:
+                raise ValueError(f"unknown stock(s) {', '.join(bad)}: use NIFTY 50 symbols or the name NIFTY50")
+        return self
+
     def canonical_json(self) -> str:
-        return json.dumps(self.model_dump(mode="json", by_alias=True, exclude_none=True), sort_keys=True,
-                          separators=(",", ":"))
+        d = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if self.market == "options":  # keep the hash of every existing options strategy unchanged
+            d.pop("market", None)
+            d["risk"].pop("max_positions", None)
+        return json.dumps(d, sort_keys=True, separators=(",", ":"))
 
     @property
     def hash(self) -> str:
@@ -297,6 +319,10 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
                             f"({a.ind} vs {b.ind}); they differ by the futures basis. Use fut_close with vwap.")
             if isinstance(a, Const) and isinstance(b, Const):
                 errs.append(f"{where}: compares two constants")
+    if spec.market == "equity":
+        return errs + _equity_errors(spec, conds)
+    if spec.timeframe == "1d":
+        errs.append("daily candles are for stock strategies (market \"equity\"); option strategies use 1m-60m")
     if spec.sides.long and spec.sides.long.option != "CE":
         errs.append("long side must buy CE (long options only, PRD §3)")
     if spec.sides.short and spec.sides.short.option != "PE":
@@ -308,6 +334,35 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
     tw_end = time.fromisoformat(spec.filters.time_window[1])
     if tw_end > time.fromisoformat(spec.exits.eod):
         errs.append("entries are allowed after the EOD exit time")
+    return errs
+
+
+EQUITY_BLOCKED = {  # operands that only exist for intraday index/option data
+    "or_high": "the opening range", "or_low": "the opening range", "fut_close": "futures", "vwap": "futures VWAP",
+    "vix": "INDIA VIX", "daily_ema": "a separate daily context (the strategy already runs on daily candles)",
+    "daily_sma": "a separate daily context (the strategy already runs on daily candles)",
+    "daily_rsi": "a separate daily context (the strategy already runs on daily candles)",
+}
+
+
+def _equity_errors(spec: StrategySpec, conds: list[tuple[str, object]]) -> list[str]:
+    errs: list[str] = []
+    if spec.timeframe != "1d":
+        errs.append("stock strategies run on daily candles: set timeframe to \"1d\"")
+    if spec.sides.short is not None:
+        errs.append("stock strategies are long-only (buy and hold for days); remove the short side")
+    for name in ("long",):
+        side = getattr(spec.sides, name)
+        if side and side.mirror_of:
+            errs.append("a stock strategy needs its own long entry rules (nothing to mirror)")
+    for where, c in conds:
+        for o in walk_operands(c):
+            if isinstance(o, Ind) and o.ind in EQUITY_BLOCKED:
+                errs.append(f"{where}: `{o.ind}` is not available for stocks ({EQUITY_BLOCKED[o.ind]})")
+    rr = spec.risk.min_reward_risk
+    if rr is not None and spec.exits.target_pct / spec.exits.stop_loss_pct < rr:
+        errs.append(f"reward-to-risk is {spec.exits.target_pct / spec.exits.stop_loss_pct:.2f} "
+                    f"(target {spec.exits.target_pct:g}% / stop {spec.exits.stop_loss_pct:g}%), below the minimum {rr:g}")
     return errs
 
 
@@ -411,7 +466,40 @@ def render_condition(c: object, depth: int = 0) -> str:
     raise TypeError(c)
 
 
+def _render_equity(spec: StrategySpec) -> str:
+    from trader.instruments.equities import UNIVERSES
+
+    names = ", ".join(spec.underlyings)
+    n = sum(len(UNIVERSES.get(u, (u,))) for u in spec.underlyings)
+    lines = [f"Strategy: {spec.name}",
+             f"Stocks: {names} ({n} stock{'s' if n != 1 else ''}) · daily candles · decisions on the day's close, "
+             f"orders at the next day's open"]
+    long_ = spec.sides.long
+    if long_ is not None and long_.entry is not None:
+        lines += ["\nBuy the shares (delivery) when ALL of these are true:", render_condition(long_.entry)]
+    f = spec.filters
+    if f.all:
+        lines.append("\nAnd only when:")
+        lines += [render_condition(c) for c in f.all]
+    e = spec.exits
+    lines.append(f"\nExit: stop loss {e.stop_loss_pct:g}% below and target {e.target_pct:g}% above the entry price"
+                 + (f"; once up {e.trail.activate_pct:g}%, trail the stop {e.trail.trail_pct:g}% below the best price"
+                    if e.trail else "")
+                 + (f"; exit after {e.time_exit_bars} trading days" if e.time_exit_bars else "") + ".")
+    if e.conditions is not None:
+        lines += ["Also exit at the next day's open when:", render_condition(e.conditions)]
+    r = spec.risk
+    sizing = (f"size each trade so the stop loses about {r.risk_per_trade_pct:g}% of capital (never more than an equal "
+              f"1/{r.max_positions} share of it); " if r.risk_per_trade_pct
+              else f"put an equal 1/{r.max_positions} share of capital in each trade; ")
+    lines.append(f"\nRisk: {sizing}at most {r.max_positions} position{'s' if r.max_positions != 1 else ''} at a time, "
+                 f"one per stock.")
+    return "\n".join(lines).replace("futures volume", "volume")
+
+
 def render_english(spec: StrategySpec) -> str:
+    if spec.market == "equity":
+        return _render_equity(spec)
     lines = [f"Strategy: {spec.name}",
              f"Underlying: {', '.join(spec.underlyings)} · {spec.timeframe} candles · decisions on candle close, "
              f"orders at the next candle's open"]
@@ -467,4 +555,21 @@ MOMENTUM_V1 = {
     ]},
     "exits": {"stop_loss_pct": 25, "target_pct": 50, "trail": {"activate_pct": 30, "trail_pct": 15}},
     "risk": {"max_trades_per_day": 3},
+}
+
+
+# ---- example stock spec (for the translator and the template picker) ---------------------------------------
+EQUITY_EXAMPLE = {
+    "market": "equity",
+    "name": "Pullback in an uptrend (daily)",
+    "underlyings": ["NIFTY50"],
+    "timeframe": "1d",
+    "sides": {"long": {"entry": {"all": [
+        {"cmp": [{"ind": "close"}, ">", {"ind": "sma", "period": 200}]},
+        {"cmp": [{"ind": "rsi", "period": 14}, "<", {"const": 40}]},
+        {"cmp": [{"ind": "cs_bull_engulfing"}, ">", {"const": 0}]},
+    ]}}},
+    "exits": {"stop_loss_pct": 6, "target_pct": 18, "time_exit_bars": 20,
+              "conditions": {"cmp": [{"ind": "rsi", "period": 14}, ">", {"const": 70}]}},
+    "risk": {"max_positions": 5, "risk_per_trade_pct": 1, "min_reward_risk": 3},
 }

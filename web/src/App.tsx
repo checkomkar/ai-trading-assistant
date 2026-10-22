@@ -8,6 +8,7 @@ import { OptionChain } from "./components/OptionChain";
 import { FeedHealthPanel } from "./components/FeedHealthPanel";
 import { StrategiesPage } from "./pages/StrategiesPage";
 import { PaperPage } from "./pages/PaperPage";
+import { StocksPage } from "./pages/StocksPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { PricingPage } from "./pages/PricingPage";
 import { BrokersPage } from "./pages/BrokersPage";
@@ -18,9 +19,9 @@ import { useAuth } from "./auth";
 import { brand } from "./brand";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
-type View = "market" | "paper" | "strategies" | "assistant" | "pricing" | "brokers";
+type View = "market" | "paper" | "stocks" | "strategies" | "assistant" | "pricing" | "brokers";
 const viewFromHash = (): View =>
-  location.hash === "#/pricing" ? "pricing" : location.hash === "#/brokers" ? "brokers" : location.hash === "#/assistant" ? "assistant" : location.hash === "#/backtest" || location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : "market";
+  location.hash === "#/pricing" ? "pricing" : location.hash === "#/brokers" ? "brokers" : location.hash === "#/assistant" ? "assistant" : location.hash === "#/backtest" || location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : location.hash === "#/stocks" ? "stocks" : "market";
 
 export default function App() {
   const [market, setMarket] = useState<MarketMessage | null>(null);
@@ -81,6 +82,10 @@ export default function App() {
       ) : view === "paper" ? (
         <ErrorBoundary label="Paper trading page">
           <PaperPage />
+        </ErrorBoundary>
+      ) : view === "stocks" ? (
+        <ErrorBoundary label="Stocks page">
+          <StocksPage />
         </ErrorBoundary>
       ) : view === "strategies" ? (
         <ErrorBoundary label="Strategies page">
