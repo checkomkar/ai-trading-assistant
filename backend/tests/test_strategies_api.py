@@ -203,6 +203,15 @@ def test_translate_returns_tappable_choices_aligned_with_questions():
     fake = FakeClaude({**env(questions=["Shares or options?", "Stop loss?"]),
                        "choices": [["Shares", "Options", " "], "not a list"]})
     out = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=fake)).translate("momentum on reliance")
-    assert out.questions == ["Shares or options?", "Stop loss?"] and out.choices == [["Shares", "Options"], []]
+    assert out.questions == ["Shares or options?", "Stop loss?"] and out.choices[0] == ["Shares", "Options"] and "5%" in out.choices[1]  # bad entry -> common answers
     legacy = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=FakeClaude(env(questions=["Which?"])))).translate("x y z w q")
-    assert legacy.choices == [[]]  # a model that sends no choices still works: free-text answer
+    assert legacy.choices == [[]]  # no choices and no known topic: free-text answer
+
+
+def test_common_answers_fill_in_when_the_model_sends_no_choices():
+    from trader.ai.strategy_translator import _choices
+
+    out = _choices({"questions": ["What stop-loss percentage?", "Do you want a trailing stop?", "Something unusual?",
+                                  "Risk per trade % of capital?"], "choices": []})
+    assert "5%" in out[0] and out[1][0] == "No trailing stop" and out[2] == [] and "1% of capital" in out[3]
+    assert _choices({"questions": ["Stop loss?"], "choices": [["2%", "4%"]]}) == [["2%", "4%"]]  # the model's own win

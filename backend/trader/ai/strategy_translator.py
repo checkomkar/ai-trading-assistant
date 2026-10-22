@@ -8,6 +8,7 @@ repair round with the errors fed back. Ambiguity comes back as questions, never 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
@@ -114,14 +115,40 @@ class Translation:
     repaired: bool = False
 
 
+_COMMON_CHOICES: list[tuple[re.Pattern, list[str]]] = [  # used when the model sent no tappable answers
+    (re.compile(r"trail", re.I), ["No trailing stop", "Trail 5% after 5% profit", "Trail 10% after 10% profit"]),
+    (re.compile(r"time.based|after (a certain|n|\d+) (number of )?(days|bars|candles)|holding (period|time)", re.I),
+     ["No time exit", "Exit after 5 days", "Exit after 10 days", "Exit after 20 days"]),
+    (re.compile(r"stop.?loss", re.I), ["3%", "5%", "8%", "10%", "20%"]),
+    (re.compile(r"target|take.?profit", re.I), ["5%", "10%", "15%", "25%", "50%"]),
+    (re.compile(r"risk (per|on each) trade|% of capital|position siz", re.I), ["0.5% of capital", "1% of capital", "2% of capital"]),
+    (re.compile(r"concurrent|simultaneous|max(imum)? (number of )?(open )?positions", re.I), ["3 positions", "5 positions", "10 positions"]),
+    (re.compile(r"trades? per day", re.I), ["1", "2", "3", "5"]),
+    (re.compile(r"equity|shares|stocks?.*options?|options?.*stocks?", re.I),
+     ["Buy shares (stocks)", "Buy options (calls/puts)"]),
+    (re.compile(r"long (only )?(or|and) short|direction|both sides", re.I), ["Long only", "Long and short (calls and puts)"]),
+    (re.compile(r"time ?frame|candle (size|interval)|chart interval", re.I), ["5 minutes", "15 minutes", "1 hour", "1 day (stocks)"]),
+    (re.compile(r"exit (condition|rule|signal)|additional exit|other exit", re.I),
+     ["RSI above 70", "Price closes below EMA 21", "MACD crosses below its signal line", "No extra exit rule"]),
+    (re.compile(r"entry|indicator|signal|criteria|momentum|trigger", re.I),
+     ["EMA 9 crosses above EMA 21", "Price above SMA 50 and RSI above 55", "Price breaks the 20-day high", "MACD crosses above its signal line"]),
+]
+
+
+def _common_choices(question: str) -> list[str]:
+    return next((c for pat, c in _COMMON_CHOICES if pat.search(question)), [])
+
+
 def _choices(env: dict) -> list[list[str]]:
-    """One list of short answers per question, padded/trimmed to match `questions` whatever the model returned."""
+    """One list of short answers per question, padded/trimmed to match `questions` whatever the model returned; common
+    answers for well-known topics (stop loss, trailing, sizing...) fill in when the model sent none."""
     qs = env.get("questions") or []
     raw = env.get("choices") or []
     out = []
-    for i in range(len(qs)):
+    for i, q in enumerate(qs):
         c = raw[i] if i < len(raw) and isinstance(raw[i], list) else []
-        out.append([str(x).strip()[:80] for x in c if str(x).strip()][:6])
+        c = [str(x).strip()[:80] for x in c if str(x).strip()][:6]
+        out.append(c or _common_choices(str(q)))
     return out
 
 

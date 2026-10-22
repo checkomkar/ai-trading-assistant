@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
+const OTHER = "__other__";
+const AI = "__ai__";
+const AI_ANSWER = "you choose a sensible default and list it under assumptions";
+
 /** The strategy translator needs answers before it can build the rules: one card per question with tappable
  *  answers (and a free-text box), or hand the whole thing to the Assistant to talk it through. */
 export function QuestionDialog({
@@ -17,6 +21,7 @@ export function QuestionDialog({
   onAssistant: () => void;
   onClose: () => void;
 }) {
+  // picked: a tapped answer, OTHER (type your own) or AI (let the AI decide); null = not answered
   const [picked, setPicked] = useState<(string | null)[]>(() => questions.map(() => null));
   const [custom, setCustom] = useState<string[]>(() => questions.map(() => ""));
   const box = useRef<HTMLDivElement>(null);
@@ -28,7 +33,8 @@ export function QuestionDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const answer = (i: number) => (custom[i].trim() ? custom[i].trim() : picked[i]);
+  const answer = (i: number) =>
+    picked[i] === OTHER ? custom[i].trim() || null : picked[i] === AI ? AI_ANSWER : picked[i];
   const answers = questions.map((_, i) => answer(i));
   const count = answers.filter(Boolean).length;
   const set = <T,>(arr: T[], i: number, v: T) => arr.map((x, j) => (j === i ? v : x));
@@ -46,7 +52,7 @@ export function QuestionDialog({
         <header className="border-b border-ink-800 px-4 py-3">
           <h2 id="qd-title" className="text-base font-semibold text-ink-100">A few questions before the rules are built</h2>
           <p className="mt-0.5 text-xs text-ink-400">
-            Tap an answer or type your own. Anything you skip, the AI fills with a sensible default and lists it as an assumption.
+            Tap an answer, pick "Other…" to type your own, or let the AI decide. Anything you skip, the AI fills with a sensible default and lists it as an assumption.
           </p>
         </header>
 
@@ -57,34 +63,32 @@ export function QuestionDialog({
                 <span className="num mr-1.5 text-ink-400">{i + 1}.</span>
                 {q}
               </h3>
-              {choices[i]?.length > 0 && (
-                <div role="radiogroup" aria-label={q} className="mt-2 flex flex-wrap gap-1.5">
-                  {choices[i].map((c) => {
-                    const on = picked[i] === c && !custom[i].trim();
-                    return (
-                      <button
-                        key={c}
-                        role="radio"
-                        aria-checked={on}
-                        onClick={() => {
-                          setPicked(set(picked, i, on ? null : c));
-                          setCustom(set(custom, i, ""));
-                        }}
-                        className={`rounded-full border px-3 py-1 text-xs ${on ? "border-accent bg-accent text-ink-950" : "border-ink-700 text-ink-200 hover:border-accent"}`}
-                      >
-                        {c}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div role="radiogroup" aria-label={q} className="mt-2 flex flex-wrap gap-1.5">
+                {[...(choices[i] ?? []), OTHER, AI].map((c) => {
+                  const on = picked[i] === c;
+                  return (
+                    <button
+                      key={c}
+                      role="radio"
+                      aria-checked={on}
+                      onClick={() => setPicked(set(picked, i, on ? null : c))}
+                      className={`rounded-full border px-3 py-1 text-xs ${on ? "border-accent bg-accent text-ink-950" : c === OTHER || c === AI ? "border-dashed border-ink-700 text-ink-300 hover:border-accent" : "border-ink-700 text-ink-200 hover:border-accent"}`}
+                    >
+                      {c === OTHER ? "Other…" : c === AI ? "Let the AI decide" : c}
+                    </button>
+                  );
+                })}
+              </div>
+              {picked[i] === OTHER && (
+                <input
+                  autoFocus
+                  value={custom[i]}
+                  onChange={(e) => setCustom(set(custom, i, e.target.value))}
+                  placeholder="Type your answer"
+                  aria-label={`Your own answer to: ${q}`}
+                  className="mt-2 w-full rounded border border-ink-700 bg-ink-900 px-2 py-1.5 text-xs text-ink-100 outline-none focus:border-accent"
+                />
               )}
-              <input
-                value={custom[i]}
-                onChange={(e) => setCustom(set(custom, i, e.target.value))}
-                placeholder={choices[i]?.length ? "Or type your own answer" : "Type your answer"}
-                aria-label={`Your own answer to: ${q}`}
-                className="mt-2 w-full rounded border border-ink-700 bg-ink-900 px-2 py-1.5 text-xs text-ink-100 outline-none focus:border-accent"
-              />
             </section>
           ))}
         </div>
