@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", repr=False)
     openrouter_api_key: str = Field(default="", repr=False)
     openrouter_free_pool: int = 4  # other free OpenRouter models tried when one fails (0 = only the chosen model)
+    # Paid OpenRouter model ids (comma list, tried in order) used ONLY for operator accounts (ADMIN_EMAILS); everyone else stays on the
+    # free chain above. Operator calls fall back to that chain if every paid model fails. Empty = operators use the normal chain.
+    admin_llm_models: str = ""
     openrouter_free_only: bool = True  # refuse OpenRouter models that bill credits (ids not ending in ":free")
     groq_api_key: str = Field(default="", repr=False)
     openai_api_key: str = Field(default="", repr=False)

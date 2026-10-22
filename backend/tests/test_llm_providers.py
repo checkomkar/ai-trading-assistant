@@ -333,3 +333,25 @@ def test_free_models_discovery_filters_and_ranks(monkeypatch):
     got = providers.free_models(ttl=0.0001)
     assert got == [("b/big:free", True), ("a/small:free", False)]  # paid, non-:free, no-tools, safety models excluded
     providers._FREE_CACHE.update(at=0.0, models=providers.STATIC_FREE)
+
+
+def test_paid_openrouter_models_are_for_operator_accounts_only():
+    st = settings(llm_provider="groq", groq_api_key="gk", openrouter_api_key="ok",
+                  admin_llm_models="anthropic/claude-sonnet-4.5, openai/gpt-4o")
+    customer = build_provider(st)
+    assert all(":free" in p.model or p.name != "openrouter" for p in getattr(customer, "providers", [customer]))
+    assert not any("claude-sonnet" in getattr(p, "label", "") for p in getattr(customer, "providers", [customer]))
+    op = build_provider(st, is_admin=True)
+    labels = [p.label for p in op.providers]
+    assert labels[:2] == ["openrouter/anthropic/claude-sonnet-4.5", "openrouter/openai/gpt-4o"]
+    assert labels[2].startswith("groq/")  # the normal chain follows as the fallback
+    # the free-only guard still stops a paid model from being used by anyone through the ordinary settings
+    with pytest.raises(TranslatorUnavailable):
+        build_provider(settings(llm_provider="openrouter", openrouter_api_key="ok", llm_model="anthropic/claude-sonnet-4.5"))
+
+
+def test_without_a_key_or_a_list_operators_get_the_normal_chain():
+    base = settings(llm_provider="groq", groq_api_key="gk")
+    assert build_provider(base, is_admin=True).label == build_provider(base).label
+    no_key = settings(llm_provider="groq", groq_api_key="gk", admin_llm_models="anthropic/claude-sonnet-4.5")
+    assert build_provider(no_key, is_admin=True).label == build_provider(no_key).label  # no OpenRouter key: nothing paid is attempted

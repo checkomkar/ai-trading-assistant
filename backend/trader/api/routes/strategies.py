@@ -88,7 +88,7 @@ async def translate(request: Request, body: TranslateIn, user: CurrentUser, mete
     """One AI generation. The unit is taken first (402 when the plan is used up) and given back if no model call
     was billed, e.g. when no provider is reachable."""
     try:
-        provider = build_provider(request.app.state.settings)
+        provider = build_provider(request.app.state.settings, user.is_admin)
         async with meter.metered(user, "generations", provider) as mp:
             out = await asyncio.to_thread(StrategyTranslator(mp).translate, body.text, body.base_spec)
     except TranslatorUnavailable as exc:

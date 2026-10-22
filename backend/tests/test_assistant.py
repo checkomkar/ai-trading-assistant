@@ -233,7 +233,7 @@ def client(tmp_path, monkeypatch):
     with TestClient(create_app(s)) as c:
         c.provider = Scripted()
         for mod in ("trader.api.routes.chat", "trader.api.chat_tools"):
-            monkeypatch.setattr(f"{mod}.build_provider", lambda settings: c.provider)
+            monkeypatch.setattr(f"{mod}.build_provider", lambda settings, is_admin=False: c.provider)
         yield c
 
 
@@ -450,3 +450,12 @@ def test_talking_about_a_strategy_sends_the_rules_but_stores_only_the_question(c
     assert len(client.provider.calls) == 1  # no look-up round trip: the context already has the data
     stored = client.get(f"/chat/conversations/{conv}").json()["messages"]
     assert stored[0]["content"] == "How can I improve this?"  # the long context is not kept in the history
+
+
+def test_the_chat_asks_for_the_operator_model_chain_for_the_operator(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr("trader.api.routes.chat.build_provider", lambda settings, is_admin=False: (seen.append(is_admin), client.provider)[1])
+    conv = client.post("/chat/conversations").json()["id"]
+    client.provider.actions = [answer("Hi.")]
+    assert client.post(f"/chat/conversations/{conv}/messages", json={"text": "hello"}).status_code == 200
+    assert seen == [True]  # local mode is the operator's own account

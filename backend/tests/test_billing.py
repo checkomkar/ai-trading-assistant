@@ -37,7 +37,7 @@ def client(tmp_path, monkeypatch):
     st = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{(tmp_path / 't.db').as_posix()}", market_data_provider="simulated",
                   auth_enabled=True, admin_emails="boss@x.com", razorpay_key_id="k", razorpay_key_secret="s",
                   razorpay_webhook_secret=SECRET, razorpay_plan_pro="plan_pro", razorpay_plan_max="plan_max")
-    monkeypatch.setattr("trader.api.routes.strategies.build_provider", lambda _s: FakeProvider())
+    monkeypatch.setattr("trader.api.routes.strategies.build_provider", lambda _s, _a=False: FakeProvider())
     with TestClient(create_app(st, start_collector=False)) as c:
         yield c
 
@@ -102,7 +102,7 @@ def test_failed_model_call_gives_the_unit_back(client, monkeypatch):
         def complete(self, *a, **k):
             raise TranslatorUnavailable("no key")
 
-    monkeypatch.setattr("trader.api.routes.strategies.build_provider", lambda _s: Down())
+    monkeypatch.setattr("trader.api.routes.strategies.build_provider", lambda _s, _a=False: Down())
     signup(client)
     assert client.post("/strategies/translate", json={"text": "buy calls on breakout"}).status_code == 503
     assert client.get("/billing/usage").json()["usage"]["generations"]["used"] == 0

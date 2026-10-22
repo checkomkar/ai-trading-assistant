@@ -44,9 +44,9 @@ def _msg(m) -> dict:
             "model": m.provider, "created_at": m.created_at.isoformat()}
 
 
-def _provider(request: Request) -> LLMProvider:
+def _provider(request: Request, is_admin: bool = False) -> LLMProvider:
     try:
-        return build_provider(request.app.state.settings)
+        return build_provider(request.app.state.settings, is_admin)
     except TranslatorUnavailable as exc:
         raise HTTPException(503, str(exc)) from None
 
@@ -119,7 +119,7 @@ async def upload(request: Request, user: CurrentUser, meter: MeterDep, filename:
     status = "ready"
     provider = None
     try:
-        provider = build_provider(request.app.state.settings)
+        provider = build_provider(request.app.state.settings, user.is_admin)
     except TranslatorUnavailable:
         pass
     if kind == "image":
@@ -256,7 +256,7 @@ async def _snapshot(tools) -> str:
 
 @router.post("/chat/conversations/{conv_id}/messages")
 async def send(request: Request, conv_id: str, body: MessageIn, user: CurrentUser, meter: MeterDep) -> dict:
-    provider = _provider(request)
+    provider = _provider(request, user.is_admin)
     sm = request.app.state.sessionmaker
     async with sm() as s:
         conv = await repo.get_conversation(s, conv_id, user.id)

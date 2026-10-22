@@ -109,7 +109,7 @@ def build_tools(request: Request, user: Principal, meter: Meter, focus_doc_ids: 
         if len(text) < 5:
             return {"error": "description is too short"}
         try:
-            async with meter.metered(user, "generations", build_provider(settings)) as mp:  # a draft is one generation
+            async with meter.metered(user, "generations", build_provider(settings, user.is_admin)) as mp:  # a draft is one generation
                 out = await asyncio.to_thread(StrategyTranslator(mp).translate, text, a.get("base_spec"))
         except QuotaExceeded as exc:
             return {"error": exc.message + " Tell the trader this; do not try again."}

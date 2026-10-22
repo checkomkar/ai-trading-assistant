@@ -426,8 +426,11 @@ def _openrouter_pool(settings: Any, chain: list[LLMProvider]) -> list[LLMProvide
     return out
 
 
-def build_provider(settings: Any) -> LLMProvider:
-    """LLM_PROVIDER first, then each LLM_FALLBACKS entry (`name` or `name:model`) that has credentials. If OpenRouter
+def build_provider(settings: Any, is_admin: bool = False) -> LLMProvider:
+    """For operator accounts: the paid OpenRouter models in ADMIN_LLM_MODELS first (the free-only rule does not apply to them),
+    then the normal chain below. Everyone else gets the normal chain.
+
+    Normal chain: LLM_PROVIDER first, then each LLM_FALLBACKS entry (`name` or `name:model`) that has credentials. If OpenRouter
     is in the chain, other free OpenRouter models follow it, so one model being down or limited doesn't stop the chat."""
     primary = _build_one((settings.llm_provider or "anthropic").strip().lower(), settings, primary=True)
     chain = [primary]
@@ -442,7 +445,19 @@ def build_provider(settings: Any) -> LLMProvider:
     if any(q.name == "openrouter" and _has_key(q) for q in chain):
         at = max(i for i, q in enumerate(chain) if q.name == "openrouter")
         chain[at + 1:at + 1] = _openrouter_pool(settings, chain)  # right after the last pinned OpenRouter model
-    return FallbackProvider(chain) if len(chain) > 1 else primary
+    base: LLMProvider = FallbackProvider(chain) if len(chain) > 1 else primary
+    paid = _admin_models(settings) if is_admin else []
+    if not paid:
+        return base
+    return FallbackProvider([*paid, *(base.providers if isinstance(base, FallbackProvider) else [base])])
+
+
+def _admin_models(settings: Any) -> list[LLMProvider]:
+    ids = [m.strip() for m in (getattr(settings, "admin_llm_models", "") or "").split(",") if m.strip()]
+    if not ids or not getattr(settings, "openrouter_api_key", ""):
+        return []
+    allow_paid = settings.model_copy(update={"openrouter_free_only": False}) if hasattr(settings, "model_copy") else settings
+    return [_build_one("openrouter", allow_paid, primary=False, model=m) for m in ids]
 
 
 def describe(settings: Any) -> dict:
