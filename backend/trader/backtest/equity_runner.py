@@ -24,8 +24,8 @@ from trader.strategy.spec import StrategySpec, render_english, semantic_errors
 DATA_WARNING = ("Daily prices are the broker's: if a stock split or bonus happened in the range and the broker did not "
                 "adjust older prices, trades around it can look wrong. Costs are delivery charges (STT, stamp duty, "
                 "exchange, DP); brokerage is assumed 0 unless set.")
-NO_DATA = ("No daily candles are stored for these stocks yet. Load them first: "
-           "python -m trader.scripts.backfill_equities --years 5")
+NO_DATA = "Daily price history for these stocks is not available for this period yet. Please try again later."
+OPERATOR_HINT = " (Operator: load it with python -m trader.scripts.backfill_equities --years 5, or the Stocks page button.)"
 
 
 @dataclass
@@ -129,7 +129,7 @@ async def run_and_store(sessionmaker: async_sessionmaker, req: EquityBacktestReq
     async with sessionmaker() as s:
         bars = await equity_daily.load_daily(s, symbols, eq.warmup_start(req.start), req.end)
     if not any(eq.day_of(c.ts) >= req.start for cs in bars.values() for c in cs):
-        raise LookupError(f"No daily candles between {req.start} and {req.end}. {NO_DATA}")
+        raise LookupError(NO_DATA)
     bars = {s: bars.get(s, []) for s in symbols}
     out = await asyncio.to_thread(execute, req, bars)
     run_id = uuid.uuid4().hex[:12]

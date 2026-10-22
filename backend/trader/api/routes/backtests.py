@@ -102,7 +102,7 @@ async def run(request: Request, body: BacktestIn, user: CurrentUser, meter: Mete
         async with meter.counted(user, "backtests"):  # no model involved: only a count, refunded if the run fails
             return await run_and_store(request.app.state.sessionmaker, req, owner=user.id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from None
+        raise HTTPException(404, str(exc) if user.is_admin else "Market history for this period is not available yet. Please try again later.") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
 
@@ -118,7 +118,7 @@ async def _run_equity(request: Request, body: BacktestIn, spec: dict, version_id
         async with meter.counted(user, "backtests"):
             return await er.run_and_store(request.app.state.sessionmaker, req, owner=user.id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from None
+        raise HTTPException(404, str(exc) + (er.OPERATOR_HINT if user.is_admin else "")) from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
 

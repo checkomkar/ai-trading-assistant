@@ -181,8 +181,9 @@ export function StocksPage() {
         </div>
         {!cov?.symbols && (
           <p className="mt-2 text-ink-400">
-            No stock history is loaded yet, so backtests and portfolios cannot run. The operator loads it from the broker
-            (a Fyers sign-in is needed), after market close each day.
+            {me?.is_admin
+              ? "No stock history is loaded yet, so backtests and portfolios cannot run. Load it with the button above (needs a Fyers sign-in) or python -m trader.scripts.backfill_equities --years 5."
+              : "Stock price history is not available yet, so backtests and portfolios cannot run. Please check back soon."}
           </p>
         )}
         {refresh && !refresh.running && (refresh.candles != null || refresh.error) && (

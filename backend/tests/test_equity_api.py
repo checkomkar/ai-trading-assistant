@@ -118,7 +118,7 @@ def test_backtest_runs_on_daily_candles(client, saved):
 
 def test_backtest_without_data_says_how_to_load_it(client, saved):
     r = client.post("/backtests", json={"strategy_id": saved["id"], "start": "2030-01-01", "end": "2030-06-01", "timeframe": "1d"})
-    assert r.status_code == 404 and "backfill_equities" in r.json()["detail"]
+    assert r.status_code == 404 and "not available" in r.json()["detail"]
 
 
 def test_intraday_runner_refuses_a_stock_strategy(client, saved):
