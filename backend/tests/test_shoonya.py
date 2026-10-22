@@ -303,3 +303,13 @@ async def test_the_socket_falls_back_to_the_next_address_when_the_first_does_not
     p = sh.ShoonyaMarketDataProvider(SimpleNamespace(shoonya_user_id="FA1"), token_provider=lambda: "TOK", ws_connect=connect)
     await p.connect()
     assert urls == list(auth.WS_URLS) and ws.sent[0]["t"] == "c"
+
+
+def test_a_vendor_code_refusal_points_at_the_vendor_code_and_key_not_the_password():
+    def refuse(*a, **k):
+        return {"stat": "Not_Ok", "emsg": "Invalid Input :  Invalid Vendor code"}
+
+    with pytest.raises(auth.ShoonyaAuthError) as e:
+        auth.sign_in("FA1", "pw", "123456", "FA1_U", "k", "d", http=refuse)
+    text = str(e.value)
+    assert "vendor code and API key" in text and "eye icon" in text and "6-digit" not in text

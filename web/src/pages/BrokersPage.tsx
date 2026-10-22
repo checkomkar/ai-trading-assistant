@@ -78,16 +78,18 @@ export function BrokersPage() {
   };
   const [sho, setSho] = useState({ password: "", totp: "" });
   const [shoBusy, setShoBusy] = useState(false);
+  const [shoErr, setShoErr] = useState<string | null>(null); // shown beside the form: the page-top message is easy to miss
   const shoonyaSignIn = async (e: FormEvent) => {
     e.preventDefault();
     setShoBusy(true);
     setMsg(null);
+    setShoErr(null);
     try {
       const r = await postJSON<{ name: string }>("/brokers/shoonya/login", { password: sho.password, totp: sho.totp });
       setMsg({ ok: true, text: `Signed in to Shoonya${r.name ? ` as ${r.name}` : ""} for today. Your password was not saved.` });
       load();
     } catch (err) {
-      setMsg({ ok: false, text: (err as Error).message });
+      setShoErr((err as Error).message);
     } finally {
       setSho({ password: "", totp: "" }); // never keep them in the page either
       setShoBusy(false);
@@ -191,6 +193,11 @@ export function BrokersPage() {
                       {shoBusy ? "Signing in…" : c.session.state === "signed_in" ? "Sign in again" : "Sign in to Shoonya"}
                     </button>
                   </form>
+                  {shoErr && (
+                    <p className="rounded-md border border-down/40 bg-down/10 px-3 py-2 text-down" role="alert">
+                      {shoErr}
+                    </p>
+                  )}
                   <p className="text-[11px] text-ink-400">
                     The password and code go to Shoonya once and are not stored; only today's session is kept (encrypted). Use the
                     current code from your authenticator app, and wait for a fresh one after a failed attempt.

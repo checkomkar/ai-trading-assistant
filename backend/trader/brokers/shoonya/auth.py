@@ -92,7 +92,18 @@ def sign_in(user_id: str, password: str, totp: str, vendor_code: str, api_key: s
     reply = http("/QuickAuth", login_payload(user_id.strip(), password, totp.strip(), vendor_code.strip(), api_key.strip(), imei.strip()))
     if not isinstance(reply, dict) or reply.get("stat") != "Ok" or not reply.get("susertoken"):
         msg = (reply or {}).get("emsg") if isinstance(reply, dict) else None
-        hint = " Check the password and the 6-digit code (they change every 30 seconds)." if msg and "invalid" in msg.lower() else ""
+        low = (msg or "").lower()
+        if "vendor" in low:
+            hint = (" Shoonya does not accept this vendor code and API key together. Check that the vendor code is the Client Id on "
+                    "Shoonya's API Key page (like FA12345_U), that the API key is the full secret code (reveal it with the eye icon "
+                    "and copy it; the masked text will not work), and that the key is active (it can take a while after you "
+                    "generate or update it).")
+        elif "ip" in low.split() or "whitelist" in low or "not enabled" in low:
+            hint = " API access or this server's IP address may not be enabled on your Shoonya API Key page."
+        elif "invalid" in low or "password" in low or "otp" in low or "totp" in low:
+            hint = " Check the password and the 6-digit code (it changes every 30 seconds)."
+        else:
+            hint = ""
         raise ShoonyaAuthError(f"Shoonya refused the sign-in: {msg or 'no reply'}.{hint}")
     return {"token": reply["susertoken"], "user_id": reply.get("uid") or user_id, "name": reply.get("uname") or "",
             "expires_at": session_expiry().isoformat()}
