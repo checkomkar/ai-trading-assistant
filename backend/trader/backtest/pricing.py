@@ -4,6 +4,9 @@ synthetic — Black-Scholes on the index, IV = INDIA VIX x multiplier, modelled 
             Works on index history alone; optimistic about liquidity, so reports say so.
 real      — stored option candles (Fyers expired-contract downloads or our own recordings).
             Contracts without data are skipped and counted, never filled at made-up prices.
+hybrid    — real where the contract has a stored print at the entry bar, otherwise the synthetic model for that whole trade.
+            Every trade is tagged with the source it used, and the report counts both, so nothing is hidden. Needed because
+            stored option candles are sparse (the free Fyers plan allows 10 expired-contract downloads a day).
 """
 
 from __future__ import annotations
@@ -67,6 +70,7 @@ class Contract:
     strike: float
     option_type: OptionType
     lot_size: int
+    synthetic: bool = False  # priced by the model (hybrid mode) instead of stored candles
 
     @property
     def label(self) -> str:
@@ -143,6 +147,36 @@ class SyntheticPricer:
         hi = max(o, cl, self.premium(c, best, mid_t, iv))
         lo = min(o, cl, self.premium(c, worst, mid_t, iv))
         return PremiumBar(o, hi, lo, cl)
+
+
+class HybridPricer:
+    """Stored candles where they exist for the entry, the model otherwise. One source per trade: a position is never priced by
+    real candles on one bar and by Black-Scholes on the next, which would put artificial jumps into its path."""
+
+    mode = "hybrid"
+
+    def __init__(self, real: "RealPricer", synthetic: SyntheticPricer) -> None:
+        self.real, self.synthetic = real, synthetic
+        self.default_iv = synthetic.default_iv
+
+    @property
+    def missing_vix_bars(self) -> int:
+        return self.synthetic.missing_vix_bars
+
+    def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
+                 lot_size: int | None = None) -> Contract | None:
+        real = self.real.contract(underlying, option_type, spot, day, lot_size)
+        if real is not None:
+            return real
+        m = self.synthetic.contract(underlying, option_type, spot, day, lot_size)  # no stored candles for this contract at all
+        return Contract(m.underlying, m.expiry, m.strike, m.option_type, m.lot_size, True)
+
+    def bar(self, c: Contract, u: Candle, tf: timedelta, vix: float | None) -> PremiumBar | None:
+        return self.synthetic.bar(c, u, tf, vix) if c.synthetic else self.real.bar(c, u, tf, vix)
+
+    def fallback(self, c: Contract) -> Contract | None:
+        """The same contract priced by the model, for when the stored candles have no print at the entry bar."""
+        return None if c.synthetic else Contract(c.underlying, c.expiry, c.strike, c.option_type, c.lot_size, True)
 
 
 class RealPricer:

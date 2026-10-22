@@ -76,6 +76,7 @@ class Trade:
     underlying_entry: float
     underlying_exit: float
     features: dict = field(default_factory=dict)
+    pricing: str = ""  # "real" (stored option candles) or "modelled" (Black-Scholes); set for every option trade
 
 
 @dataclass
@@ -218,6 +219,9 @@ class BacktestEngine:
             skipped["no option data for contract"] += 1
             return None
         pb = self.pricer.bar(c, bar, self.tf, vix)
+        if pb is None and (alt := getattr(self.pricer, "fallback", lambda _c: None)(c)) is not None:
+            c = alt  # hybrid pricing: no stored print at the entry bar, so this trade is priced by the model throughout
+            pb = self.pricer.bar(c, bar, self.tf, vix)
         if pb is None:
             skipped["no option print at entry bar"] += 1
             return None
@@ -295,11 +299,19 @@ class BacktestEngine:
             mfe_pct=round((max(p.high_water, mid_level) / p.entry_price - 1) * 100, 2),
             bars_held=p.bars, minutes_held=(exit_ts - p.entry_time).total_seconds() / 60,
             underlying_entry=round(p.underlying_entry, 2), underlying_exit=round(underlying_px, 2),
-            features=p.signal.features,
+            features=p.signal.features, pricing="modelled" if p.contract.synthetic or self.pricer.mode == "synthetic" else "real",
         )
 
     def _warnings(self, trades: list[Trade]) -> list[str]:
         w: list[str] = []
+        if self.pricer.mode == "hybrid":
+            n_real = sum(1 for t in trades if t.pricing == "real")
+            w.append(f"Option prices are a MIX: {n_real} trade(s) used stored real option candles and {len(trades) - n_real} used the "
+                     "Black-Scholes model (IV = INDIA VIX x multiplier) because no stored candle covered that contract at the entry. "
+                     "Modelled trades are optimistic about liquidity and fills; see each trade's source in the table.")
+            missing = getattr(self.pricer, "missing_vix_bars", 0)
+            if missing:
+                w.append(f"{missing} bars had no VIX; a default IV of {self.pricer.default_iv:.0%} was used.")
         if self.pricer.mode == "synthetic":
             w.append("Option premiums are SYNTHETIC (Black-Scholes, IV = INDIA VIX x multiplier, modelled spread). "
                      "Real fills, IV skew and liquidity are not captured; treat results as optimistic.")
@@ -310,9 +322,10 @@ class BacktestEngine:
             if old:
                 w.append(f"{len(old)} trade dates predate 2025-09-01; historical expiry weekdays for those "
                          "dates are best-effort assumptions.")
-        missing_c = getattr(self.pricer, "missing_contracts", set())
+        missing_c = getattr(self.pricer, "missing_contracts", set()) if self.pricer.mode != "hybrid" else set()
         if missing_c:
-            w.append(f"{len(missing_c)} signals had no stored option data and were skipped.")
+            w.append(f"{len(missing_c)} signals had no stored option data and were skipped. Choose \"Real where stored, else modelled\" "
+                     "to trade those with modelled prices instead (each trade is labelled with the source it used).")
         if not trades:
             w.append("No trades were taken in this period.")
         return w

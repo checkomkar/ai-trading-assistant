@@ -236,7 +236,7 @@ export interface BacktestResult {
   strategy: string;
   data_source: "real" | "simulated";
   built_from?: string | null;
-  pricing_mode: "synthetic" | "real" | "equity delivery";
+  pricing_mode: "synthetic" | "real" | "hybrid" | "equity delivery";
   bars: number;
   days: number;
   signals: number;

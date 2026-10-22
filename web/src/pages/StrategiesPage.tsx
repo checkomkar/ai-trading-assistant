@@ -37,7 +37,7 @@ export function StrategiesPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
-  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000, capital: 100000, quantity: "" });
+  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "hybrid", lots: 1, max_daily_loss: 5000, capital: 100000, quantity: "" });
   const timer = useRef<ReturnType<typeof setTimeout>>();
   // The AI asked questions instead of building: shown as a dialog with tappable answers.
   const [ask, setAsk] = useState<{ input: string; base: Record<string, unknown> | null; t: Translation } | null>(null);
@@ -424,8 +424,9 @@ ${r.text.trim()}` : r.text.trim()));
                     </Field>
                     <Field label="Option prices">
                       <select value={bt.pricing} onChange={(e) => setBt({ ...bt, pricing: e.target.value })} className={inp}>
-                        <option value="synthetic">Synthetic</option>
-                        <option value="real">Real candles</option>
+                        <option value="synthetic">Modelled (Black-Scholes)</option>
+                        <option value="hybrid">Real where stored, else modelled</option>
+                        <option value="real">Real candles only (skips the rest)</option>
                       </select>
                     </Field>
                     <Field label="Lots">

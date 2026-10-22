@@ -29,7 +29,9 @@ export function Results({ r }: { r: BacktestResult }) {
         {daily ? (
           <Badge tone="accent">STOCKS · DAILY · DELIVERY COSTS</Badge>
         ) : (
-          <Badge tone={r.pricing_mode === "real" ? "up" : "accent"}>{r.pricing_mode === "real" ? "REAL OPTION PRICES" : "SYNTHETIC OPTION PRICES"}</Badge>
+          <Badge tone={r.pricing_mode === "real" ? "up" : "accent"}>
+            {r.pricing_mode === "real" ? "REAL OPTION PRICES" : r.pricing_mode === "hybrid" ? "REAL + MODELLED OPTION PRICES" : "SYNTHETIC OPTION PRICES"}
+          </Badge>
         )}
         <span className="num ml-auto text-[11px] text-ink-400">
           run {r.id} · {r.timeframe}{r.built_from && r.built_from !== r.timeframe ? ` (from ${r.built_from})` : ""} · {fmtInt(r.bars)} bars · {r.days} days · {r.signals} signals

@@ -13,7 +13,7 @@ from trader.backtest import data as bt_data
 from trader.backtest.costs import default_cost_model
 from trader.backtest.engine import BacktestEngine, EngineConfig
 from trader.backtest.metrics import compute_metrics
-from trader.backtest.pricing import ExecutionModel, RealPricer, SyntheticPricer
+from trader.backtest.pricing import ExecutionModel, HybridPricer, RealPricer, SyntheticPricer
 from trader.db.models import BacktestRunRow
 from trader.instruments.calendar import get_calendar
 from trader.market_data.resample import minutes
@@ -29,7 +29,7 @@ class BacktestRequest:
     end: date = date(2026, 10, 1)
     timeframe: str = "5m"
     source: str = "auto"  # auto | real | simulated
-    pricing: str = "synthetic"  # synthetic | real
+    pricing: str = "synthetic"  # synthetic | real | hybrid (real where stored, else modelled)
     strategy: str = "momentum"  # momentum | spec
     strategy_params: dict = field(default_factory=dict)
     spec: dict | None = None  # StrategySpec JSON when strategy == "spec"
@@ -100,6 +100,9 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
         pricer = RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll)
     elif req.pricing == "synthetic":
         pricer = SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll)
+    elif req.pricing == "hybrid":
+        pricer = HybridPricer(RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll),
+                              SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll))
     else:
         raise ValueError(f"Unknown pricing mode {req.pricing}")
     tf_min = minutes(req.timeframe)
@@ -137,7 +140,7 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
 async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest, owner: str = "local") -> dict:
     async with sessionmaker() as s:
         data = await bt_data.load(s, req.underlying, req.timeframe, req.start, req.end, req.source,
-                                  with_options=req.pricing == "real")
+                                  with_options=req.pricing in ("real", "hybrid"))
     if not data.bars:
         raise LookupError(f"No {req.timeframe} candles for {req.underlying} between {req.start} and {req.end} "
                           f"(source={req.source}). Backfill history first.")

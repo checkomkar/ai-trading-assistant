@@ -52,7 +52,7 @@ class BacktestIn(BaseModel):
     end: date
     timeframe: Literal["1m", "2m", "3m", "5m", "10m", "15m", "20m", "30m", "60m", "1d"] = "5m"
     source: Literal["auto", "real", "simulated"] = "auto"
-    pricing: Literal["synthetic", "real"] = "synthetic"
+    pricing: Literal["synthetic", "real", "hybrid"] = "synthetic"
     strategy: Literal["momentum", "spec"] = "momentum"
     strategy_id: str | None = None  # saved strategy version (PRD §19); implies strategy="spec"
     spec: dict | None = None  # unsaved spec, for quick tries
