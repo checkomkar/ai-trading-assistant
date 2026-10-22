@@ -17,6 +17,17 @@ from typing import Any, Protocol
 import httpx
 
 
+# Free model tiers count the reply allowance against their per-minute token limit (Groq: 8,000 for one request), so ask for no more
+# than a strategy spec or a chat answer needs.
+MAX_REPLY_TOKENS = 2000
+BUSY_MESSAGE = "The AI is busy or unavailable right now. Please try again in a minute."
+
+
+def public_message(exc: Exception, is_admin: bool) -> str:
+    """Customers get a plain message; the provider chain's own errors (keys, tiers, rate limits) are the operator's business."""
+    return str(exc) if is_admin else BUSY_MESSAGE
+
+
 class TranslatorUnavailable(RuntimeError):
     """No credentials, a rejected key, a refusal, or the provider could not be reached."""
 
@@ -184,7 +195,7 @@ class OpenAICompatibleProvider:
         sys_msg = system if tools else (
             f"{system}\n\nReply with ONE JSON object and nothing else, matching this JSON Schema:\n"
             f"{json.dumps(schema, separators=(',', ':'))}")
-        base: dict = {"model": self.model, "temperature": 0, "max_tokens": 8000,
+        base: dict = {"model": self.model, "temperature": 0, "max_tokens": MAX_REPLY_TOKENS,
                       "messages": [{"role": "system", "content": sys_msg}, *messages]}
         if tools:
             # Native function calling: the real lookups plus `respond`, and the model must call exactly one. Models

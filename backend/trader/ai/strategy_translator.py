@@ -32,11 +32,28 @@ ENVELOPE_SCHEMA = {
 
 
 def _operand_table() -> str:
+    """One short line per operand: name, allowed period, meaning. (The scale only matters for index vs futures, said in the rules.)"""
     rows = []
     for name, (needs, bounds, label, level) in INDICATORS.items():
-        period = f"period {bounds[0]}-{bounds[1]}" if needs and bounds else "no period"
-        rows.append(f"- `{name}` ({period}; {level} scale): {label.format(p='N', m='M')}")
-    return "\n".join(rows)
+        period = f"[{bounds[0]}-{bounds[1]}]" if needs and bounds else ""
+        fut = " (futures scale)" if level == "futures" else ""
+        rows.append(f"{name}{period}: {label.format(p='N', m='M')}{fut}")
+    return chr(10).join(rows)
+
+
+def _compact_schema() -> str:
+    """The spec's JSON Schema without what the model does not need: titles, and the long list of operand names (the operand
+    list below has them). A smaller prompt matters: free model tiers reject requests over a few thousand tokens."""
+    def clean(node):  # noqa: ANN001, ANN202
+        if isinstance(node, dict):
+            out = {k: clean(v) for k, v in node.items() if k not in ("title", "additionalProperties")}
+            if out.get("enum") == list(INDICATORS):
+                out.pop("enum")
+                out["description"] = "an operand name from the operand list"
+            return out
+        return [clean(x) for x in node] if isinstance(node, list) else node
+
+    return json.dumps(clean(StrategySpec.model_json_schema(by_alias=True)), separators=(",", ":"))
 
 
 SYSTEM_PROMPT = f"""You translate a trader's plain-English description of either an intraday NIFTY/BANKNIFTY \
@@ -58,7 +75,7 @@ the stock's own volume. Stocks outside the NIFTY 50 and short selling stocks are
 Decisions are made on each candle's close and orders fill at the next candle's open.
 
 ## Spec format (JSON Schema)
-{json.dumps(StrategySpec.model_json_schema(by_alias=True), separators=(',', ':'))}
+{_compact_schema()}
 
 ## Operands (whitelist; anything else is unsupported)
 {_operand_table()}

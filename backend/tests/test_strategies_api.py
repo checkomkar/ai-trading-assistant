@@ -215,3 +215,18 @@ def test_common_answers_fill_in_when_the_model_sends_no_choices():
                                   "Risk per trade % of capital?"], "choices": []})
     assert "5%" in out[0] and out[1][0] == "No trailing stop" and out[2] == [] and "1% of capital" in out[3]
     assert _choices({"questions": ["Stop loss?"], "choices": [["2%", "4%"]]}) == [["2%", "4%"]]  # the model's own win
+
+
+def test_customers_see_a_plain_message_when_every_model_fails_but_the_operator_sees_why():
+    from trader.ai.providers import BUSY_MESSAGE, TranslatorUnavailable, public_message
+
+    exc = TranslatorUnavailable("anthropic: rejected the API key; groq: 413 request too large")
+    assert public_message(exc, is_admin=False) == BUSY_MESSAGE and "groq" in public_message(exc, is_admin=True)
+
+
+def test_the_translator_prompt_stays_small_enough_for_free_model_tiers():
+    from trader.ai.providers import MAX_REPLY_TOKENS
+    from trader.ai.strategy_translator import SYSTEM_PROMPT
+
+    assert len(SYSTEM_PROMPT) < 16_500 and MAX_REPLY_TOKENS <= 2500  # Groq's free tier allows 8,000 tokens per request in all
+    assert '"enum":["open"' not in SYSTEM_PROMPT  # the operand names are listed once, not twice

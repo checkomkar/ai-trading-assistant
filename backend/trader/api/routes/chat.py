@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from trader.ai.chat import run_chat
 from trader.ai.knowledge import (MAX_OCR_PAGES, MAX_UPLOAD_BYTES, UnsupportedFile, blank_pdf_pages, extract_text, image_mime,
                                  merge_page_text, ocr_available, ocr_pdf_pages)
-from trader.ai.providers import LLMProvider, TranslatorUnavailable, build_provider
+from trader.ai.providers import LLMProvider, TranslatorUnavailable, build_provider, public_message
 from trader.api.chat_tools import build_tools
 from trader.api import strategy_context
 from trader.api.deps import CurrentUser, MeterDep
@@ -283,7 +283,7 @@ async def send(request: Request, conv_id: str, body: MessageIn, user: CurrentUse
             result = await run_chat(mp, tools, history, model_text, memory_notes, docs_all, attached, await _snapshot(tools),
                                    prefetch=body.context is None)
     except TranslatorUnavailable as exc:
-        raise HTTPException(503, str(exc)) from None
+        raise HTTPException(503, public_message(exc, user.is_admin)) from None
     if await request.is_disconnected():  # the trader pressed Stop: keep nothing from this turn
         raise HTTPException(499, "cancelled")
     async with sm() as s, s.begin():
