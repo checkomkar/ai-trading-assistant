@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     shoonya_vendor_code: str = ""
     shoonya_api_key: str = Field(default="", repr=False)
     shoonya_imei: str = ""
+    flattrade_client_id: str = ""  # set per customer feed from their own sign-in; nothing is read from .env
 
     risk_max_daily_loss: float = 5000
     risk_max_trades_per_day: int = 5

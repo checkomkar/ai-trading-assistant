@@ -46,10 +46,10 @@ def encode(payload: dict, token: str | None = None) -> bytes:
     return body.encode("utf-8")
 
 
-def post(path: str, payload: dict, token: str | None = None) -> Any:
+def post(path: str, payload: dict, token: str | None = None, host: str | None = None) -> Any:
     """One REST call. Returns the decoded JSON (a dict, or a list for time series). Network problems raise
     ConnectionError so the caller's retry logic treats them as a dropped feed, not as bad credentials."""
-    req = urllib.request.Request(HOST + path, data=encode(payload, token), method="POST")
+    req = urllib.request.Request((host or HOST) + path, data=encode(payload, token), method="POST")
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:  # noqa: S310 - fixed https host
             return json.loads(resp.read().decode("utf-8"))
@@ -61,7 +61,7 @@ def post(path: str, payload: dict, token: str | None = None) -> Any:
         except (ValueError, OSError):
             pass
         raise ConnectionError(f"Shoonya answered HTTP {exc.code} for {path}") from None
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:  # URLError, timeouts, resets
         raise ConnectionError(f"Shoonya request failed for {path}: {exc}") from None
 
 

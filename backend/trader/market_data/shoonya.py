@@ -45,10 +45,16 @@ def _download(exch: str) -> str:
 
 
 def build_instruments(nfo_csv: str, today: date) -> list[Instrument]:
-    """Indices (fixed tokens) + live NIFTY/BANKNIFTY index futures and options from the NFO master."""
+    """Indices (fixed tokens) + live NIFTY/BANKNIFTY index futures and options from Shoonya's NFO master."""
+    return instruments_from_rows(csv.DictReader(io.StringIO(nfo_csv)), today)
+
+
+def instruments_from_rows(rows, today: date) -> list[Instrument]:  # noqa: ANN001
+    """Rows keyed like Shoonya's master (Token, LotSize, Symbol, TradingSymbol, Expiry, Instrument, OptionType, StrikePrice,
+    TickSize): other brokers on the same exchange tokens map their own columns onto these first."""
     out = [Instrument(f"NSE|{tk}", sym, sym, "NSE", InstrumentType.INDEX, tick_size=0.01 if sym == VIX_SYMBOL else 0.05)
            for sym, tk in INDEX_TOKENS.items()]
-    for r in csv.DictReader(io.StringIO(nfo_csv)):
+    for r in rows:
         if r.get("Symbol") not in UNDERLYINGS or r.get("Instrument") not in ("OPTIDX", "FUTIDX"):
             continue
         try:
@@ -57,7 +63,7 @@ def build_instruments(nfo_csv: str, today: date) -> list[Instrument]:
             continue
         if exp < today:
             continue
-        common = dict(lot_size=int(r["LotSize"] or 1), tick_size=float(r["TickSize"] or 0.05), expiry=exp)
+        common = dict(lot_size=int(r["LotSize"] or 1), tick_size=float(r.get("TickSize") or 0.05), expiry=exp)
         token = f"NFO|{r['Token']}"
         if r["Instrument"] == "FUTIDX":
             out.append(Instrument(token, r["TradingSymbol"], r["Symbol"], "NFO", InstrumentType.FUT, **common))
@@ -106,22 +112,39 @@ def parse_series(rows: Any, token: str, timeframe: str) -> list[Candle]:
 
 
 class ShoonyaMarketDataProvider(MarketDataProvider):
+    """Also the base of every NorenAPI broker (Flattrade): they share the websocket frames, the REST calls and the exchange
+    tokens, and differ in addresses, symbol master and sign-in. Subclasses override the hooks below."""
+
     name = "shoonya"
+    label = "Shoonya"
     is_simulated = False
+    ws_urls = auth.WS_URLS
+
+    def _user_id(self, settings) -> str:  # noqa: ANN001
+        return settings.shoonya_user_id
+
+    def _build(self, text: str, today: date) -> list[Instrument]:
+        return build_instruments(text, today)
+
+    def _download_master(self) -> str:
+        return _download("NFO")
+
+    def _default_http(self) -> Callable[..., Any]:
+        return auth.post
 
     def __init__(self, settings, *, token_provider: Callable[[], str | None] | None = None,
-                 http: Callable[..., Any] = auth.post, ws_connect: Callable[..., Any] | None = None,
+                 http: Callable[..., Any] | None = None, ws_connect: Callable[..., Any] | None = None,
                  master_loader: Callable[[], str] | None = None, now_fn: Callable[[], datetime] | None = None) -> None:
         super().__init__(subscription=SubscriptionPolicy(
             strikes_each_side=getattr(settings, "fyers_strikes_each_side", 20),
             expiries_per_underlying=getattr(settings, "fyers_expiries_per_underlying", 2),
             max_symbols=None))
         self.settings = settings
-        self._user = settings.shoonya_user_id
+        self._user = self._user_id(settings)
         self._token_provider = token_provider or (lambda: None)
-        self._http = http
+        self._http = http or self._default_http()
         self._ws_connect = ws_connect
-        self._master_loader = master_loader or (lambda: _download("NFO"))
+        self._master_loader = master_loader or self._download_master
         self._now = now_fn or (lambda: datetime.now(timezone.utc))
         self._ws: Any = None
         self._beat: asyncio.Task | None = None
@@ -131,20 +154,21 @@ class ShoonyaMarketDataProvider(MarketDataProvider):
     def _token(self) -> str:
         token = self._token_provider()
         if not token or not self._user:
-            raise ShoonyaAuthError("Not signed in to Shoonya. Sign in on the Brokers page.")
+            raise ShoonyaAuthError(f"Not signed in to {self.label}. Sign in on the Brokers page.")
         return token
 
     # ---- discovery -----------------------------------------------------------------------------
     async def discover_instruments(self) -> list[Instrument]:
         today = self._now().astimezone(IST).date()
-        cached = _MASTER_CACHE.get(today)
+        key = (self.name, today)
+        cached = _MASTER_CACHE.get(key)
         if cached is None:  # one download a day however many customers are connected; Instrument is immutable
             text = await asyncio.to_thread(self._master_loader)
-            cached = _MASTER_CACHE[today] = build_instruments(text, today)
-            for old in [d for d in _MASTER_CACHE if d != today]:
+            cached = _MASTER_CACHE[key] = self._build(text, today)
+            for old in [k for k in _MASTER_CACHE if k[1] != today]:
                 del _MASTER_CACHE[old]
         if len(cached) <= len(INDEX_TOKENS):
-            raise RuntimeError("Shoonya's symbol master had no NIFTY / BANKNIFTY contracts")
+            raise RuntimeError(f"{self.label}'s symbol master had no NIFTY / BANKNIFTY contracts")
         return cached
 
     # ---- websocket -------------------------------------------------------------------------------
@@ -157,7 +181,7 @@ class ShoonyaMarketDataProvider(MarketDataProvider):
             connect = websockets.connect
         self._state = {}
         last: Exception | None = None
-        for url in auth.WS_URLS:  # Shoonya has served the feed from more than one address
+        for url in self.ws_urls:  # the feed has been served from more than one address
             try:
                 self._ws = await asyncio.wait_for(connect(url), CONNECT_TIMEOUT_S)
                 await self._ws.send(json.dumps({"t": "c", "uid": self._user, "actid": self._user, "susertoken": token, "source": "API"}))
@@ -170,8 +194,8 @@ class ShoonyaMarketDataProvider(MarketDataProvider):
                 self._beat = asyncio.create_task(self._heartbeat())
                 return
             await self._close_ws()
-            raise ShoonyaAuthError(f"Shoonya rejected the session ({ack.get('s') or ack}). Sign in again on the Brokers page.")
-        raise ConnectionError(f"Shoonya data socket failed to connect: {last}")
+            raise ShoonyaAuthError(f"{self.label} rejected the session ({ack.get('s') or ack}). Sign in again on the Brokers page.")
+        raise ConnectionError(f"{self.label} data socket failed to connect: {last}")
 
     async def _heartbeat(self) -> None:
         while True:
@@ -213,7 +237,7 @@ class ShoonyaMarketDataProvider(MarketDataProvider):
                     continue
                 self.heartbeat()
                 if frame.get("t") == "ck" and frame.get("s") != "OK":
-                    raise ShoonyaAuthError(f"Shoonya rejected the session ({frame.get('s')}). Sign in again on the Brokers page.")
+                    raise ShoonyaAuthError(f"{self.label} rejected the session ({frame.get('s')}). Sign in again on the Brokers page.")
                 merged = merge_frame(self._state, frame)
                 if merged is not None:
                     tick = to_tick(merged[0], merged[1], self._now())
@@ -222,8 +246,8 @@ class ShoonyaMarketDataProvider(MarketDataProvider):
         except ProviderAuthError:
             raise
         except Exception as exc:  # noqa: BLE001 - websockets' own ConnectionClosed and friends
-            raise ConnectionError(f"Shoonya data socket closed: {exc}") from None
-        raise ConnectionError("Shoonya data socket closed")
+            raise ConnectionError(f"{self.label} data socket closed: {exc}") from None
+        raise ConnectionError(f"{self.label} data socket closed")
 
     # ---- REST: first quotes + chart warm-up --------------------------------------------------------
     async def snapshot(self, instruments: list[Instrument]) -> list[Tick]:

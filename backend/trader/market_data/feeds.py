@@ -63,6 +63,10 @@ def default_provider(settings: Settings, holder: dict):  # noqa: ANN201
         from trader.market_data.shoonya import ShoonyaMarketDataProvider
 
         return ShoonyaMarketDataProvider(settings, token_provider=lambda: holder.get("token"))
+    if settings.market_data_provider == "flattrade":
+        from trader.market_data.flattrade import FlattradeMarketDataProvider
+
+        return FlattradeMarketDataProvider(settings, token_provider=lambda: holder.get("token"))
     from trader.brokers.fyers.provider import FyersMarketDataProvider
 
     return FyersMarketDataProvider(settings, token_provider=lambda: holder.get("token"))
@@ -109,6 +113,8 @@ class FeedManager:
         holder = {"token": token, "expires_at": _parse_expiry(keys.get("expires_at"))}
         if broker == "shoonya":
             st = self.settings.model_copy(update={"market_data_provider": "shoonya", "shoonya_user_id": keys["user_id"]})
+        elif broker == "flattrade":
+            st = self.settings.model_copy(update={"market_data_provider": "flattrade", "flattrade_client_id": keys["client_id"]})
         else:
             st = self.settings.model_copy(update={"market_data_provider": "fyers", "fyers_client_id": keys["client_id"],
                                                   "fyers_secret_key": keys["secret_key"]})
@@ -202,7 +208,8 @@ class FeedManager:
         return len(self._feeds)
 
 
-BROKER_NAMES = {"fyers": "Fyers", "shoonya": "Shoonya"}  # brokers with a live-data adapter
+BROKER_NAMES = {"fyers": "Fyers", "shoonya": "Shoonya", "flattrade": "Flattrade"}
+OPAQUE_SESSIONS = ("shoonya", "flattrade")  # session tokens with no readable expiry: it is saved beside the token  # brokers with a live-data adapter
 
 
 def _parse_expiry(value: str | None) -> datetime | None:
@@ -215,14 +222,14 @@ def _parse_expiry(value: str | None) -> datetime | None:
 def _keys_expired(broker: str, keys: dict) -> bool:
     if not keys.get("access_token"):
         return True
-    if broker == "shoonya":  # an opaque session token: the expiry was saved with it
+    if broker in OPAQUE_SESSIONS:
         exp = _parse_expiry(keys.get("expires_at"))
         return exp is None or exp <= datetime.now(timezone.utc)
     return _expired(keys["access_token"])
 
 
 def _feed_expired(broker: str, holder: dict) -> bool:
-    if broker == "shoonya":
+    if broker in OPAQUE_SESSIONS:
         exp = holder.get("expires_at")
         return exp is None or exp <= datetime.now(timezone.utc)
     return _expired(holder.get("token"))
