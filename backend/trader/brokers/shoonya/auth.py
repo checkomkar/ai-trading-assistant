@@ -19,8 +19,9 @@ from typing import Any, Callable
 from trader.instruments.calendar import IST
 from trader.market_data.base import ProviderAuthError
 
-HOST = "https://api.shoonya.com/NorenWClientTP"
-WS_URL = "wss://api.shoonya.com/NorenWSTP/"
+# Shoonya moved its API: the older NorenWClientTP address now answers 502 for everything, NorenWClientAPI is the live one.
+HOST = "https://api.shoonya.com/NorenWClientAPI"
+WS_URLS = ("wss://api.shoonya.com/NorenWSAPI/", "wss://api.shoonya.com/NorenWSTP/")  # tried in this order
 MASTER_URL = "https://api.shoonya.com/{exch}_symbols.txt.zip"
 TIMEOUT_S = 25
 
@@ -53,6 +54,12 @@ def post(path: str, payload: dict, token: str | None = None) -> Any:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:  # noqa: S310 - fixed https host
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        try:  # Shoonya reports refusals as HTTP 400/401 with a JSON body ({"stat": "Not_Ok", "emsg": ...})
+            body = json.loads(exc.read().decode("utf-8"))
+            if isinstance(body, dict) and body.get("stat"):
+                return body
+        except (ValueError, OSError):
+            pass
         raise ConnectionError(f"Shoonya answered HTTP {exc.code} for {path}") from None
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ConnectionError(f"Shoonya request failed for {path}: {exc}") from None

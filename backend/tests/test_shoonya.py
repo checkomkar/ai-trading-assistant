@@ -268,3 +268,38 @@ def test_the_saved_session_is_used_only_for_the_same_user_and_before_it_expires(
     assert load_token(p, "FA1") == "TOK" and load_token(p, "FA2") is None
     save_token(p, "FA1", "TOK", (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat())
     assert load_token(p, "FA1") is None
+
+
+def test_a_refusal_sent_as_http_400_is_read_as_shoonyas_message_not_a_network_error(monkeypatch):
+    import io
+    import urllib.error
+
+    def refuse(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"stat":"Not_Ok","emsg":"Invalid Input :  Invalid Vendor code"}'))
+
+    monkeypatch.setattr(auth.urllib.request, "urlopen", refuse)
+    with pytest.raises(auth.ShoonyaAuthError, match="Invalid Vendor code"):
+        auth.sign_in("FA1", "pw", "123456", "bad", "k", "d")
+    assert auth.HOST.endswith("/NorenWClientAPI")
+
+    def gateway(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {}, io.BytesIO(b"<html>502</html>"))
+
+    monkeypatch.setattr(auth.urllib.request, "urlopen", gateway)
+    with pytest.raises(ConnectionError, match="502"):
+        auth.post("/QuickAuth", {})
+
+
+async def test_the_socket_falls_back_to_the_next_address_when_the_first_does_not_answer():
+    urls = []
+    ws = FakeWS({"t": "ck", "s": "OK"}, [])
+
+    async def connect(url):
+        urls.append(url)
+        if len(urls) == 1:
+            raise OSError("refused")
+        return ws
+
+    p = sh.ShoonyaMarketDataProvider(SimpleNamespace(shoonya_user_id="FA1"), token_provider=lambda: "TOK", ws_connect=connect)
+    await p.connect()
+    assert urls == list(auth.WS_URLS) and ws.sent[0]["t"] == "c"

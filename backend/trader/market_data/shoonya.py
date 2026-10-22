@@ -155,20 +155,23 @@ class ShoonyaMarketDataProvider(MarketDataProvider):
             import websockets  # bundled with uvicorn[standard]
 
             connect = websockets.connect
-        try:
-            self._ws = await asyncio.wait_for(connect(auth.WS_URL), CONNECT_TIMEOUT_S)
-        except (OSError, asyncio.TimeoutError) as exc:
-            raise ConnectionError(f"Shoonya data socket failed to connect: {exc}") from None
         self._state = {}
-        await self._ws.send(json.dumps({"t": "c", "uid": self._user, "actid": self._user, "susertoken": token, "source": "API"}))
-        try:
-            ack = json.loads(await asyncio.wait_for(self._ws.recv(), CONNECT_TIMEOUT_S))
-        except (asyncio.TimeoutError, ValueError) as exc:
-            raise ConnectionError("Shoonya data socket did not answer the sign-in") from exc
-        if ack.get("t") != "ck" or ack.get("s") != "OK":
+        last: Exception | None = None
+        for url in auth.WS_URLS:  # Shoonya has served the feed from more than one address
+            try:
+                self._ws = await asyncio.wait_for(connect(url), CONNECT_TIMEOUT_S)
+                await self._ws.send(json.dumps({"t": "c", "uid": self._user, "actid": self._user, "susertoken": token, "source": "API"}))
+                ack = json.loads(await asyncio.wait_for(self._ws.recv(), CONNECT_TIMEOUT_S))
+            except (OSError, asyncio.TimeoutError, ValueError) as exc:
+                last = exc
+                await self._close_ws()
+                continue
+            if ack.get("t") == "ck" and ack.get("s") == "OK":
+                self._beat = asyncio.create_task(self._heartbeat())
+                return
             await self._close_ws()
             raise ShoonyaAuthError(f"Shoonya rejected the session ({ack.get('s') or ack}). Sign in again on the Brokers page.")
-        self._beat = asyncio.create_task(self._heartbeat())
+        raise ConnectionError(f"Shoonya data socket failed to connect: {last}")
 
     async def _heartbeat(self) -> None:
         while True:
