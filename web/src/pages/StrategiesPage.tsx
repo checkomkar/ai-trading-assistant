@@ -10,6 +10,7 @@ import {
   type Validation,
 } from "../api";
 import { Results } from "../components/backtest/Results";
+import { QuestionDialog } from "../components/QuestionDialog";
 import { MicButton } from "../components/MicButton";
 import { StrategyLibrary } from "../components/StrategyLibrary";
 import { ReadyMade } from "../components/ReadyMade";
@@ -37,6 +38,8 @@ export function StrategiesPage() {
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000, capital: 100000 });
   const timer = useRef<ReturnType<typeof setTimeout>>();
+  // The AI asked questions instead of building: shown as a dialog with tappable answers.
+  const [ask, setAsk] = useState<{ input: string; base: Record<string, unknown> | null; t: Translation } | null>(null);
 
   const refreshSaved = () => getJSON<SavedStrategy[]>("/strategies").then(setSaved).catch(() => {});
   useEffect(() => {
@@ -90,12 +93,53 @@ export function StrategiesPage() {
     run("translate", async () => {
       const t = await postJSON<Translation>("/strategies/translate", { text: input, base_spec: base ?? null });
       setTranslation(t);
+      if (!t.spec && t.questions.length > 0) setAsk({ input, base: base ?? null, t });
       if (t.spec) {
         setSpec(t.spec);
         setCurrent(null);
         setRefine("");
       }
     });
+
+  const answerQuestions = (answers: (string | null)[]) => {
+    if (!ask) return;
+    const NL = String.fromCharCode(10);
+    const lines = ask.t.questions.flatMap((q, i) => (answers[i] ? [`- ${q} -> ${answers[i]}`] : []));
+    const skipped = answers.some((a) => !a);
+    const next = [
+      ask.input,
+      "",
+      "My answers to your questions:",
+      lines.length ? lines.join(NL) : "(none)",
+      ...(skipped ? ["For anything I did not answer, choose sensible defaults and list them under assumptions."] : []),
+    ].join(NL);
+    const base = ask.base;
+    setAsk(null);
+    translate(next, base);
+  };
+
+  const askAssistant = () => {
+    if (!ask) return;
+    const NL = String.fromCharCode(10);
+    const qs = ask.t.questions.map((q, i) => `${i + 1}. ${q}`).join(NL);
+    try {
+      sessionStorage.setItem(
+        "assistant-prefill",
+        [
+          `I am building a strategy and the strategy builder needs more detail. My description: "${ask.input}"`,
+          "",
+          "It asked:",
+          qs,
+          "",
+          "Please go through these with me one at a time, suggest sensible answers, then draft the strategy.",
+        ].join(NL),
+      );
+    } catch {
+      /* storage unavailable: the Assistant just opens empty */
+    }
+    setAsk(null);
+    location.hash = "#/assistant";
+  };
 
   const loadTemplate = () =>
     run("template", async () => {
@@ -158,6 +202,16 @@ export function StrategiesPage() {
 
   return (
     <main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 gap-4 p-4 sm:p-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+      {ask && (
+        <QuestionDialog
+          questions={ask.t.questions}
+          choices={ask.t.choices ?? []}
+          busy={busy === "translate"}
+          onSubmit={answerQuestions}
+          onAssistant={askAssistant}
+          onClose={() => setAsk(null)}
+        />
+      )}
       <aside className="flex flex-col gap-4">
         <section className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
           <h1 className="mb-1 text-sm font-semibold">Describe a strategy</h1>

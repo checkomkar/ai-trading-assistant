@@ -21,9 +21,11 @@ ENVELOPE_SCHEMA = {
         "spec_json": {"type": "string", "description": "The Strategy Spec as a JSON string, or empty if you must ask first."},
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "questions": {"type": "array", "items": {"type": "string"}},
+        "choices": {"type": "array", "items": {"type": "array", "items": {"type": "string"}},
+                    "description": "For each question (same order), 2-5 short answers the trader can tap; [] if it needs free text."},
         "unsupported": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["spec_json", "assumptions", "questions", "unsupported"],
+    "required": ["spec_json", "assumptions", "questions", "choices", "unsupported"],
     "additionalProperties": False,
 }
 
@@ -83,6 +85,7 @@ and say so in "unsupported".
 list every default you applied in "assumptions". If a choice changes the strategy materially and the text does \
 not settle it (e.g. stop/target missing, which breakout level, which timeframe when several are implied), \
 leave spec_json empty and ask in "questions".
+- When you ask "questions", ask at most 5, each answerable by tapping: give 2-5 short, concrete answers in "choices" (same order; e.g. ["Buy shares (stocks)", "Buy options (calls/puts)"] or ["EMA 9/21 cross", "Price above SMA 50", "RSI above 60"]) and put your recommended answer first. Use [] only when the answer must be a number or free text. Never ask what the text already says.
 - Put anything that cannot be expressed (news, order flow, option Greeks history, selling options, other \
 instruments) in "unsupported" and explain briefly.
 - Keep the name short (max 80 chars).
@@ -104,10 +107,22 @@ class Translation:
     english: str | None
     assumptions: list[str] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
+    choices: list[list[str]] = field(default_factory=list)  # tappable answers per question, same order ([] = free text)
     unsupported: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     model: str = ""
     repaired: bool = False
+
+
+def _choices(env: dict) -> list[list[str]]:
+    """One list of short answers per question, padded/trimmed to match `questions` whatever the model returned."""
+    qs = env.get("questions") or []
+    raw = env.get("choices") or []
+    out = []
+    for i in range(len(qs)):
+        c = raw[i] if i < len(raw) and isinstance(raw[i], list) else []
+        out.append([str(x).strip()[:80] for x in c if str(x).strip()][:6])
+    return out
 
 
 def validate_spec_json(text: str) -> tuple[StrategySpec | None, list[str]]:
@@ -151,7 +166,7 @@ class StrategyTranslator:
         first = self._call(messages)
         env = first["envelope"]
         out = Translation(None, None, env.get("assumptions", []), env.get("questions", []),
-                          env.get("unsupported", []))
+                          _choices(env), env.get("unsupported", []))
         out.model = self.provider.label  # with fallbacks: whoever actually answered
         if not env.get("spec_json"):
             return out  # questions / unsupported only
@@ -166,6 +181,7 @@ class StrategyTranslator:
             out.repaired = True
             out.assumptions = env.get("assumptions", out.assumptions)
             out.questions = env.get("questions", [])
+            out.choices = _choices(env)
             out.unsupported = env.get("unsupported", out.unsupported)
             if not env.get("spec_json"):
                 return out

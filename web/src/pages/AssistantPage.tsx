@@ -137,6 +137,18 @@ export function AssistantPage() {
   const [newNote, setNewNote] = useState("");
   const [dragging, setDragging] = useState(false);
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 900);
+  useEffect(() => {
+    // The Strategies page can hand over a question ("build this with the Assistant"): it only pre-fills the box.
+    try {
+      const pre = sessionStorage.getItem("assistant-prefill");
+      if (pre) {
+        sessionStorage.removeItem("assistant-prefill");
+        setText(pre);
+      }
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
   const [drawer, setDrawer] = useState<"memory" | "files" | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);

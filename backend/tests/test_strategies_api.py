@@ -197,3 +197,12 @@ def test_folder_rename_delete_and_unknowns(client):
     assert bad.status_code == 404
     # "folders" is a real route, not mistaken for a strategy id
     assert client.get("/strategies/folders").status_code == 200
+
+
+def test_translate_returns_tappable_choices_aligned_with_questions():
+    fake = FakeClaude({**env(questions=["Shares or options?", "Stop loss?"]),
+                       "choices": [["Shares", "Options", " "], "not a list"]})
+    out = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=fake)).translate("momentum on reliance")
+    assert out.questions == ["Shares or options?", "Stop loss?"] and out.choices == [["Shares", "Options"], []]
+    legacy = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=FakeClaude(env(questions=["Which?"])))).translate("x y z w q")
+    assert legacy.choices == [[]]  # a model that sends no choices still works: free-text answer

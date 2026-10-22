@@ -373,6 +373,7 @@ export interface Translation {
   english: string | null;
   assumptions: string[];
   questions: string[];
+  choices: string[][];
   unsupported: string[];
   errors: string[];
   model: string;

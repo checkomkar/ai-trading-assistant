@@ -295,6 +295,6 @@ def test_ready_made_strategies_need_a_login_and_do_not_use_up_the_strategy_limit
     assert client.get("/strategies/library").status_code == 401
     signup(client)
     lib = client.get("/strategies/library").json()
-    assert lib["categories"] == ["Momentum", "Trend", "Scalp", "Sideways"] and len(lib["strategies"]) >= 11
+    assert lib["categories"] == ["Momentum", "Trend", "Scalp", "Sideways", "Stocks"] and len(lib["strategies"]) >= 11
     assert client.get("/strategies").json() == []  # browsing the catalogue saves nothing
     assert client.get("/billing/usage").json()["usage"]["strategies"]["used"] == 0
