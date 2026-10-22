@@ -249,3 +249,22 @@ async def test_the_feed_manager_runs_a_customer_on_the_broker_they_are_signed_in
     assert feeds._keys_expired("shoonya", {"access_token": "t", "expires_at": soon}) is True
     assert feeds._keys_expired("shoonya", {"access_token": "t"}) is True and feeds._keys_expired("shoonya", {}) is True
     assert feeds._feed_expired("shoonya", {"expires_at": datetime.now(timezone.utc) + timedelta(hours=1)}) is False
+
+
+def test_totp_matches_the_rfc_6238_reference_vectors():
+    from trader.brokers.shoonya.login import totp_now
+
+    secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # base32 of the RFC's ASCII key "12345678901234567890"
+    assert totp_now(secret, at=59, digits=8) == "94287082" and totp_now(secret, at=1111111109, digits=8) == "07081804"
+    assert totp_now("gezd gnbv gy3t qojq gezd gnbv gy3t qojq", at=59) == "287082"  # spaces and case do not matter
+
+
+def test_the_saved_session_is_used_only_for_the_same_user_and_before_it_expires(tmp_path):
+    from trader.brokers.shoonya.login import load_token, save_token
+
+    p = tmp_path / "t.json"
+    assert load_token(p, "FA1") is None
+    save_token(p, "FA1", "TOK", (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat())
+    assert load_token(p, "FA1") == "TOK" and load_token(p, "FA2") is None
+    save_token(p, "FA1", "TOK", (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat())
+    assert load_token(p, "FA1") is None

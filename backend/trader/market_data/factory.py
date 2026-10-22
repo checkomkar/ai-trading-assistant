@@ -32,7 +32,9 @@ def create_provider(settings: Settings, sessionmaker=None) -> MarketDataProvider
                               source=settings.replay_source, underlyings=unds,
                               risk_free_rate=settings.risk_free_rate)
     if name == "shoonya":
+        from trader.brokers.shoonya.login import load_token, token_path
         from trader.market_data.shoonya import ShoonyaMarketDataProvider
 
-        return ShoonyaMarketDataProvider(settings)
+        # The operator's own session, from `python -m trader.brokers.shoonya.login`
+        return ShoonyaMarketDataProvider(settings, token_provider=lambda: load_token(token_path(settings), settings.shoonya_user_id))
     raise ValueError(f"Unknown MARKET_DATA_PROVIDER: {settings.market_data_provider}")
