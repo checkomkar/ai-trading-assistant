@@ -36,6 +36,7 @@ class EquityBacktestRequest:
     capital: float = 100_000.0
     slippage_pct: float = 0.05
     brokerage_per_order: float = 0.0
+    quantity: int | None = None
     risk_free_rate: float = 0.065
     strategy_version_id: str | None = None
 
@@ -97,7 +98,7 @@ def build_metrics(res: EquityResult, trades: list, capital: float, max_positions
 def execute(req: EquityBacktestRequest, bars: dict[str, list[Candle]]) -> dict:
     """Pure and CPU-bound: safe to run in a worker thread."""
     spec = parse_spec(req.spec)
-    cfg = EquityConfig(req.capital, req.slippage_pct, EquityCosts(brokerage_per_order=req.brokerage_per_order))
+    cfg = EquityConfig(req.capital, req.slippage_pct, EquityCosts(brokerage_per_order=req.brokerage_per_order), req.quantity)
     engine = EquityEngine(spec, cfg)
     res = engine.run(bars, req.start, req.end)
     trades = res.trades + engine.finish_open(res, bars)
@@ -117,7 +118,7 @@ def execute(req: EquityBacktestRequest, bars: dict[str, list[Candle]]) -> dict:
                                 "spec_hash": spec.hash, "english": render_english(spec),
                                 "strategy_version_id": req.strategy_version_id, "market": "equity"},
                    "engine": {"capital": req.capital, "slippage_pct": req.slippage_pct,
-                              "brokerage_per_order": req.brokerage_per_order,
+                              "brokerage_per_order": req.brokerage_per_order, "quantity": req.quantity,
                               "max_positions": spec.risk.max_positions},
                    "execution": {}},
     }

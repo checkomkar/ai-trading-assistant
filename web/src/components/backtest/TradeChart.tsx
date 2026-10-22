@@ -137,7 +137,7 @@ export function TradeChart({
     if (tf && !daily) q.set("timeframe", tf);
     if (daily && symbol) q.set("symbol", symbol);
     if (fromDate) q.set("from_date", fromDate);
-    else q.set("last_days", String(DAYS[daily ? "1d" : (tf ?? "5m")] ?? 60));
+    else if (!daily) q.set("last_days", String(DAYS[tf ?? "5m"] ?? 60));
     getJSON<ChartData>(`/backtests/${runId}/chart?${q}`)
       .then((d) => alive && setData(d))
       .catch((e: Error) => alive && setError(e.message));
@@ -198,7 +198,8 @@ export function TradeChart({
       if (hit?.length) onSelect(hit[0]);
     });
     const n = data.bars.length;
-    if (n) c.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - (VISIBLE[data.timeframe] ?? 230)), to: n + 3 });
+    if (n && daily) c.timeScale().fitContent();
+    else if (n) c.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - (VISIBLE[data.timeframe] ?? 230)), to: n + 3 });
     chart.current = c;
     candles.current = cs;
     return () => {

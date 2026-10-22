@@ -42,6 +42,7 @@ class EquityConfig:
     capital: float = 100_000.0
     slippage_pct: float = 0.05  # per side
     costs: EquityCosts = field(default_factory=EquityCosts)
+    quantity: int | None = None  # fixed shares per trade; None = size from capital (and risk)
 
 
 @dataclass
@@ -117,6 +118,9 @@ class EquityEngine:
         return p * (1 - self.cfg.slippage_pct / 100)
 
     def _qty(self, price: float, cash: float) -> int:
+        if self.cfg.quantity:  # the trader chose the size: all or nothing, never a smaller position than asked
+            q = self.cfg.quantity
+            return q if q * price + self.cfg.costs.order_charges(price, q, "BUY") <= cash else 0
         slot = self.cfg.capital / self.max_positions
         qty = math.floor(slot / price)
         if self.risk_pct:
@@ -205,7 +209,8 @@ class EquityEngine:
                     px = self._slip_up(bar.open)
                     qty = self._qty(px, cash)
                     if qty < 1:
-                        skipped["one share costs more than the position size" if self.cfg.capital / self.max_positions < px
+                        skipped["not enough cash for the chosen quantity" if self.cfg.quantity else
+                                "one share costs more than the position size" if self.cfg.capital / self.max_positions < px
                                 else "not enough cash or risk budget"] += 1
                         continue
                     ch = self.cfg.costs.order_charges(px, qty, "BUY")

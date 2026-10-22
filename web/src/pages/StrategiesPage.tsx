@@ -36,7 +36,7 @@ export function StrategiesPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
-  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000, capital: 100000 });
+  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000, capital: 100000, quantity: "" });
   const timer = useRef<ReturnType<typeof setTimeout>>();
   // The AI asked questions instead of building: shown as a dialog with tappable answers.
   const [ask, setAsk] = useState<{ input: string; base: Record<string, unknown> | null; t: Translation } | null>(null);
@@ -192,6 +192,7 @@ export function StrategiesPage() {
         pricing: bt.pricing,
         strategy_id: s.id,
         engine_params: isEquity ? { capital: bt.capital } : { lots: bt.lots, max_daily_loss: bt.max_daily_loss },
+        ...(isEquity && Number(bt.quantity) >= 1 ? { quantity: Math.floor(Number(bt.quantity)) } : {}),
       });
       setResult(r);
     });
@@ -396,6 +397,20 @@ ${r.text.trim()}` : r.text.trim()));
                 {isEquity ? (
                   <Field label="Capital ₹">
                     <input type="number" min={10000} step={10000} value={bt.capital} onChange={(e) => setBt({ ...bt, capital: Number(e.target.value) || 100000 })} className={`${inp} w-28`} />
+                  </Field>
+                ) : null}
+                {isEquity ? (
+                  <Field label="Shares per trade">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={bt.quantity}
+                      placeholder="auto"
+                      title="Leave empty to size each trade from capital and the strategy's risk settings"
+                      onChange={(e) => setBt({ ...bt, quantity: e.target.value })}
+                      className={`${inp} w-24`}
+                    />
                   </Field>
                 ) : (
                   <>

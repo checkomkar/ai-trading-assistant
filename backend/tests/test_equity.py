@@ -161,3 +161,13 @@ def test_nothing_trades_before_the_start_date_and_open_positions_close_at_the_en
     [t] = e.finish_open(res, data)
     assert t.exit_reason.startswith("still open") and t.exit_price == 105.0
     assert res.equity_curve[-1]["equity"] > 100_000
+
+
+def test_fixed_quantity_overrides_sizing_and_skips_when_cash_is_short():
+    rows = [(99, 99, 99, 99), (101, 102, 100, 101), (100, 101, 99, 100), (100, 101, 99, 100)]
+    sp = spec(risk={"max_positions": 5, "risk_per_trade_pct": 0.1})
+    _, auto = run(sp, {"TCS": bars("TCS", rows)})
+    _, fixed = run(sp, {"TCS": bars("TCS", rows)}, EquityConfig(100_000, 0.0, EquityCosts(0, 0, 0, 0, 0, 0, 0, 0), 250))
+    assert auto.open_positions[0].quantity < 250 and fixed.open_positions[0].quantity == 250
+    _, short = run(sp, {"TCS": bars("TCS", rows)}, EquityConfig(100_000, 0.0, EquityCosts(0, 0, 0, 0, 0, 0, 0, 0), 5000))
+    assert short.open_positions == [] and "not enough cash for the chosen quantity" in short.skipped

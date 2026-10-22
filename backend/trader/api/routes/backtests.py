@@ -60,6 +60,7 @@ class BacktestIn(BaseModel):
     engine_params: EngineParamsIn = EngineParamsIn()
     execution_params: ExecutionParamsIn = ExecutionParamsIn()
     slippage_pct: float = Field(0.05, ge=0, le=5)  # stock strategies: per side
+    quantity: int | None = Field(None, ge=1, le=1_000_000)  # stock strategies: fixed shares per trade (None = size from capital)
 
     @model_validator(mode="after")
     def _range(self) -> "BacktestIn":
@@ -113,7 +114,7 @@ async def _run_equity(request: Request, body: BacktestIn, spec: dict, version_id
 
     req = er.EquityBacktestRequest(
         spec=spec, start=body.start, end=body.end, capital=body.engine_params.capital,
-        slippage_pct=body.slippage_pct, strategy_version_id=version_id,
+        slippage_pct=body.slippage_pct, quantity=body.quantity, strategy_version_id=version_id,
         risk_free_rate=request.app.state.md.settings.risk_free_rate)
     try:
         async with meter.counted(user, "backtests"):
@@ -146,9 +147,7 @@ async def _equity_chart(s, row: BacktestRunRow, symbol: str | None, from_date: d
     sym = symbol or (traded[0] if traded else universe[0])
     if sym not in universe:
         raise HTTPException(404, f"{sym} is not part of this run")
-    lo = from_date or row.start
-    if last_days:
-        lo = max(lo, row.end - timedelta(days=int(last_days * 1.5) + 2))
+    lo = from_date or row.start  # a stock chart shows the whole run: daily bars are few
     cs = (await equity_daily.load_daily(s, [sym], eq.warmup_start(max(lo, row.start)), row.end)).get(sym, [])
     fe = FeatureEngine(375, FeatureConfig())
     bars, fast, slow = [], [], []
