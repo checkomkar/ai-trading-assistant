@@ -39,7 +39,7 @@ Option history, resumable (1 year of 1-minute candles):
 backend/.venv/Scripts/python -m trader.scripts.backfill_history --days 365 --timeframes 1m
 ```
 
-NIFTY 50 daily stock candles, resumable (also the daily refresh):
+NIFTY 50 daily stock candles, free Yahoo data, no login, resumable (also the daily refresh; add `--source fyers` for broker data):
 
 ```bash
 backend/.venv/Scripts/python -m trader.scripts.backfill_equities --years 5

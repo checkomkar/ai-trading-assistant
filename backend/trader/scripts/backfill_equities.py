@@ -1,9 +1,11 @@
 """Backfill (or refresh) daily candles for the NIFTY 50 stocks from the broker.
 
-    python -m trader.scripts.backfill_equities --years 5
+    python -m trader.scripts.backfill_equities --years 5                 # free Yahoo data, no login
+    python -m trader.scripts.backfill_equities --years 5 --source fyers  # broker data (daily Fyers login)
     python -m trader.scripts.backfill_equities --symbols RELIANCE,TCS --years 2
 
-Resumes from the last stored day, so re-running only fetches what is missing. Needs a valid Fyers token
+Resumes from the last stored day, so re-running only fetches what is missing. Stick to one source per stock: the two
+can differ slightly (adjustments), and rows are upserted by day. The fyers source needs a valid token
 (python -m trader.brokers.fyers.login) and MARKET_DATA_PROVIDER=fyers.
 """
 
@@ -18,13 +20,17 @@ from trader.db.session import create_engine, create_sessionmaker
 from trader.instruments import equities as eq
 from trader.market_data import equity_daily
 from trader.market_data.factory import create_provider
+from trader.market_data.yahoo_daily import YahooDailyProvider
 
 
-async def run(symbols: list[str], years: int) -> None:
+async def run(symbols: list[str], years: int, source: str) -> None:
     settings = get_settings()
-    provider = create_provider(settings)
-    if provider.is_simulated:
-        raise SystemExit("MARKET_DATA_PROVIDER is 'simulated': nothing to fetch. Set it to 'fyers'.")
+    if source == "yahoo":
+        provider = YahooDailyProvider()
+    else:
+        provider = create_provider(settings)
+        if provider.is_simulated:
+            raise SystemExit("MARKET_DATA_PROVIDER is 'simulated': nothing to fetch. Set it to 'fyers'.")
     url = settings.resolved_database_url
     await asyncio.to_thread(upgrade_db, url)
     engine = create_engine(url)
@@ -41,8 +47,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--years", type=int, default=5)
     p.add_argument("--symbols", default="NIFTY50", help="comma list of symbols and/or the universe name NIFTY50")
+    p.add_argument("--source", choices=("yahoo", "fyers"), default="yahoo",
+                   help="yahoo: free, no login (default). fyers: your broker's data, needs the daily login")
     a = p.parse_args()
-    asyncio.run(run(eq.expand(a.symbols.split(",")), a.years))
+    asyncio.run(run(eq.expand(a.symbols.split(",")), a.years, a.source))
 
 
 if __name__ == "__main__":

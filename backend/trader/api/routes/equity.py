@@ -19,6 +19,7 @@ from trader.backtest.equity_runner import parse_spec
 from trader.db.models import EquityPaperRow, StrategyRow
 from trader.instruments import equities as eq
 from trader.market_data import equity_daily
+from trader.market_data.yahoo_daily import YahooDailyProvider
 
 router = APIRouter(prefix="/equity", tags=["equity"])
 MAX_PORTFOLIOS = 5
@@ -48,14 +49,13 @@ async def coverage(request: Request, user: CurrentUser) -> dict:
 
 @router.post("/refresh")
 async def refresh(request: Request, admin: AdminUser) -> dict:
-    """Operator only: fetch the days since the last stored one for the whole NIFTY 50 (a few minutes the first time)."""
+    """Operator only: fetch the days since the last stored one for the whole NIFTY 50 from the free Yahoo source (about a
+    minute; the first time, five years of history)."""
     st = request.app.state
     state = getattr(st, "equity_refresh", None)
     if state and state.get("running"):
         return state
-    provider = st.md.provider
-    if provider.is_simulated:
-        raise HTTPException(409, "The market data provider is simulated; stock history needs the broker (Fyers).")
+    provider = YahooDailyProvider()  # free and needs no broker login, so it also works on the server
     state = st.equity_refresh = {"running": True, "started": datetime.now(timezone.utc).isoformat()}
 
     async def job() -> None:

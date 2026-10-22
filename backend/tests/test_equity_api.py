@@ -154,8 +154,37 @@ def test_paper_portfolio_started_in_the_past_shows_positions_and_orders(client, 
         assert p["stop"] < p["entry_price"] < p["target"]
 
 
-def test_refresh_is_operator_only_and_needs_the_broker(client):
-    assert client.post("/equity/refresh").status_code == 409  # simulated provider in tests
+def test_refresh_uses_the_free_source(client, monkeypatch):
+    from trader.api.routes import equity as route
+
+    seen = {}
+
+    async def fake(provider, sm, symbols, years=5, today=None):
+        seen["provider"], seen["n"] = provider.name, len(symbols)
+        return {"stored": {x: 1 for x in symbols}, "failed": {}}
+
+    monkeypatch.setattr(route.equity_daily, "refresh", fake)
+    r = client.post("/equity/refresh")
+    assert r.status_code == 200 and r.json()["running"] is True
+    import time
+    for _ in range(50):
+        st = client.get("/equity/refresh").json()
+        if not st["running"]:
+            break
+        time.sleep(0.1)
+    assert seen == {"provider": "yahoo", "n": 50} and st["candles"] == 50
+
+
+def test_yahoo_chart_parsing_skips_missing_days_and_maps_symbols():
+    from trader.market_data.yahoo_daily import parse_chart, yahoo_symbol
+
+    payload = {"chart": {"result": [{"timestamp": [1760000000, 1760086400, 1760172800], "indicators": {"quote": [{
+        "open": [10, None, 12], "high": [11, None, 13], "low": [9, None, 11], "close": [10.5, None, 12.5], "volume": [100, None, 300]}]}}]}}
+    cs = parse_chart(payload, "NSE:X-EQ")
+    assert [c.close for c in cs] == [10.5, 12.5] and cs[0].volume == 100
+    assert yahoo_symbol("M&M") == "M%26M.NS" and yahoo_symbol("BAJAJ-AUTO") == "BAJAJ-AUTO.NS"
+    with pytest.raises(RuntimeError):
+        parse_chart({"chart": {"result": None, "error": {"description": "Not Found"}}}, "t")
 
 
 class FakeProvider:
