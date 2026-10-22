@@ -23,6 +23,7 @@ from trader.logging import get_logger
 from trader.market_data.service import MarketDataService
 
 log = get_logger("feeds")
+STOP_TIMEOUT_S = 8.0
 
 
 class FeedUnavailable(Exception):
@@ -165,7 +166,10 @@ class FeedManager:
         if feed.history_task is not None:
             feed.history_task.cancel()
         try:
-            await feed.md.stop()
+            # A broker SDK's socket can refuse to close: never let that hold up the request that dropped the feed
+            await asyncio.wait_for(feed.md.stop(), STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.warning("feed stop timed out", event="feed.stop_timeout", owner=owner)
         except Exception as exc:  # noqa: BLE001
             log.warning("feed stop failed", event="feed.stop_failed", owner=owner, error=str(exc))
         log.info("feed stopped", event="feed.stopped", owner=owner, active=len(self._feeds))

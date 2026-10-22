@@ -203,3 +203,19 @@ def test_a_shoonya_customer_gets_their_own_feed_after_signing_in(env, monkeypatc
         assert c.post("/brokers/shoonya/login", json={"password": "p", "totp": "123456"}).status_code == 200
         assert c.get("/market/overview").status_code == 200
         assert seen == [("shoonya", "FA1", "SESSION")]
+
+
+async def test_a_feed_that_will_not_stop_does_not_hang_the_request_that_drops_it(monkeypatch):
+    import asyncio
+
+    from trader.market_data import feeds
+
+    class Stuck:
+        async def stop(self):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(feeds, "STOP_TIMEOUT_S", 0.05)
+    fm = feeds.FeedManager(Settings(_env_file=None), None)
+    fm._feeds["o"] = feeds._Feed(Stuck(), {}, "c", 0.0)
+    await asyncio.wait_for(fm.drop("o"), 2)
+    assert "o" not in fm._feeds
