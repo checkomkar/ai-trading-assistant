@@ -11,6 +11,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - M3b: natural-language/JSON custom strategies
 - **M2 (Fyers live data):** works; still needs its market-hours checks (PRD §21.1).
 - **M4 (paper trading):** built (PRD §22): PaperBroker, risk engine, live runner, journal, Paper tab, ReplayProvider. Open positions, the day's risk counters and the kill switch survive restarts (§22.5). Still needs the 20-day unattended run.
+- **Next: Backtest Engine v2** (PRD §24), phases B1–B9 built one at a time. Stop after each phase for the owner to verify and merge before starting the next.
 - **Pending loose ends:**
   - live translator run (needs `ANTHROPIC_API_KEY`)
   - 20-prompt translator eval (§19.7)

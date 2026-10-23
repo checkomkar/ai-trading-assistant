@@ -2152,6 +2152,8 @@ DoD:
 - Costs reconcile with a broker contract note for a sample trade within ₹1.
 - The report for Strategy #1 is generated on at least 6 months of data with out-of-sample results shown separately.
 
+Next: Backtest Engine v2 (§24) adds Real-mode fixes, strategy indicators on the chart, walk-forward and sweeps, built and verified one phase at a time.
+
 ## M4 — Paper Trading
 
 **Goal:** run validated strategies on live data with virtual money and full auditability.
@@ -2671,3 +2673,168 @@ Each stage ships and is useful on its own. No stage turns on live order placemen
 2. Pricing: per seat, or per LLM usage tier? The managed-LLM cost is the main variable cost.
 3. Hosting region and budget (an India region for latency and data-residency comfort).
 4. A single broker (Fyers) at launch, or a second adapter early so the product is not tied to one vendor's API terms.
+
+# 24. Backtest Engine v2: realism, validation, indicators (planned 2026-10-23)
+
+Why: the first real results (§21.2) showed an in-sample edge that vanished out-of-sample. The engine itself is sound (no look-ahead, stop wins ties, honest labels, the same `FeatureEngine` as the paper runner), so v2 is about three things: closer-to-real fills, built-in defences against overfitting, and showing on the chart exactly what a strategy saw. The owner is buying Fyers Prime to load several years of option and stock history, which makes all three urgent: more data means more ways to fool ourselves.
+
+**How it is built:** one phase at a time, in the order below. Each phase ends with its tests passing, a PR, and a stop: the owner verifies it with the steps under "Owner verifies" and merges before the next phase starts. A phase may be re-ordered or dropped at that point.
+
+Rules that hold in every phase:
+- §2 and CLAUDE.md non-negotiables are unchanged: no look-ahead, stop wins ties, real and simulated data never mix, reports state data source and pricing mode, no LLM output reaches orders.
+- **Backtest/paper parity:** anything that changes how a strategy decides (indicators, strike choice, sizing, exits) is implemented once and used by both the backtest engine and the paper runner. The existing parity test (697/697 trades, §21.3) must stay green; each such phase extends it.
+- **Old runs stay reproducible:** a stored run records the engine version, pricing calibration version and cost schedule it used. Changing a default never silently changes an old report.
+- **Metering (§23 SaaS layer):** a sweep or walk-forward counts as the number of backtests it runs (`meter.counted`), so plan limits keep working.
+
+## 24.1 Build vs reuse (web check, 2026-10-23)
+
+We looked for an existing engine to adopt instead of extending ours. None fits better, for the reasons below, so **we keep our event-driven engine and reuse libraries around it.** Licences and maintenance status come from search results and package listings; check the LICENSE file of anything before adding it.
+
+| Option | What it is | Verdict |
+|---|---|---|
+| NautilusTrader | Event-driven engine, Rust core, Python API, LGPL-3.0, supports options as an asset class | Strongest candidate, but adopting it means rewriting strategies, data loading, the paper runner and the parity test, and it has no NSE weekly-expiry, lot-size or Indian-charges knowledge. Revisit only if we outgrow our engine (tick-level or multi-leg). |
+| QuantConnect LEAN | C# engine, Python strategies, Apache-2.0 | Indian index options are not built in. Community advice is to edit LEAN's C# source for a new market. Too heavy. |
+| vectorbt (open source) / vectorbt PRO | Vectorised NumPy/Numba backtester, very fast sweeps | Open-source edition is Apache-2.0 **with Commons Clause** (no selling a product that is mostly the software) and is in maintenance mode. PRO is paid and proprietary. Vectorised fills also make our next-bar, stop-wins rules harder to guarantee. Not for the engine; its speed ideas inform 24.5. |
+| backtrader | Classic event-driven engine, GPL-3.0 | Inactive (last PyPI release April 2023). No. |
+| backtesting.py | Small single-asset engine | Reported as AGPL-3.0 (unverified). AGPL is a poor fit for a hosted SaaS, and it has no options model. No. |
+| optopsy | Options strategy statistics over end-of-day chains | End-of-day, multi-leg selling oriented. Not intraday buying. No. |
+| **Optuna** (MIT) | Parameter search (grid, random, TPE) with pruning | **Reuse** in 24.6 for sweeps; we keep our own walk-forward driver around it. |
+| **talipp** (MIT) | Incremental indicators (O(1) per new bar), 2.x, includes VWAP, chaining | **Candidate** for 24.4: incremental is what the live runner needs. Adopt per indicator only if it matches our golden values; otherwise write our own. |
+| **TA-Lib** (BSD) | C library, standard reference values, prebuilt wheels since 0.6.5 | **Test oracle only** in 24.4: golden-value tests compare our indicators with it. Not a runtime dependency. |
+| QuantStats (Apache-2.0) | Tearsheets and risk metrics | Maintenance unclear (a fork says the original is abandoned). We keep our own metrics and add the few we need (24.6). |
+| TradingView Advanced Charts | Full TradingView UI with ~100 built-in studies and indicator search | Proprietary, free only for approved companies with attribution, and it computes indicators in the browser, so its values would not be the values our engine traded on. No. |
+| KLineChart (Apache-2.0) | Canvas chart with built-in indicators | Same problem: browser-side indicator maths. No. |
+| **TradingView Lightweight Charts** (Apache-2.0, already used) | Fast chart, no built-in indicators | **Keep.** Indicators are computed on the server by the same Python code the strategy uses and drawn as series (24.3). |
+
+## 24.2 Phase B1: Real-mode correctness and multi-year readiness
+
+**Why first:** two defects make today's "Real candles" results unreliable, and loading 7 years of data exposes date-dependent assumptions.
+
+Requirements:
+- **B1.1 Expiry is chosen by the calendar, not by what was downloaded.** `RealPricer.contract` currently takes the nearest expiry that has stored candles. If the true weekly expiry was never downloaded, it silently trades a later contract with less time decay. The expiry must come from `expiry_for()` (or the verified historical expiry list, B1.4). If that contract is not stored, skip the entry with reason `true expiry not stored` and count it.
+- **B1.2 Stops keep working when the option stops printing.** A bar with no option trade currently means the stop cannot fire until EOD. Instead, carry the position to the next bar that has a print and apply the gap rules there (open through the stop = fill at that open). The report counts bars held without a print and the largest such gap. Exit at EOD on the last traded premium only if no later print exists that day.
+- **B1.3 Liquidity gate (Real mode).** Reject entries where the option's entry bar volume is below `min_entry_volume` (default: 1 lot, configurable) and record `illiquid entry bar`. Optionally widen slippage when volume is low (`thin_volume_slippage_ticks`).
+- **B1.4 Historical expiry calendar.** Verify `EXPIRY_RULES` back to the start of the data (NIFTY Thursday weeklies, BANKNIFTY weekday changes and the end of its weeklies, the 2025 move to Tuesday) against the expiries the broker actually listed (the expired-contract downloads and symbol master). Mismatches are fixed in the table with a source note; `VERIFIED_RULES_FROM` moves back accordingly.
+- **B1.5 Historical lot sizes.** Real mode already uses the stored contract's lot size. Synthetic mode uses today's spec. Add a dated lot-size table (from broker data where possible) so a 2021 synthetic trade uses the 2021 lot size.
+- **B1.6 Historical charges.** `costs.yaml` starts at 2024-10-01. Add versions back to the start of the data (STT, exchange fees, stamp duty, SEBI fees, GST) with sources. A trade dated before the earliest schedule fails the run with a clear message, never silently uses a later schedule.
+- **B1.7 Stop slippage.** Add `stop_slippage_pct_of_range` (default chosen in this phase, applied in both modes): a stop fill is moved against us by that share of the bar's premium range, on top of the existing tick slippage. Reported in the execution parameters.
+- **B1.8 Coverage pre-check.** Before a Real-mode run, report per-expiry coverage (contracts expected near the money vs stored). The UI shows "N% of expected contracts stored; X entries will be skipped" and offers Synthetic.
+
+Done when: unit tests cover each rule (wrong-expiry skip, no-print carry and gap fill, illiquid skip, pre-2024 charges, old lot size, stop slippage); the existing suite and parity test pass.
+
+Owner verifies: run the same NIFTY month in Real mode before and after; the skipped-entry reasons and exit reasons explain every difference. Delete one expiry's contracts in a copy of the DB and see `true expiry not stored` instead of a trade on the next expiry.
+
+## 24.3 Phase B2: Strategy indicators on the backtest chart, with indicator search
+
+**Today:** the chart route returns candles plus two EMAs, and the browser computes SMA, Bollinger, RSI and MACD itself (`web/src/components/backtest/indicators.ts`). Those browser values can differ from what the engine traded on (warm-up, seeding, futures VWAP).
+
+Requirements:
+- **B2.1 "What the strategy saw".** `GET /backtests/{id}/chart` returns a series for every indicator the run's strategy references (spec operands via `walk_operands`, or Momentum's fixed set), computed by the same Python code the engine used (`FeatureEngine` and the rule interpreter's indicator bank), on the run's own timeframe. Each series carries its key, label (from `render_english`), and pane.
+- **B2.2 Panes by scale.** Use the spec's existing `level` field: `index` series overlay the candles; `futures` (futures close, VWAP) get their own price pane, because futures differ from the index by the basis; `osc` (RSI, ADX, ±DI) a 0–100 pane with the strategy's thresholds drawn as horizontal lines; `macd`, `pct`, `points` and `vix` their own panes. Panes stack below the price chart and share its time axis and crosshair.
+- **B2.3 Thresholds and conditions.** Constants compared with an indicator (e.g. `RSI(14) > 55`) are drawn as dashed lines on that indicator's pane. Hovering a trade's entry marker lists every entry condition with its value at the signal bar and whether it was true, using the same three-valued evaluation as the engine.
+- **B2.4 Indicator search.** A TradingView-style "Indicators" button opens a search box over a catalogue served by `GET /indicators` (name, aliases such as "moving average" for EMA/SMA, category, description, parameters with bounds). The user adds any number of instances with their own parameters, toggles, recolours and removes them. Added indicators are computed on the server through `GET /backtests/{id}/chart?extra=...` with the same code, never in the browser.
+- **B2.5 Saved layouts.** The user's added indicators persist per browser in local mode and per account when accounts are on (an owned settings row, §23 SaaS rules). Strategy indicators are always shown and cannot be removed, only hidden.
+- **B2.6 Size limits.** A request caps the number of extra indicators (e.g. 10) and keeps the existing per-timeframe day limits, so a 1m chart with many indicators stays small.
+- **B2.7** The browser-side `indicators.ts` is removed once the server series replace it, so there is only one implementation.
+
+Done when: a test asserts the chart's series values equal the engine's feature values on the same bars for every indicator in the catalogue; a UI check confirms panes, thresholds and the search flow in the browser.
+
+Owner verifies: open a spec backtest that uses VWAP and RSI; the RSI pane shows the 55 line and the futures pane shows VWAP; hover an entry and see each condition's value; search "boll", add Bollinger(20), change it to 30, reload and see it kept.
+
+## 24.4 Phase B3: One indicator registry, more indicators
+
+Requirements:
+- **B3.1 Single registry.** One Python registry defines each indicator once: name, aliases, category, parameters (name, type, default, bounds), output series, pane, English label, and its incremental implementation. The spec's `INDICATORS` table, the rule interpreter's bank, the chart (B2) and `/indicators` all read from it.
+- **B3.2 Multi-parameter indicators.** The spec gains an optional `params` object per indicator (e.g. Supertrend `period` and `multiplier`, Bollinger `k`, MACD lengths). Existing specs keep validating and keep the same hash; the translator prompt learns the new fields.
+- **B3.3 New indicators**, in this order (the owner may cut the list): Supertrend, CPR and classic pivots (daily), Stochastic and Stoch RSI, CCI, Williams %R, Donchian channel, Keltner channel, Parabolic SAR, VWAP standard-deviation bands (futures), OBV on futures volume, Heikin-Ashi candles as an input option. Each one is incremental (one update per closed bar, O(1)).
+- **B3.4 Golden tests.** Every indicator is checked against TA-Lib (test-only dependency) or a published reference on a fixed real NIFTY day, within a stated tolerance. If talipp matches, it may be used for the implementation; otherwise ours is.
+- **B3.5 Warm-up.** Each indicator declares its warm-up bars; the interpreter treats values during warm-up as unknown (as today) and the chart draws them only after warm-up.
+
+Done when: golden tests pass for every indicator; a spec using each new indicator validates, backtests and runs in replay paper mode with identical signals.
+
+Owner verifies: in the Strategies tab, describe "buy CE when Supertrend(10,3) turns green above CPR"; the generated spec uses the new indicators, and the backtest chart draws both.
+
+## 24.5 Phase B4: Speed for many runs
+
+Requirements:
+- **B4.1 Measure first.** Add timing to every run (load, resample, engine, metrics) and record a baseline for a 1-year 5m NIFTY run in both pricing modes on the owner's machine. Targets for this phase are set from that baseline.
+- **B4.2 Load once, run many.** A data cache keyed by (underlying, source, stored timeframe, date range, with options) holds loaded and resampled bars in memory for the life of a sweep or walk-forward job. Real mode loads only strikes within N steps of the money for each day, not every stored contract.
+- **B4.3 Parallel runs.** Sweeps and walk-forward folds run in a process pool (`ProcessPoolExecutor`), sized to the machine and capped per account. Each run is independent and deterministic, so results are identical to running serially (tested).
+- **B4.4 Jobs, not requests.** Long jobs run on the background job queue with progress (`done/total`), cancellation and a stored result, as §23.5 already requires. The UI polls progress.
+- **B4.5 Data volume check.** Estimate and test SQLite at the multi-year size (roughly 650k 1m index rows per underlying and ~20M option rows per underlying for 7 years). Confirm the `(instrument_id, timeframe, ts)` index serves the backtest queries; record DB size and load time. If SQLite cannot meet the targets on the owner's machine or the 1 GB VM, write down the Postgres/Parquet decision for the owner instead of switching silently.
+- Not in scope: vectorising the engine. It would put the next-bar and stop-wins guarantees at risk for little gain.
+
+Done when: a 50-combination sweep produces the same results serially and in parallel; the timing report shows the speed-up against the baseline.
+
+Owner verifies: run the sweep on their machine and compare its timing table with the baseline.
+
+## 24.6 Phase B5: Walk-forward, sweeps and overfitting checks
+
+Requirements:
+- **B5.1 Walk-forward mode.** Rolling or anchored windows with train length, test length and an embargo (default 1 trading day) between them. In each fold, parameters are chosen on train only and the chosen set is run unchanged on test. The headline result is the stitched test-period equity curve; in-sample numbers are shown separately and labelled.
+- **B5.2 Final holdout.** The most recent part of the data (default the last 3 months) can be reserved. Nothing (sweeps, walk-forward, the AI loop in B9) sees it until the owner explicitly runs the final check, and a strategy can be checked against it once per version; the run records that it was used.
+- **B5.3 Sweeps.** Grid or Optuna (TPE) search over any strategy and engine parameter with bounds and step. The objective is chosen from the metrics (default: test-period profit factor with a minimum trade count). Every combination tried is stored.
+- **B5.4 Stability, not the best point.** The report shows a heatmap for any two parameters and a neighbourhood score: how much the metric drops for ±1 step in each parameter. A setting whose neighbours lose money is flagged "fragile".
+- **B5.5 Multiple-testing honesty.** The report states how many combinations were tried and shows the Deflated Sharpe Ratio (Bailey & López de Prado, 2014), implemented from the paper and checked against its worked example.
+- **B5.6 Trade bootstrap.** Resample the trade list (by day, keeping same-day trades together) 1,000+ times and report the 5th/50th/95th percentile of net P&L and max drawdown, plus the probability of a losing period.
+- **B5.7 Minimum evidence.** A result with fewer than a configurable number of trades (default 100) is labelled "not enough trades to judge". Walk-forward efficiency (test Sharpe ÷ train Sharpe) is shown.
+- **B5.8 UI.** A Research tab: choose strategy, parameters to vary and the walk-forward layout, see progress, then the folds table, stitched equity, heatmap, bootstrap bands and the verdict labels.
+
+Done when: tests on synthetic data with a known edge and with pure noise show walk-forward accepting the first and flagging the second; the DSR matches the paper's example.
+
+Owner verifies: re-run Momentum #1 on NIFTY as a walk-forward. The §21.2 conclusion (no out-of-sample edge) should be reproduced automatically.
+
+## 24.7 Phase B6: Results by market condition
+
+Requirements:
+- **B6.1** Every trade is tagged at entry, using only information available at the signal bar: VIX level band (fixed bands and range terciles), trend vs chop (ADX and the day's range so far vs ATR), gap day (open vs previous close, %), days to expiry (expiry day, 1, 2, 3+), time-of-day bucket (09:15–10:00, 10:00–12:00, 12:00–14:00, 14:00–15:15), weekday, event day.
+- **B6.2** The report adds, per tag, trades, win rate, net P&L, profit factor and expectancy, and highlights groups that carry most of the P&L (e.g. "72% of profit came from PE trades on gap-down days").
+- **B6.3** Breakdowns work for any strategy and appear in walk-forward test periods too.
+
+Done when: tags are tested for look-ahead (the tag on a trade never changes when later bars change).
+
+Owner verifies: on Momentum #1, the breakdown shows where the §21.2 short-side profit came from.
+
+## 24.8 Phase B7: Strike choice, underlying-based exits, sizing
+
+Requirements (all shared with the paper runner, and extending the parity test):
+- **B7.1 Strike selection.** `ATM`, `ITM n` / `OTM n` strikes, and `delta` targets (e.g. 0.4). Delta uses implied volatility from the option's own price in Real mode and the synthetic IV otherwise. If the chosen strike has no stored data, the entry is skipped and counted, never moved to another strike.
+- **B7.2 Exits on the underlying.** Stops and targets may be set on the index instead of the premium: in points, % or ATR multiples (e.g. stop 1.0 × ATR(14) below entry). Premium-% exits stay available.
+- **B7.3 Sizing.** Fixed lots (today), or risk per trade: lots = floor(₹ risk ÷ (entry premium × stop % × lot size)), at least 1 if allowed, and always capped by the engine's limits. `confidence` stays informational unless a spec opts into confidence-scaled sizing with its own cap.
+- **B7.4** The risk engine remains the gate in paper mode; sizing never exceeds its quantity limits.
+
+Done when: spec examples for each choice validate, backtest and replay with identical signals and quantities.
+
+Owner verifies: run the same idea with ATM vs OTM-1 vs delta 0.4 and compare the reports.
+
+## 24.9 Phase B8: Calibrate synthetic prices against real ones (after the Prime download)
+
+Requirements:
+- **B8.1** For every stored option bar, back out implied volatility with Black-Scholes and compare it with VIX at the same time. Fit the IV/VIX ratio by moneyness, days to expiry and time of day, per underlying, and store it as a versioned calibration file.
+- **B8.2** `SyntheticPricer` uses the calibration when present; reports state the calibration version and the period it was fitted on.
+- **B8.3** Validate on a period the fit did not use: run the same strategy in Real and calibrated-Synthetic mode and report the P&L gap. The default synthetic warning stays until the gap is under an agreed threshold.
+- **B8.4** Spreads cannot be measured from OHLC candles, so `spread_pct` stays a parameter. If live quotes recorded by the collector exist, they are used to estimate it, and the source is stated.
+
+Owner verifies: the calibration report (fit by bucket, out-of-sample P&L gap) is readable without code.
+
+## 24.10 Phase B9: AI research loop (research only)
+
+Requirements:
+- **B9.1** Claude may propose hypotheses and spec variants from a run's report and its B6 breakdown, and explain results in plain English. It produces specs only; they pass the same validator (§19) and run through B5 walk-forward like any human idea.
+- **B9.2** Accept/reject is decided by code: walk-forward test results, DSR, minimum trades and stability. Claude's proposals count towards the trial count, so the multiple-testing correction includes them.
+- **B9.3** The loop never sees the final holdout (B5.2) and never touches paper or live trading. A strategy reaches paper trading only when the owner saves and enables it.
+- **B9.4** Every call is metered (`meter.metered`), capped per run, and logged with the prompt, the spec produced and its outcome.
+
+Owner verifies: give it Momentum #1 and a budget of N proposals; read the ranked list of accepted/rejected variants with reasons.
+
+## 24.11 Stock and longer option history (owner's Prime subscription)
+
+- **Check before paying for a long download:** Fyers' plan page lists *7+ years* for expired F&O **daily** data. For expired F&O **intraday** it only says "available" on Prime (10 requests/day on Standard); the depth was not stated in what we found. Before a long bulk download, fetch one contract from the oldest wanted expiry at 1m and confirm candles come back. Equity intraday on Prime is listed as 5+ years.
+- The bulk downloader (§20.1) already covers index options. Stock data needs a decision first (below), because the product today trades only NIFTY and BANKNIFTY options.
+
+## 24.12 Open decisions for the owner
+1. **What is stock data for?** (a) breadth or sector features for index strategies (e.g. how many NIFTY heavyweights are above VWAP), (b) backtesting stock options, or (c) cash-equity strategies. (a) fits the current product; (b) and (c) are a scope change (new expiry, lot size, liquidity and cost rules per stock).
+2. **Phase order:** B1 then B2 is recommended (correctness, then the chart you asked for). B3 can move ahead of B2 if more indicators matter more than the chart.
+3. **Indicator list** in B3.3: keep, cut or add.
+4. **Default holdout length** (B5.2) and minimum trade count (B5.7).
+5. **Where long jobs run** once accounts are on: the owner's machine only, or the hosted VM with per-plan limits.
