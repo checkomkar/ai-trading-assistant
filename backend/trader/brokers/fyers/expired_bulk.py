@@ -124,6 +124,58 @@ class EmptyLedger:
         self.path.write_text(json.dumps(sorted(self._tokens)), encoding="utf-8")
 
 
+class ExpiryMap:
+    """Expiries found by probing (PRD §24.2 B1.4): "NIFTY|2021-03-25" -> the date Fyers actually listed, or None
+    when no nearby day had the contract either. Pre-2025 expiry rules and inferred holidays are best-effort;
+    this records what the exchange really did, so a re-run plans the right symbols and later phases can check
+    the expiry rules against it."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            raw = {}
+        self._m: dict[str, dict | None] = raw
+
+    @staticmethod
+    def key(underlying: str, planned: date) -> str:
+        return f"{underlying}|{planned.isoformat()}"
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._m
+
+    def get(self, underlying: str, planned: date) -> tuple[date, bool] | None:
+        v = self._m.get(self.key(underlying, planned))
+        return (date.fromisoformat(v["expiry"]), bool(v["monthly"])) if v else None
+
+    def set(self, underlying: str, planned: date, found: tuple[date, bool] | None) -> None:
+        self._m[self.key(underlying, planned)] = (
+            {"expiry": found[0].isoformat(), "monthly": found[1]} if found else None)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self._m, indent=1, sort_keys=True), encoding="utf-8")
+
+    def items(self) -> dict[str, dict | None]:
+        return dict(self._m)
+
+
+def alternates(w: Window, cal: TradingCalendar) -> list[tuple[date, bool]]:
+    """Other (expiry, monthly-format) pairs a weekly contract may really have had: the other trading days of
+    the same week, nearest first, and the monthly symbol when that day falls in the month's last week."""
+    monday = w.expiry - timedelta(days=w.expiry.weekday())
+    days = sorted((monday + timedelta(days=i) for i in range(5)), key=lambda d: (abs((d - w.expiry).days), d))
+    out: list[tuple[date, bool]] = []
+    for d in days:
+        if not cal.is_trading_day(d):
+            continue
+        last_week = (d + timedelta(days=7)).month != d.month
+        if d != w.expiry or w.monthly:
+            out.append((d, False))
+        if last_week and not (d == w.expiry and w.monthly):
+            out.append((d, True))
+    return out
+
+
 @dataclass
 class Plan:
     items: list[Item]
@@ -138,7 +190,7 @@ class Plan:
 
 async def build_plan(sm, cal: TradingCalendar, underlyings: list[str], start: date, end: date, *,  # noqa: ANN001
                      timeframe: str, pad: int, today: date, ledger: EmptyLedger,
-                     newest_first: bool = True) -> Plan:
+                     newest_first: bool = True, expiry_map: ExpiryMap | None = None) -> Plan:
     """Everything still to download, newest expiry first (the most useful if a quota cuts the run short)."""
     items: list[Item] = []
     have_tokens = await stored_tokens(sm, timeframe)
@@ -147,6 +199,12 @@ async def build_plan(sm, cal: TradingCalendar, underlyings: list[str], start: da
     for und in underlyings:
         wins = expiry_windows(und, start, end, cal, today)
         for w in (reversed(wins) if newest_first else wins):
+            if expiry_map is not None and ExpiryMap.key(und, w.expiry) in expiry_map:
+                found = expiry_map.get(und, w.expiry)
+                if found is None:
+                    skipped.append(f"{und} {w.expiry} (no contract found on any day that week)")
+                    continue
+                w = Window(und, found[0], w.start, found[1])
             rng = await spot_range(sm, und, max(w.start, start), min(w.expiry, end))
             if rng is None:
                 skipped.append(f"{und} {w.expiry}")
@@ -176,19 +234,35 @@ class Result:
 async def fetch(rest, sm, plan: Plan, *, timeframe: str, quota: expired.DailyQuota,  # noqa: ANN001
                 ledger: EmptyLedger, max_requests: int | None = None, pause: float = 0.4,
                 max_consecutive_errors: int = 5, say: Callable[[str], None] = print,
-                sleep: Callable[[float], object] = asyncio.sleep) -> Result:
-    """Download `plan.items` in order. Safe to interrupt and re-run: stored contracts are skipped."""
+                sleep: Callable[[float], object] = asyncio.sleep,
+                expiry_map: ExpiryMap | None = None, cal: TradingCalendar | None = None,
+                probe_after: int = 4, stop_after_missing_windows: int | None = None) -> Result:
+    """Download `plan.items` in order. Safe to interrupt and re-run: stored contracts are skipped.
+
+    With `expiry_map` and `cal`, a weekly expiry whose first `probe_after` contracts all come back empty is
+    taken as a wrong date (old expiry rules, an unknown holiday): the other days of that week are probed with
+    one near-the-money contract, and the rest of the window is fetched under the date that has data.
+    `stop_after_missing_windows` ends the run after that many expiries in a row with no contract on any day:
+    walking newest first, that is where the broker's intraday history stops."""
     res = Result()
     intraday = timeframe != "1d"
     streak = 0
-    for it in plan.items:
+    done: set[str] = set()  # symbols already asked for in this run (a probe hit is not fetched twice)
+
+    def budget_left() -> bool:
         if max_requests is not None and res.fetched + res.no_data + res.errors >= max_requests:
             res.stopped = f"reached --max-requests {max_requests}"
-            break
+            return False
         if intraday and quota.remaining() == 0:
             res.stopped = f"daily quota of {quota.limit} used (re-run tomorrow, or use --prime)"
-            break
+            return False
+        return True
+
+    async def get(it: Item) -> int | None:
+        """Candles stored for `it`, 0 for no data, None for an error (counted; may stop the run)."""
+        nonlocal streak
         inst = expired.expired_instrument(it.symbol, it.window.expiry)
+        done.add(it.symbol)
         try:
             resp = await asyncio.to_thread(rest.fno_historical_data, expired.request(
                 inst.token, timeframe, it.window.start, it.window.expiry))
@@ -202,24 +276,85 @@ async def fetch(rest, sm, plan: Plan, *, timeframe: str, quota: expired.DailyQuo
             if streak >= max_consecutive_errors:
                 res.stopped = (f"{streak} errors in a row (rate limited, token expired, or Fyers is down); "
                                "stopped before using more requests")
-                break
-            await sleep(min(60.0, 2.0 ** streak))
-            continue
+            else:
+                await sleep(min(60.0, 2.0 ** streak))
+            return None
         streak = 0
         if not candles:
             ledger.add(f"{inst.token}|{timeframe}")
             res.no_data += 1
             say(f"  {inst.symbol}: no data")
-        else:
-            async with sm() as s, s.begin():
-                ids = await repo.upsert_instruments(s, [inst], is_active=False)
-                n = await repo.upsert_candles(s, candles, ids)
-                await repo.record_event(s, "fyers", "expired.downloaded",
-                                        {"symbol": inst.token, "timeframe": timeframe, "candles": n})
-            res.fetched += 1
-            res.candles += n
-            say(f"  {inst.symbol}: {n} candles")
+            await sleep(pause)
+            return 0
+        async with sm() as s, s.begin():
+            ids = await repo.upsert_instruments(s, [inst], is_active=False)
+            n = await repo.upsert_candles(s, candles, ids)
+            await repo.record_event(s, "fyers", "expired.downloaded",
+                                    {"symbol": inst.token, "timeframe": timeframe, "candles": n})
+        res.fetched += 1
+        res.candles += n
+        say(f"  {inst.symbol}: {n} candles")
         await sleep(pause)
+        return n
+
+    async def probe(w: Window, group: list[Item]) -> Window | None:
+        mid = group[len(group) // 2]
+        for exp, monthly in alternates(w, cal):  # type: ignore[arg-type]
+            if not budget_left() or res.stopped:
+                return None
+            alt = Window(w.underlying, exp, w.start, monthly)
+            got = await get(Item(alt, mid.strike, mid.option_type))
+            if got:
+                say(f"  {w.underlying} expiry {w.expiry} is really {exp}" + (" (monthly symbol)" if monthly else ""))
+                return alt
+        return None
+
+    missing_streak = 0
+    groups: list[list[Item]] = []
+    for it in plan.items:
+        if groups and groups[-1][0].window == it.window:
+            groups[-1].append(it)
+        else:
+            groups.append([it])
+
+    for group in groups:
+        w = group[0].window
+        can_probe = (expiry_map is not None and cal is not None and not w.monthly
+                     and ExpiryMap.key(w.underlying, w.expiry) not in expiry_map)
+        empties, got_any = 0, False
+        i = 0
+        while i < len(group):
+            if group[i].symbol in done:
+                i += 1
+                continue
+            if res.stopped or not budget_left():
+                return res
+            n = await get(group[i])
+            if res.stopped:
+                return res
+            got_any = got_any or bool(n)
+            empties = empties + 1 if n == 0 else empties
+            i += 1
+            if can_probe and not got_any and empties >= min(probe_after, len(group)):
+                alt = await probe(w, group)
+                if res.stopped:
+                    return res
+                expiry_map.set(w.underlying, w.expiry, (alt.expiry, alt.monthly) if alt else None)  # type: ignore[union-attr]
+                if alt is None:
+                    say(f"  {w.underlying} {w.expiry}: no contract on any day of that week; skipped")
+                    missing_streak += 1
+                    if stop_after_missing_windows and missing_streak >= stop_after_missing_windows:
+                        res.stopped = (f"{missing_streak} expiries in a row with no data, the last {w.expiry}: "
+                                       "Fyers' intraday history for this index appears to end there")
+                        return res
+                    break
+                group = [Item(alt, g.strike, g.option_type) for g in group]
+                i, can_probe, got_any = 0, False, True  # the probe itself found data
+                continue
+        if got_any:
+            missing_streak = 0
+        if can_probe and got_any:
+            expiry_map.set(w.underlying, w.expiry, (w.expiry, w.monthly))  # type: ignore[union-attr]
     return res
 
 

@@ -64,7 +64,7 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
   - `ai/strategy_translator.py`: Claude, translation only
   - `api/`: FastAPI routes (market, options, backtests, strategies, paper, health, ws)
   - `db/`: models, migrate, repository
-  - `scripts/`: backfill_history, backfill_equities, merge_market_data, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal
+  - `scripts/`: backfill_history, backfill_equities, merge_market_data, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal, fetch_prime_history (multi-year download in order), archive_market_data (gzip CSV export/verify/restore)
 - `backend/alembic/`: migrations, run automatically at API start-up
 - `backend/config/`: `nse_holidays.yaml`, `costs.yaml`
 - `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Stocks, Strategies, Assistant, Brokers (backtests are run from Strategies).
@@ -75,7 +75,7 @@ Run from `backend/` unless noted.
   ```bash
   .venv/Scripts/python -m pytest -q
   ```
-  186 tests, about 2 min (the replay tests run full days); all must pass.
+  About 430 tests, about 2 min (the replay tests run full days); all must pass.
 - API (port 8000):
   ```bash
   .venv/Scripts/uvicorn trader.api.main:app
@@ -99,6 +99,14 @@ Run from `backend/` unless noted.
   ```bash
   .venv/Scripts/python -m trader.scripts.backfill_history --days 365 --timeframes 1m
   ```
+- Fyers Prime, everything in order (index/VIX/futures 1m back N years, holidays, expired options, NIFTY 50 daily, archive); resumable, `--dry-run` first:
+  ```bash
+  .venv/Scripts/python -m trader.scripts.fetch_prime_history --years 7
+  ```
+- Archive of broker data as gzip CSV + checksummed manifest (`export` only rewrites changed months; `restore` only adds missing rows):
+  ```bash
+  .venv/Scripts/python -m trader.scripts.archive_market_data export --to D:/striktek-archive
+  ```
 - Backtest CLI:
   ```bash
   .venv/Scripts/python -m trader.scripts.backtest --underlying NIFTY --source real --start 2025-10-23 --end 2026-10-19
@@ -109,6 +117,7 @@ Run from `backend/` unless noted.
 - Timestamps are UTC in the DB; SQLite returns them naive, so treat them as UTC. Convert to IST only at the edges.
 - Fyers plan limits:
   - Standard (free): about 1 year of intraday history, 100 socket symbols, 10 expired-option intraday calls a day.
+  - Prime: 5+ years intraday, expired F&O daily 7+ years (expired intraday depth not published: `fetch_prime_history` finds it). `fetch_prime_history` lifts the depth clamp for its own run only.
   - Clamp requests rather than letting them fail.
 - Index candles have no usable volume, so VWAP comes from futures (`fut_close` vs `vwap`).
 - The Bash tool's heredocs break on some quoting. For long text edits, write a Python script to the scratchpad and run it.

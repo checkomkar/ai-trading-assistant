@@ -45,6 +45,50 @@ NIFTY 50 daily stock candles, free Yahoo data, no login, resumable (also the dai
 backend/.venv/Scripts/python -m trader.scripts.backfill_equities --years 5
 ```
 
+## Fyers Prime: download years of history (local)
+
+Sign in first (above). See the plan without sending a request:
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.fetch_prime_history --years 7 --dry-run
+```
+
+Everything, in order (index/VIX/futures 1m, holidays, expired options 1m, NIFTY 50 daily, archive). It resumes, so after an interruption or the 06:00 token expiry just sign in and run it again:
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.fetch_prime_history --years 7
+```
+
+Or step by step (`index`, `holidays`, `options`, `stocks`, `archive`):
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.fetch_prime_history --years 7 --steps index
+```
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.fetch_prime_history --years 7 --steps holidays,options --quiet
+```
+
+After the holidays step, review what it added: `git diff backend/config/nse_holidays.yaml`.
+
+## Keep a copy of the data (local)
+
+Gzip CSV files plus a manifest with checksums. Re-running only rewrites months that changed:
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.archive_market_data export --to D:/striktek-archive
+```
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.archive_market_data verify --to D:/striktek-archive
+```
+
+Put it back into a database (adds only missing rows):
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.archive_market_data restore --to D:/striktek-archive
+```
+
 ## Move history to the server (add only, never deletes)
 
 Pack everything (about 31 MB zipped) or only the stocks:

@@ -2832,9 +2832,24 @@ Owner verifies: give it Momentum #1 and a budget of N proposals; read the ranked
 - **Check before paying for a long download:** Fyers' plan page lists *7+ years* for expired F&O **daily** data. For expired F&O **intraday** it only says "available" on Prime (10 requests/day on Standard); the depth was not stated in what we found. Before a long bulk download, fetch one contract from the oldest wanted expiry at 1m and confirm candles come back. Equity intraday on Prime is listed as 5+ years.
 - The bulk downloader (§20.1) already covers index options. Stock data needs a decision first (below), because the product today trades only NIFTY and BANKNIFTY options.
 
+**Download tooling (built 2026-10-23):**
+- `scripts/fetch_prime_history` runs the whole download in dependency order: index, VIX and futures at 1m (walking *back* from the first stored candle until the requested start or the end of Fyers' history, because the ordinary backfill only resumes forward), holiday inference, expired options, NIFTY 50 daily, archive. Each step resumes; `--dry-run` plans without requests.
+- **Holidays:** weekdays with no index candle in the downloaded range are appended to `config/nse_holidays.yaml` marked "inferred", for review against the NSE circulars.
+- **Expiry probing:** a weekly expiry whose first contracts all return no data is probed on the other trading days of its week (and the monthly symbol in a month's last week). Findings go to `data/fyers/expiry_map.json`, which the planner reuses and which is the evidence for B1.4. After N expiries in a row with no contract on any day, that index stops: walking newest first, that is where Fyers' intraday history ends.
+- **Archive:** `scripts/archive_market_data export | verify | restore`. Gzip CSV per instrument type, index or stock, timeframe and month (daily: year), with a manifest of rows, first and last candle and SHA-256 per file. Export rewrites only changed periods, restore inserts only missing rows, simulated data is never archived.
+- **Known gap:** contracts older than today's symbol master are stored with today's lot size (B1.5).
+
 ## 24.12 Open decisions for the owner
-1. **What is stock data for?** (a) breadth or sector features for index strategies (e.g. how many NIFTY heavyweights are above VWAP), (b) backtesting stock options, or (c) cash-equity strategies. (a) fits the current product; (b) and (c) are a scope change (new expiry, lot size, liquidity and cost rules per stock).
+1. **What is stock data for?** *Decided 2026-10-23:* stock backtesting (daily, NIFTY 50) is already built. Stock features for index strategies fit the product and come later. Stock options later. Intraday stock candles are not downloaded yet; nothing uses them.
 2. **Phase order:** B1 then B2 is recommended (correctness, then the chart you asked for). B3 can move ahead of B2 if more indicators matter more than the chart.
 3. **Indicator list** in B3.3: keep, cut or add.
 4. **Default holdout length** (B5.2) and minimum trade count (B5.7).
 5. **Where long jobs run** once accounts are on: the owner's machine only, or the hosted VM with per-plan limits.
+
+## 24.13 Status after the 2026-10-23 master merge
+Work merged from the owner's local sessions already covers part of this plan:
+- **B3:** 97 spec indicators (Supertrend, CPR/pivots, Stochastic, CCI, Ichimoku, Keltner, Donchian, PSAR, candlestick patterns, RSI divergence and more), multiple timeframes, "cross within N bars". Still open: one registry shared with the chart (B3.1) and golden tests against TA-Lib (B3.4).
+- **B7.3:** risk-based sizing (`risk_per_trade_pct`) is in the spec. B7.1 (ITM/OTM/delta strikes) and B7.2 (exits on the index) are open.
+- **Pricing:** hybrid mode (real candles where stored, modelled otherwise, labelled per trade). B1.1 still applies: `RealPricer.contract` picks the nearest expiry *with stored data*, and hybrid inherits that for the real leg.
+- **B2 (strategy indicators on the chart, indicator search):** not started; the chart route still returns EMAs only.
+
