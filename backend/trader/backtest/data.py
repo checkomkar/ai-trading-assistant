@@ -153,8 +153,30 @@ async def coverage(s: AsyncSession, underlying: str, timeframe: str) -> dict:
     return out
 
 
+def near_money(bars: list[Candle], underlying: str, cal: TradingCalendar, pad: int = 2,
+               overrides: dict | None = None) -> set[tuple[date, float]]:
+    """(expiry, strike) pairs a strategy could trade over `bars`: for each day, the calendar's expiry (rolled or not on
+    expiry day) and every strike within `pad` strikes of that day's range. Option candles outside it are not loaded."""
+    from trader.backtest.pricing import expiry_for
+    from trader.instruments.specs import get_spec
+    from trader.instruments.strikes import atm_strike
+
+    step = get_spec(underlying).strike_interval
+    days: dict[date, tuple[float, float]] = {}
+    for b in bars:
+        d = b.ts.astimezone(IST).date()
+        lo, hi = days.get(d, (b.open, b.open))
+        days[d] = (min(lo, b.low), max(hi, b.high))
+    out: set[tuple[date, float]] = set()
+    for d, (lo, hi) in days.items():
+        exps = {expiry_for(underlying, d, cal, roll, overrides) for roll in (True, False)}
+        for k in range(atm_strike(underlying, lo) - pad * step, atm_strike(underlying, hi) + pad * step + 1, step):
+            out.update((e, float(k)) for e in exps)
+    return out
+
+
 async def load(s: AsyncSession, underlying: str, timeframe: str, start: date, end: date,
-               source: str = "auto", with_options: bool = False) -> BacktestData:
+               source: str = "auto", with_options: bool = False, strike_pad: int = 2) -> BacktestData:
     """Load index, futures, VIX (and option) candles at `timeframe`, resampling from a finer
     stored timeframe when `timeframe` itself was never downloaded."""
     minutes(timeframe)  # validate
@@ -196,7 +218,12 @@ async def load(s: AsyncSession, underlying: str, timeframe: str, start: date, en
 
     data = BacktestData(source, bars, futures, vix, built_from=src_tf)
     if with_options and source == "real":
-        opts = {i.id: i for i in await instruments(underlying=underlying, instrument_type="OPT")}
+        from trader.instruments.contract_history import default_expiry_overrides
+
+        # Only contracts that could have been near the money: years of downloads hold many more than a run can use.
+        wanted = near_money(bars, underlying, get_calendar(), strike_pad, default_expiry_overrides())
+        opts = {i.id: i for i in await instruments(underlying=underlying, instrument_type="OPT")
+                if (i.expiry, float(i.strike or 0)) in wanted}
         raw: dict[int, list[Candle]] = {}
         for iid, r in await _candles(s, list(opts), src_tf, start, end):
             raw.setdefault(iid, []).append(_to_candle(opts[iid].token, src_tf, r))

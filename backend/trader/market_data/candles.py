@@ -17,7 +17,7 @@ TIMEFRAMES: dict[str, timedelta] = {
 }
 
 
-@dataclass
+@dataclass(slots=True)
 class Candle:
     token: str
     timeframe: str

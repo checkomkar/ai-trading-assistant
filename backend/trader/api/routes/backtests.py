@@ -46,6 +46,8 @@ class EngineParamsIn(BaseModel):
 class ExecutionParamsIn(BaseModel):
     spread_pct: float = Field(0.30, ge=0, le=10)
     slippage_ticks: int = Field(1, ge=0, le=20)
+    stop_slippage_range_pct: float = Field(10.0, ge=0, le=100)  # intrabar stop fills this share of the bar's range below
+    min_entry_lots: float = Field(1.0, ge=0, le=1000)  # real candles: lots that must have traded in the entry bar
 
 
 class BacktestIn(BaseModel):

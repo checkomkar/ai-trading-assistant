@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from trader.api.deps import current_principal, require_admin
-from trader.api.routes import auth, backtests, billing, brokers, chat, equity, health, indicators, market, options, paper, speech, strategies, ws
+from trader.research.jobs import JobManager
+from trader.api.routes import auth, backtests, billing, brokers, chat, equity, health, indicators, market, options, paper, research, speech, strategies, ws
 from trader.accounts.sms import build_sender
 from trader.billing.meter import Meter, QuotaExceeded
 from trader.config import Settings, get_settings
@@ -48,6 +49,8 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
                                settings, now_fn=provider.clock_now if provider.has_own_clock else None)
         app.state.md = md
         app.state.paper = PaperService(md, app.state.sessionmaker, settings)
+        app.state.jobs = JobManager(app.state.sessionmaker)  # sweeps, walk-forward, AI research (PRD §24)
+        await app.state.jobs.recover()
         await app.state.paper.restore()  # kill switch, open positions and counters survive a restart
         if start_collector:
             await md.start()
@@ -61,6 +64,7 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
         try:
             yield
         finally:
+            await app.state.jobs.shutdown()
             await app.state.feeds.stop_all()
             if start_collector:
                 await app.state.paper.stop()
@@ -85,7 +89,7 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
     # operator's single shared runner until per-account runners exist (PRD §23.4 S1), so it is admin-only.
     # Strategies, backtests, chat and speech resolve the caller themselves because their data is per account.
     for r in (health.router, auth.router, billing.router, strategies.router, backtests.router, brokers.router, chat.router, speech.router,
-              indicators.router, ws.router):
+              indicators.router, research.router, ws.router):
         app.include_router(r)
     for r in (market.router, options.router, equity.router):
         app.include_router(r, dependencies=[Depends(current_principal)])

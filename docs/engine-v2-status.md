@@ -80,3 +80,29 @@ and unverified lot sizes, and `skipped_entries` shows the reasons.
    (I can make bands collapsible).
 2. Run `pip install -e ".[dev]"` in `backend/` once, so the TA-Lib golden tests run on your machine too (they are
    skipped when TA-Lib is missing).
+
+---
+
+## B4 — Speed for many runs
+
+**Built**
+- **Timings (B4.1):** every backtest result has `timings` (load, engine, metrics seconds, bars, option contracts loaded).
+- **Load once, run many (B4.2):** `research/parallel.run_many` runs any number of settings over one loaded dataset.
+  Real/hybrid runs now load only option contracts that could have been near the money (the calendar expiry of each day,
+  strikes within 2 of that day's range), not every contract stored, which matters once years of options are in the DB.
+  Candles use `__slots__` (about 15% less memory).
+- **Parallel (B4.3):** worker processes ("spawn", as on Windows), each given the dataset once. Tested: identical results
+  serially and in parallel; a failing combination is reported without sinking the batch; cancel stops between runs.
+- **Background jobs (B4.4):** `research_jobs` table (migration `f5c2d8e7a613`), a job manager on the API (one running job
+  per account, two in total, the rest queued), progress, cancel, stored results; a restart marks unfinished jobs failed.
+  `GET /research/jobs`, `GET /research/jobs/{id}`, `POST /research/jobs/{id}/cancel`.
+- **Benchmark (B4.1/B4.5):** `python -m trader.scripts.bench_backtest` prints DB size and rows per type/timeframe, checks
+  that the candle index serves the backtest query, times one run in synthetic and hybrid pricing, and times a sweep
+  serially vs in parallel.
+
+**Not done:** vectorising the engine (out of scope by design). Postgres/Parquet: only if your benchmark says SQLite is too slow.
+
+**What I need from you**
+1. After the downloads, run (from `backend/`):
+   `.venv/Scripts/python -m trader.scripts.bench_backtest --start 2025-10-01 --end 2026-10-01 --sweep 24`
+   and send me the output. I will set the research-job limits (and decide if SQLite needs help) from your numbers.
