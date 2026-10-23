@@ -175,20 +175,31 @@ def test_ocr_reads_images_on_the_requested_pages_and_survives_a_bad_page(monkeyp
 
 
 def test_scanned_pdf_is_stored_at_once_then_filled_in_by_ocr(client, monkeypatch):
+    import asyncio
+    import threading
     import time
 
     from trader.api.routes import chat as chat_routes
 
-    monkeypatch.setattr(chat_routes, "ocr_available", lambda: True)
+    release = threading.Event()  # the background job only starts once the "still reading" listing was checked
+    job = chat_routes._ocr_job
+
+    async def gated_job(*args):
+        assert await asyncio.to_thread(release.wait, 10)
+        await job(*args)
+
+    monkeypatch.setattr(chat_routes, "_ocr_job", gated_job)
+    monkeypatch.setattr(chat_routes, "ocr_available", lambda: True)  # OCR itself is stubbed: no tesseract needed
     monkeypatch.setattr(chat_routes, "extract_text", lambda f, c, d: ("pdf", "[page 1]\nA page with plenty of real text.\n\n[page 2]\n"))
     monkeypatch.setattr(chat_routes, "ocr_pdf_pages", lambda data, pages: {p: f"Scanned rule {p}: wait for the pullback" for p in pages})
     doc = upload(client, "book.pdf", b"%PDF-fake").json()
     assert doc["status"] == "ocr"
-    for _ in range(50):
-        docs = client.get("/knowledge/docs").json()["docs"]
-        if docs[0]["status"] != "ocr":
-            break
-        time.sleep(0.1)
+    docs = client.get("/knowledge/docs").json()["docs"]
+    assert docs[0]["status"] == "ocr" and docs[0]["chars"] == doc["chars"]  # listed as reading, not as finished
+    release.set()
+    deadline = time.monotonic() + 10
+    while (docs := client.get("/knowledge/docs").json()["docs"])[0]["status"] == "ocr" and time.monotonic() < deadline:
+        time.sleep(0.02)
     assert docs[0]["status"] == "ready" and docs[0]["chars"] > doc["chars"]  # the scanned page's text was added
 
 

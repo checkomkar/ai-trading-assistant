@@ -75,8 +75,7 @@ OCR_BATCH = 10  # pages per step; the text becomes searchable after each step
 
 async def _ocr_job(app, doc_id: str, owner: str, data: bytes, text: str, pages: list[int]) -> None:
     """Read the scanned pages of a stored PDF in the background (one job at a time: tesseract is heavy on a small server)."""
-    active = app.state.ocr_active
-    active.add(doc_id)
+    active = app.state.ocr_active  # the upload route adds doc_id before scheduling this job
     try:
         async with app.state.ocr_lock:
             for i in range(0, len(pages), OCR_BATCH):
@@ -147,6 +146,7 @@ async def upload(request: Request, user: CurrentUser, meter: MeterDep, filename:
         out = _doc(doc)
     if scanned:
         app = request.app
+        app.state.ocr_active.add(out["id"])  # before the task runs, or a list in between reports it "ready" (restart rule)
         task = asyncio.create_task(_ocr_job(app, out["id"], user.id, data, text, scanned))
         app.state.ocr_tasks.add(task)
         task.add_done_callback(app.state.ocr_tasks.discard)
@@ -155,7 +155,9 @@ async def upload(request: Request, user: CurrentUser, meter: MeterDep, filename:
 
 @router.get("/knowledge/docs")
 async def docs(request: Request, user: CurrentUser) -> dict:
-    active = request.app.state.ocr_active
+    # Copied before the read: a job leaves the set only after committing its text, so a row read below is never paired
+    # with an "ended" that came after it (which would show a file as finished with its pre-OCR text).
+    active = set(request.app.state.ocr_active)
     async with request.app.state.sessionmaker() as s:
         rows = await repo.list_docs(s, user.id)
     out = []
