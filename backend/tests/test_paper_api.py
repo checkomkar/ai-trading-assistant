@@ -88,7 +88,8 @@ def test_no_endpoint_accepts_an_order(client):
 def test_llm_code_cannot_reach_order_placement():
     """PRD §2: nothing under trader/ai may import the execution, risk or runner modules."""
     banned = ("trader.execution", "trader.risk", "trader.brokers")
-    for f in (TRADER / "ai").glob("*.py"):
+    # trader/research runs the AI research loop (PRD §24.10): it must not reach orders either
+    for f in [*(TRADER / "ai").glob("*.py"), *(TRADER / "research").glob("*.py")]:
         for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
             mods = [node.module] if isinstance(node, ast.ImportFrom) and node.module else \
                 [a.name for a in node.names] if isinstance(node, ast.Import) else []

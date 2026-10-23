@@ -116,7 +116,9 @@ def regime_highlights(trades: list[Trade], min_share: float = 0.5, min_excess: f
     loss came from trades with weekday = Wed, which were 22% of the trades". A group that is simply most of the trades
     is not news, so a group is named only when its share of the P&L beats its share of the trades by `min_excess`."""
     total = sum(t.net_pnl for t in trades)
-    if not trades or abs(total) < 1e-9:
+    # Near break-even (net under 10% of the money won and lost), shares of the net are noise: every group "carries
+    # more than all of it". Say nothing rather than something misleading.
+    if not trades or abs(total) < 0.1 * sum(abs(t.net_pnl) for t in trades):
         return []
     what = "profit" if total > 0 else "loss"
     out = []

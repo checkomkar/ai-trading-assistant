@@ -63,3 +63,14 @@ def test_breakdown_sums_to_the_whole_and_highlights_name_the_group_that_carried_
         assert round(sum(g["net_pnl"] for g in groups.values()), 2) == round(m["total_net_pnl"], 2)
     assert m["regime_highlights"] == regime_highlights(res.trades)
     assert by_regime([]) == {} and regime_highlights([]) == []
+
+
+def test_no_highlights_for_a_result_near_break_even():
+    from types import SimpleNamespace as N
+
+    def t(pnl, wd):
+        return N(net_pnl=pnl, direction="LONG", regime={"weekday": wd})
+
+    trades = [t(1000, "Mon")] * 10 + [t(-990, "Tue")] * 10  # net +100 on 19,900 traded both ways
+    assert regime_highlights(trades) == []
+    assert regime_highlights([t(1000, "Mon")] * 10 + [t(-100, "Tue")] * 10)  # a clear result is still described

@@ -185,6 +185,59 @@ async def holdout(request: Request, body: HoldoutIn, user: CurrentUser, meter: M
     return await _submit(request, user, meter, "holdout", body.model_dump(mode="json") | {"signature": sig}, 1, work)
 
 
+class AIResearchIn(ResearchBase):
+    n_variants: int = Field(5, ge=1, le=8)
+    train_days: int = Field(180, ge=10, le=1500)
+    test_days: int = Field(60, ge=5, le=730)
+    anchored: bool = False
+    embargo_days: int = Field(1, ge=0, le=30)
+    min_trades: int = Field(V.MIN_EVIDENCE_TRADES, ge=1, le=10_000)
+    holdout_days: int = Field(90, ge=30, le=730)  # the AI never sees these days
+
+
+@router.post("/ai")
+async def ai_research(request: Request, body: AIResearchIn, user: CurrentUser, meter: MeterDep) -> dict:
+    """The model proposes variants of a strategy; each is walk-forwarded on the same folds and judged by code (PRD §24.10).
+    One AI generation (metered) plus the backtests of the baseline and every variant."""
+    from trader.ai.providers import TranslatorUnavailable, build_provider, public_message
+    from trader.ai.research_assistant import propose
+    from trader.research import ai_loop
+    from trader.strategy.spec import MOMENTUM_V1
+
+    if not body.strategy_id and not body.spec and body.strategy == "momentum":
+        body = body.model_copy(update={"strategy": "spec", "spec": MOMENTUM_V1})
+    base = await _base(request, body, user)
+    if not base.spec:
+        raise HTTPException(422, "AI research needs a rule-based strategy (a saved strategy or a spec)")
+    wf = V.WalkForwardSpec([], body.train_days, body.test_days, body.anchored, body.embargo_days, "profit_factor",
+                           1, body.holdout_days)
+    folds, _ = V.planned_wf_runs(base.start, base.end, wf)
+    if folds == 0:
+        raise HTTPException(422, "the range is too short for one training and one test window before the holdout")
+    runs = folds * (body.n_variants + 1)
+    sm, settings = request.app.state.sessionmaker, request.app.state.settings
+
+    async def work(ctx: J.JobContext, progress) -> dict:  # noqa: ANN001
+        data = await load_for(sm, base)
+        loop = asyncio.get_running_loop()
+
+        def ask(spec: dict, summary: dict, n: int):  # noqa: ANN202 - runs in the worker thread
+            async def call():  # noqa: ANN202
+                provider = build_provider(settings, user.is_admin)
+                async with meter.metered(user, "generations", provider) as mp:
+                    return await asyncio.to_thread(propose, mp, spec, summary, n)
+
+            try:
+                return asyncio.run_coroutine_threadsafe(call(), loop).result()
+            except TranslatorUnavailable as exc:
+                raise RuntimeError(public_message(exc, user.is_admin)) from None
+
+        return await asyncio.to_thread(ai_loop.run, base, data, wf, ask, body.n_variants, body.min_trades, progress,
+                                       lambda: ctx.cancelled)
+
+    return await _submit(request, user, meter, "ai_research", body.model_dump(mode="json"), runs, work)
+
+
 class TunablesIn(BaseModel):
     strategy_id: str | None = None
     spec: dict | None = None

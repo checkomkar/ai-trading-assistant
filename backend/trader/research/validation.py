@@ -434,7 +434,7 @@ def run_walk_forward(base: BacktestRequest, data: bt_data.BacktestData, spec: Wa
         "out_of_sample": {k: v for k, v in stitched.items() if k not in ("daily_pnl",)},
         "in_sample_average": in_sample,
         "walk_forward_efficiency": stats.walk_forward_efficiency(train_srs, test_srs),
-        "deflated_sharpe": dsr, "bootstrap": stats.bootstrap(daily),
+        "deflated_sharpe": dsr, "bootstrap": stats.bootstrap(daily), "daily_pnl": daily, "capital": capital,
         "verdict": verdict(stitched["trades"], None, dsr["dsr"], stitched.get("profit_factor"), len(cs), in_sample=False),
     }
 

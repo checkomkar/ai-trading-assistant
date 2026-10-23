@@ -31,7 +31,7 @@ interface Range {
   step: number;
 }
 
-type Mode = "sweep" | "walk_forward" | "holdout";
+type Mode = "sweep" | "walk_forward" | "holdout" | "ai";
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const OBJECTIVES = [
@@ -40,7 +40,7 @@ const OBJECTIVES = [
   ["sharpe", "Sharpe"],
   ["expectancy", "Expectancy per trade"],
 ] as const;
-const KIND: Record<string, string> = { sweep: "Sweep", walk_forward: "Walk-forward", holdout: "Holdout check", ai_research: "AI research" };
+const KIND: Record<string, string> = { sweep: "Sweep", walk_forward: "Walk-forward", holdout: "Holdout check", ai: "AI research", ai_research: "AI research" };
 
 function suggestRange(v: number): Range {
   if (Number.isInteger(v) && Math.abs(v) >= 2) {
@@ -75,7 +75,7 @@ export function ResearchPage() {
   });
   const [tunables, setTunables] = useState<Tunable[]>([]);
   const [ranges, setRanges] = useState<Record<string, Range>>({});
-  const [opts, setOpts] = useState({ objective: "profit_factor", min_trades: 30, holdout_days: 90, train_days: 180, test_days: 60, anchored: false, embargo_days: 1 });
+  const [opts, setOpts] = useState({ objective: "profit_factor", min_trades: 30, holdout_days: 90, train_days: 180, test_days: 60, anchored: false, embargo_days: 1, n_variants: 5 });
   const [jobs, setJobs] = useState<Job[]>([]);
   const [open, setOpen] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -139,6 +139,12 @@ export function ResearchPage() {
         path = "/research/holdout";
         body.assign = Object.fromEntries(chosen.map((t) => [t.path, ranges[t.path].min]));
       }
+      if (mode === "ai") {
+        path = "/research/ai";
+        delete body.objective;
+        Object.assign(body, { n_variants: opts.n_variants, train_days: opts.train_days, test_days: opts.test_days, anchored: opts.anchored,
+          holdout_days: Math.max(30, opts.holdout_days), min_trades: Math.max(opts.min_trades, 1) });
+      }
       const r = await postJSON<{ job_id: string; runs: number }>(path, body);
       const j = await getJSON<Job>(`/research/jobs/${r.job_id}`);
       setOpen(j);
@@ -168,7 +174,7 @@ export function ResearchPage() {
             past days, test on the next ones). The most recent days can be held back for one final check.
           </p>
           <div role="tablist" aria-label="Research mode" className="mb-3 flex overflow-hidden rounded-md border border-ink-700">
-            {(["sweep", "walk_forward", "holdout"] as Mode[]).map((m) => (
+            {(["sweep", "walk_forward", "holdout", "ai"] as Mode[]).map((m) => (
               <button key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
                 className={`flex-1 px-2 py-1.5 text-[11px] ${mode === m ? "bg-accent font-semibold text-ink-950" : "text-ink-300 hover:bg-ink-800"}`}>
                 {KIND[m]}
@@ -211,6 +217,41 @@ export function ResearchPage() {
           </div>
         </section>
 
+        {mode === "ai" ? (
+        <section className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
+          <h2 className="mb-1 text-sm font-semibold">AI research</h2>
+          <p className="mb-2 text-[11px] leading-relaxed text-ink-400">
+            The AI reads this strategy's walk-forward result and proposes variants, each testing one idea. Every variant is
+            walk-forwarded on the same windows and judged by the engine, not by the AI: accepted only with enough trades, a
+            better out-of-sample profit factor and a deflated Sharpe of 0.95 counting every proposal. The AI never sees the
+            held-back days and nothing it proposes trades.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={label}>Variants to propose
+              <select value={opts.n_variants} onChange={(e) => setOpts({ ...opts, n_variants: Number(e.target.value) })} className={input}>
+                {[3, 5, 8].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <label className={label}>Min out-of-sample trades
+              <input type="number" min={1} value={opts.min_trades} onChange={(e) => setOpts({ ...opts, min_trades: Number(e.target.value) || 1 })} className={input} />
+            </label>
+            <label className={label}>Train window (days)
+              <input type="number" min={10} value={opts.train_days} onChange={(e) => setOpts({ ...opts, train_days: Number(e.target.value) || 10 })} className={input} />
+            </label>
+            <label className={label}>Test window (days)
+              <input type="number" min={5} value={opts.test_days} onChange={(e) => setOpts({ ...opts, test_days: Number(e.target.value) || 5 })} className={input} />
+            </label>
+          </div>
+          {opts.holdout_days < 30 && <p className="mt-2 text-[11px] text-ink-400">AI research always holds back at least 30 days.</p>}
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <span className="text-[11px] text-ink-400">1 AI generation + backtests of {opts.n_variants + 1} strategies</span>
+            <button onClick={submit} disabled={busy} className="rounded-md bg-accent px-3 py-1.5 font-semibold text-ink-950 hover:brightness-110 disabled:opacity-50">
+              {busy ? "Starting…" : "Run AI research"}
+            </button>
+          </div>
+          {error && <p className="mt-2 text-[11px] text-down" role="alert">{error}</p>}
+        </section>
+        ) : (
         <section className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
           <h2 className="mb-1 text-sm font-semibold">{mode === "holdout" ? "Setting to check" : "Settings to vary"}</h2>
           <p className="mb-2 text-[11px] text-ink-400">
@@ -283,6 +324,7 @@ export function ResearchPage() {
           {combos > 500 && <p className="mt-1 text-[11px] text-down">At most 500 combinations: use fewer values.</p>}
           {error && <p className="mt-2 text-[11px] text-down" role="alert">{error}</p>}
         </section>
+        )}
 
         <section className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
           <h2 className="mb-2 text-sm font-semibold">Recent jobs</h2>
@@ -346,6 +388,7 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
       </div>
       {r && job.kind === "sweep" && <SweepResult r={r} />}
       {r && job.kind === "walk_forward" && <WalkForwardResult r={r} />}
+      {r && job.kind === "ai_research" && <AIResult r={r} jobId={job.id} />}
       {r && job.kind === "holdout" && (
         <div className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
           <h3 className="mb-2 text-sm font-semibold">Holdout {r.holdout.from} to {r.holdout.to}</h3>
@@ -526,3 +569,71 @@ function Bootstrap({ b }: { b: any }) {
     </div>
   );
 }
+
+const STATUS_TONE: Record<string, string> = {
+  accepted: "border-up/40 bg-up/10 text-up",
+  promising: "border-accent/40 bg-accent/10 text-accent",
+  rejected: "border-ink-700 text-ink-400",
+  invalid: "border-down/40 text-down",
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function AIResult({ r, jobId }: { r: Record<string, any>; jobId: string }) {
+  const [saved, setSaved] = useState<Record<number, string>>({});
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const save = async (i: number, v: any) => {
+    try {
+      const s = await postJSON<SavedStrategy>("/strategies", {
+        spec: v.spec, source_text: v.hypothesis, assumptions: [`Proposed by AI research job ${jobId}; ${v.status}: ${v.reason}`],
+      });
+      setSaved((x) => ({ ...x, [i]: `Saved as ${s.name} v${s.version}` }));
+    } catch (e) {
+      setSaved((x) => ({ ...x, [i]: (e as Error).message }));
+    }
+  };
+  const b = r.baseline ?? {};
+  return (
+    <>
+      <div className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
+        <h3 className="mb-1 text-sm font-semibold">The original strategy, out-of-sample</h3>
+        <p className="mb-2 text-[11px] text-ink-400">{r.folds} walk-forward folds · {r.trials} strategies tried in total (the original + valid proposals) · model {r.model}</p>
+        {b.out_of_sample && <Metrics m={b.out_of_sample} />}
+        {(b.highlights ?? []).length > 0 && (
+          <ul className="mt-2 space-y-0.5 text-[11px] text-ink-300">{b.highlights.map((h: string) => <li key={h}>• {h}</li>)}</ul>
+        )}
+      </div>
+      <div className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
+        <h3 className="mb-2 text-sm font-semibold">Variants, judged by the engine</h3>
+        <ul className="space-y-2">
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {(r.variants ?? []).map((v: any, i: number) => (
+            <li key={i} className="rounded-md border border-ink-800 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${STATUS_TONE[v.status] ?? ""}`}>{v.status}</span>
+                <span className="font-semibold text-ink-100">{v.name ?? "(not a valid strategy)"}</span>
+                {v.spec && (
+                  <button onClick={() => save(i, v)} disabled={!!saved[i]} className="ml-auto rounded border border-ink-700 px-2 py-0.5 text-[11px] text-ink-200 hover:bg-ink-800 disabled:opacity-60">
+                    {saved[i] ?? "Save as strategy"}
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-ink-200">{v.hypothesis}</p>
+              <p className="mt-1 text-[11px] text-ink-400">{v.reason}</p>
+              {v.out_of_sample && (
+                <p className="num mt-1 text-[11px] text-ink-300">
+                  {v.out_of_sample.trades} trades · PF {v.out_of_sample.profit_factor ?? "—"} · net ₹{fmtPrice(v.out_of_sample.total_net_pnl)} · deflated Sharpe {v.deflated_sharpe?.dsr ?? "—"}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <details className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
+        <summary className="cursor-pointer text-sm font-semibold">Audit log: what the AI was sent and what it replied</summary>
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] text-ink-300">{r.prompt}</pre>
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] text-ink-400">{r.reply}</pre>
+      </details>
+    </>
+  );
+}
+
