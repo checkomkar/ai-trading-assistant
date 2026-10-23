@@ -79,6 +79,7 @@ class Trade:
     pricing: str = ""  # "real" (stored option candles) or "modelled" (Black-Scholes); set for every option trade
     no_print_bars: int = 0  # bars held in which the option did not trade (real candles): stops could not fire there
     checks: list = field(default_factory=list)  # [condition text, result] at the signal bar (spec strategies)
+    regime: dict = field(default_factory=dict)  # market-condition tags at the signal bar (PRD §24.7), see `regime_tags`
 
 
 @dataclass
@@ -98,6 +99,7 @@ class _Position:
     last_mid: float
     bars: int = 0
     no_print_bars: int = 0
+    regime: dict = field(default_factory=dict)
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 
@@ -116,6 +118,33 @@ class BacktestResult:
         d = asdict(self)
         d["trades"] = [asdict(t) for t in self.trades]
         return d
+
+
+TIME_BUCKETS = ((time(10, 0), "09:15-10:00"), (time(12, 0), "10:00-12:00"), (time(14, 0), "12:00-14:00"), (time(23, 59), "14:00-close"))
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def regime_tags(f, local: datetime, day_open: float | None) -> dict:  # noqa: ANN001
+    """Market-condition tags for a signal, from what was known at that bar's close (PRD §24.7 B6.1)."""
+    vix = f["vix"]
+    adx = f["adx"]
+    prev = f["prev_day_close"]
+    gap = (day_open - prev) / prev * 100 if day_open is not None and prev else None
+    return {
+        "vix": ("unknown" if vix is None else "below 13" if vix < 13 else "13-18" if vix < 18 else "18-25" if vix < 25
+                else "25 and above"),
+        "trend": ("unknown" if adx is None else "trending (ADX 25+)" if adx >= 25 else "choppy (ADX under 18)" if adx < 18
+                  else "in between (ADX 18-25)"),
+        "gap": ("unknown" if gap is None else "gap up 0.5%+" if gap >= 0.5 else "gap down 0.5%+" if gap <= -0.5
+                else "flat open"),
+        "time_of_day": next(lbl for t, lbl in TIME_BUCKETS if local.time() < t),
+        "weekday": WEEKDAYS[local.weekday()],
+    }
+
+
+def dte_bucket(expiry: date, day: date) -> str:
+    n = (expiry - day).days
+    return "expiry day" if n <= 0 else "1 day" if n == 1 else "2 days" if n == 2 else "3+ days"
 
 
 class BacktestEngine:
@@ -144,6 +173,8 @@ class BacktestEngine:
         trades_today, day_pnl, loss_hit = 0, 0.0, False
         last_vix: float | None = None
         days: set[date] = set()
+        day_open: float | None = None
+        pending_regime: dict = {}
 
         warm_bars = 0
         for i, bar in enumerate(bars):
@@ -159,6 +190,7 @@ class BacktestEngine:
                 day, trades_today, day_pnl, loss_hit = local.date(), 0, 0.0, False
                 pending = None  # signals never carry across days
                 days.add(day)
+                day_open = bar.open
             nxt = bars[i + 1] if i + 1 < len(bars) else None
             last_bar_of_day = nxt is None or nxt.ts.astimezone(IST).date() != day
             v = vix.get(bar.ts)
@@ -172,6 +204,7 @@ class BacktestEngine:
                     pos = self._open(pending, bar, last_vix, skipped)
                     if pos is not None:
                         trades_today += 1
+                        pos.regime = {**pending_regime, "days_to_expiry": dte_bucket(pos.contract.expiry, day)}
                 pending = None
 
             # 2a) a rule exit decided on the previous bar's close fills at this bar's open
@@ -218,6 +251,7 @@ class BacktestEngine:
                     skipped["signal on last bar of day"] += 1
                 else:
                     pending = decision
+                    pending_regime = regime_tags(feats, local, day_open)
 
         warnings = self._warnings(trades)
         return BacktestResult(trades, dict(no_trade), signals, dict(skipped), len(bars) - warm_bars, len(days),
@@ -319,7 +353,7 @@ class BacktestEngine:
             bars_held=p.bars, minutes_held=(exit_ts - p.entry_time).total_seconds() / 60,
             underlying_entry=round(p.underlying_entry, 2), underlying_exit=round(underlying_px, 2),
             features=p.signal.features, pricing="modelled" if p.contract.synthetic or self.pricer.mode == "synthetic" else "real",
-            no_print_bars=p.no_print_bars, checks=[list(c) for c in p.signal.checks],
+            no_print_bars=p.no_print_bars, checks=[list(c) for c in p.signal.checks], regime=dict(p.regime),
         )
 
     def _warnings(self, trades: list[Trade]) -> list[str]:

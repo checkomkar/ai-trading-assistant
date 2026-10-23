@@ -140,3 +140,23 @@ and unverified lot sizes, and `skipped_entries` shows the reasons.
    default **180-day training / 60-day tests**. Change any you prefer.
 2. Once real option data is in, run a walk-forward of Momentum #1 on NIFTY (2–3 years, Modelled or Real-where-stored)
    and check it reproduces the §21.2 conclusion (no out-of-sample edge).
+
+---
+
+## B6 — Results by market condition
+
+**Built**
+- **Tags (B6.1):** every option trade records, from what was known at its signal bar: INDIA VIX band (under 13, 13-18,
+  18-25, 25+), trend (ADX 14: trending 25+, choppy under 18, in between), opening gap (open vs previous close, ±0.5%),
+  days to expiry of the contract traded (expiry day / 1 / 2 / 3+), time of day (09:15-10:00, 10:00-12:00, 12:00-14:00,
+  14:00-close) and weekday. A test changes every bar after the signal and checks the tags do not move.
+- **Report (B6.2):** `by_regime` in the metrics (trades, win rate, net P&L, profit factor, expectancy per group) and
+  plain-English highlights, shown under "By market condition" on every backtest. A highlight is only written when a
+  group's share of the P&L is well above its share of the trades (e.g. "58% of the net loss came from Wednesday
+  trades, which were 22% of the trades"), so it points at something rather than restating the obvious.
+- **Walk-forward (B6.3):** the stitched out-of-sample metrics carry the same breakdown.
+
+**Not done:** an "event day" tag (strategies already refuse to trade their event days, so there is nothing to group);
+stocks (daily runs) are not tagged yet.
+
+**What I need from you:** the band edges above are my defaults. Tell me if you think in other bands (e.g. VIX 12/16/20).

@@ -224,6 +224,14 @@ export interface IndicatorInfo {
   mult: { default: number; min: number; max: number } | null;
 }
 
+export interface RegimeGroup {
+  trades: number;
+  win_rate: number | null;
+  net_pnl: number | null;
+  profit_factor: number | null;
+  expectancy: number | null;
+}
+
 export interface BacktestMetrics {
   trades: number;
   total_net_pnl: number | null;
@@ -244,6 +252,9 @@ export interface BacktestMetrics {
   average_mfe_pct: number | null;
   exit_reasons: Record<string, number>;
   by_direction: Record<string, { trades: number; win_rate: number | null; net_pnl: number | null }>;
+  /** Results by market condition at the signal bar (PRD §24.7): tag -> value -> group statistics. */
+  by_regime?: Record<string, Record<string, RegimeGroup>>;
+  regime_highlights?: string[];
   trading_days: number;
   days_traded: number;
   daily_pnl: { date: string; pnl: number }[];

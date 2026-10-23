@@ -125,6 +125,8 @@ export function Results({ r }: { r: BacktestResult }) {
         </section>
       </div>
 
+      {!daily && m.by_regime && Object.keys(m.by_regime).length > 0 && <RegimeBreakdown m={m} />}
+
       <TradesTable trades={r.trades} selectedId={selected?.trade_id ?? null} onSelect={select} daily={daily} />
     </div>
   );
@@ -273,3 +275,66 @@ function TradesTable({ trades, selectedId, onSelect, daily }: { trades: Backtest
     </section>
   );
 }
+
+const REGIME_TABS: [string, string][] = [
+  ["vix", "INDIA VIX"],
+  ["trend", "Trend"],
+  ["gap", "Opening gap"],
+  ["days_to_expiry", "Days to expiry"],
+  ["time_of_day", "Time of day"],
+  ["weekday", "Weekday"],
+  ["direction", "Side"],
+];
+
+/** Where the result came from: the same trades grouped by the market conditions at each signal (PRD §24.7). */
+function RegimeBreakdown({ m }: { m: BacktestResult["metrics"] }) {
+  const tabs = REGIME_TABS.filter(([k]) => m.by_regime?.[k]);
+  const [tab, setTab] = useState(tabs[0]?.[0] ?? "vix");
+  const rows = Object.entries(m.by_regime?.[tab] ?? {});
+  return (
+    <section className="rounded-lg border border-ink-800 bg-ink-900 p-3 text-xs">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold">By market condition</h3>
+        <span className="text-[11px] text-ink-400">tagged at each signal bar, from information available then</span>
+      </div>
+      {(m.regime_highlights ?? []).length > 0 && (
+        <ul className="mb-2 space-y-0.5 text-[11px] text-ink-200">
+          {m.regime_highlights!.map((h) => <li key={h}>• {h}</li>)}
+        </ul>
+      )}
+      <div role="tablist" aria-label="Market condition" className="mb-2 flex flex-wrap gap-1">
+        {tabs.map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
+            className={`rounded px-2 py-1 text-[11px] ${tab === k ? "bg-accent text-ink-950" : "border border-ink-700 text-ink-300 hover:bg-ink-800"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <table className="num w-full">
+        <thead className="text-[10px] uppercase tracking-wider text-ink-400">
+          <tr>
+            <th className="text-left font-medium">Condition</th>
+            <th className="text-right font-medium">Trades</th>
+            <th className="text-right font-medium">Win %</th>
+            <th className="text-right font-medium">Profit factor</th>
+            <th className="text-right font-medium">Expectancy</th>
+            <th className="text-right font-medium">Net P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([k, g]) => (
+            <tr key={k} className="border-t border-ink-800">
+              <td className="py-1">{k}</td>
+              <td className="text-right">{g.trades}</td>
+              <td className="text-right">{num(g.win_rate, 1)}</td>
+              <td className="text-right">{num(g.profit_factor)}</td>
+              <td className={`text-right ${trendClass(g.expectancy)}`}>{rupee(g.expectancy)}</td>
+              <td className={`text-right ${trendClass(g.net_pnl)}`}>{rupee(g.net_pnl)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
