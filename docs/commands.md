@@ -103,6 +103,22 @@ Put it back into a database (adds only missing rows):
 backend/.venv/Scripts/python -m trader.scripts.archive_market_data restore --to D:/striktek-archive
 ```
 
+## Research tools (local)
+
+How fast backtests are on your data, and whether SQLite copes:
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.bench_backtest --start 2025-10-01 --end 2026-10-01 --sweep 24
+```
+
+Fit synthetic option prices to the real ones you downloaded (needs the option download):
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.calibrate_pricing --underlying both --start 2023-01-01 --end 2026-10-20
+```
+
+Sweeps, walk-forward, the holdout check and AI research are on the **Research** tab.
+
 ## Move history to the server (add only, never deletes)
 
 Pack everything (about 31 MB zipped) or only the stocks:

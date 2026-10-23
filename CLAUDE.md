@@ -11,7 +11,7 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - M3b: natural-language/JSON custom strategies
 - **M2 (Fyers live data):** works; still needs its market-hours checks (PRD §21.1).
 - **M4 (paper trading):** built (PRD §22): PaperBroker, risk engine, live runner, journal, Paper tab, ReplayProvider. Open positions, the day's risk counters and the kill switch survive restarts (§22.5). Still needs the 20-day unattended run.
-- **Next: Backtest Engine v2** (PRD §24), phases B1–B9 built one at a time. Stop after each phase for the owner to verify and merge before starting the next.
+- **Backtest Engine v2** (PRD §24): B1–B9 built 2026-10-23 (§24.14, `docs/engine-v2-status.md`), awaiting the owner's checks on real data (lot sizes, calibration, benchmark).
 - **Pending loose ends:**
   - live translator run (needs `ANTHROPIC_API_KEY`)
   - 20-prompt translator eval (§19.7)
@@ -40,6 +40,7 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
 - **No look-ahead:** signals form on a bar's close and fill at the next bar's open. If one bar touches both stop and target, assume the stop hit.
 - **Contract specs from the broker:** lot size, tick size and expiries come from the broker symbol master. `instruments/specs.py` is a simulator fallback only.
 - **Never mix data sources:** real (`NSE:` tokens) and simulated (`SIM:` tokens) data stay separate. Reports always state the data source and the option-pricing mode.
+- **Research:** AI output is only ever a spec proposal; accept/reject is decided by code (walk-forward, Deflated Sharpe, minimum trades). Held-back days (`holdout_days`) are never read by sweeps, walk-forward or the AI loop; the holdout check runs once per strategy version and setting. `trader/research` follows the same import ban as `trader/ai`.
 - **Paper trading:** orders come only from the runner, through `RiskEngine.check`. There is no order endpoint, and `trader/ai` must never import `execution`, `risk` or `brokers` (both enforced by tests). Entries are blocked when the market is closed. Replay data is never persisted and always labelled (`REPLAY:` tokens, synthetic options).
 - **Restart state:** positions, same-day counters and the kill switch are snapshotted to `paper_state` (one row per data source) and restored at API start-up; a snapshot from an earlier day is flagged (`state.stale`), never resumed, and the kill switch is never cleared by a restart. A restored position with no lane to manage it refuses the runner start. Replay does not persist.
 - **Stored market history is never deleted:** candles, option snapshots, ticks, instruments and fetched expired-option data are only upserted (candles by instrument + timeframe + time; instruments by token). No code, migration or script may `DELETE`/`TRUNCATE`/`DROP` them (`tests/test_market_data_is_never_deleted.py` scans for it). Never run `docker compose down -v` on a host that holds the data volume.
@@ -60,14 +61,18 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
     - `risk.risk_per_trade_pct` sizes lots so the stop loses that % of capital (backtest `capital`, paper `starting_cash`; a single lot over budget = trade skipped); `risk.min_reward_risk` rejects specs whose target/stop is lower. Measured-move targets are not built: use exit conditions on `swing_*`.
   - `execution/`: `Broker` interface, `PaperBroker`, `runner` (live strategy runner), `store` (audit + journal + state row), `state` (snapshot/restore policy), `service`, `summary`, `rehearsal` (in-process replay driver)
   - `risk/`: deterministic `RiskEngine` (pre-order checklist, kill switch). The only gate to the broker.
-  - `backtest/`: costs, pricing (synthetic/real), engine, metrics, data loader, runner; stocks: `equity`, `equity_costs`, `equity_runner`, `equity_paper`
+  - `backtest/`: costs, pricing (synthetic/real/hybrid), engine, metrics (incl. `by_regime`), data loader, runner, `chart_series` (chart indicators via the interpreter's own bank), `calibration` (IV/VIX fit on real options, file in `data/calibration/`); stocks: `equity`, `equity_costs`, `equity_runner`, `equity_paper`
+  - `research/`: `parallel` (many runs over one dataset, spawn workers), `jobs` (background JobManager, `research_jobs` table), `validation` (sweeps, walk-forward, holdout), `stats` (Deflated Sharpe, bootstrap), `ai_loop` (AI proposes, code judges)
+  - `options/selection.py`: the one strike-choice function (ATM / ITMn / OTMn / Dnn) used by every pricer and the paper runner
+  - `instruments/contract_history.py` + `config/lot_sizes.yaml`: dated lot sizes and expiry overrides for old contracts
+  - `strategy/catalogue.py`: indicator catalogue (categories, aliases, TradingView defaults) behind `GET /indicators`
   - `ai/strategy_translator.py`: Claude, translation only
   - `api/`: FastAPI routes (market, options, backtests, strategies, paper, health, ws)
   - `db/`: models, migrate, repository
   - `scripts/`: backfill_history, backfill_equities, merge_market_data, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal, fetch_prime_history (multi-year download in order), fetch_equity_history (NIFTY 50 daily + 1m), archive_market_data (gzip CSV export/verify/restore)
 - `backend/alembic/`: migrations, run automatically at API start-up
 - `backend/config/`: `nse_holidays.yaml`, `costs.yaml`
-- `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Stocks, Strategies, Assistant, Brokers (backtests are run from Strategies).
+- `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Stocks, Strategies, Research (sweeps, walk-forward, holdout, AI research), Assistant, Brokers (backtests are run from Strategies).
 
 ## Commands
 Run from `backend/` unless noted.
@@ -75,7 +80,7 @@ Run from `backend/` unless noted.
   ```bash
   .venv/Scripts/python -m pytest -q
   ```
-  About 430 tests, about 2 min (the replay tests run full days); all must pass.
+  About 530 tests, about 3 min (the replay tests run full days); all must pass. `pip install -e ".[dev]"` adds the TA-Lib golden tests.
 - API (port 8000):
   ```bash
   .venv/Scripts/uvicorn trader.api.main:app
@@ -106,6 +111,14 @@ Run from `backend/` unless noted.
 - Archive of broker data as gzip CSV + checksummed manifest (`export` only rewrites changed months; `restore` only adds missing rows):
   ```bash
   .venv/Scripts/python -m trader.scripts.archive_market_data export --to D:/striktek-archive
+  ```
+- Benchmark and DB check (send the output when tuning research limits):
+  ```bash
+  .venv/Scripts/python -m trader.scripts.bench_backtest --start 2025-10-01 --end 2026-10-01 --sweep 24
+  ```
+- Calibrate synthetic option prices on stored real ones (fits all but the last 90 days, validates on them):
+  ```bash
+  .venv/Scripts/python -m trader.scripts.calibrate_pricing --underlying both --start 2023-01-01 --end 2026-10-20
   ```
 - Backtest CLI:
   ```bash

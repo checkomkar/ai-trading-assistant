@@ -2853,3 +2853,22 @@ Work merged from the owner's local sessions already covers part of this plan:
 - **Pricing:** hybrid mode (real candles where stored, modelled otherwise, labelled per trade). B1.1 still applies: `RealPricer.contract` picks the nearest expiry *with stored data*, and hybrid inherits that for the real leg.
 - **B2 (strategy indicators on the chart, indicator search):** not started; the chart route still returns EMAs only.
 
+## 24.14 Built (night of 2026-10-23)
+All phases B1-B9 were built in one go at the owner's request (instead of stopping after each), one commit per phase on
+`claude/optimistic-edison-7rqa99`. Per-phase details, deviations and what the owner must check: `docs/engine-v2-status.md`.
+- **B1:** calendar expiry in Real mode (+ `expiry_map.json` overrides, corrected expiry rules), dated lot sizes
+  (`config/lot_sizes.yaml`, all unverified), costs back to 2019 (refuses earlier dates), liquidity gate, stop slippage,
+  no-print bars reported, coverage pre-check, holiday candles excluded.
+- **B2+B3:** chart series computed by the engine's own code; panes, thresholds, entry-condition checks per trade;
+  TradingView-style indicator search with per-account saved layouts; one catalogue (`strategy/catalogue.py`); CPR added;
+  TA-Lib golden tests; a crash on the `wma` operand fixed. B3.2 dropped (master's `mult` covers it).
+- **B4:** timings, near-the-money option loading, parallel runs (spawn workers), background research jobs, benchmark script.
+- **B5:** sweeps (grid/random/Optuna), stability heatmap, Deflated Sharpe, bootstrap, walk-forward, once-only holdout check,
+  Research tab. DSR checked against its definition and a Monte-Carlo; the paper's worked example was not available.
+- **B6:** market-condition tags per trade, breakdown and highlights (only for over-represented groups, silent near break-even).
+- **B7:** ITM/OTM/delta strikes and index stops/targets, one implementation for backtest and paper (parity tests); fixed
+  the paper runner's ATM tie-break.
+- **B8:** IV/VIX calibration from stored option candles, used by synthetic and hybrid pricing, validated on held-out days.
+- **B9:** AI research loop: the model proposes validated spec variants from a walk-forward summary; code judges them;
+  the holdout is never shown to the model; metered and logged.
+
