@@ -157,8 +157,9 @@ class SyntheticPricer:
 
     def __init__(self, cal: TradingCalendar, risk_free_rate: float = 0.065, iv_multiplier: dict | None = None,
                  default_iv: float = 0.14, roll_on_expiry_day: bool = True,
-                 expiry_overrides: dict | None = None) -> None:
+                 expiry_overrides: dict | None = None, calibration=None) -> None:  # noqa: ANN001
         self.cal, self.r = cal, risk_free_rate
+        self.calibration = calibration  # backtest.calibration.Calibration fitted on real option prices, or None
         self.iv_mult = iv_multiplier or {"NIFTY": 1.0, "BANKNIFTY": 1.15}
         self.default_iv = default_iv
         self.roll = roll_on_expiry_day
@@ -195,6 +196,9 @@ class SyntheticPricer:
 
     def bar(self, c: Contract, u: Candle, tf: timedelta, vix: float | None) -> PremiumBar | None:
         iv = self.iv(c.underlying, vix)
+        if self.calibration is not None and vix is not None and vix > 0:
+            # IV/VIX ratio fitted on real option prices for this moneyness, days to expiry and time of day (PRD §24.9)
+            iv = vix / 100 * self.calibration.ratio(u.open, c.strike, c.option_type, c.expiry, u.ts)
         mid_t = u.ts + tf / 2
         o = self.premium(c, u.open, u.ts, iv)
         cl = self.premium(c, u.close, u.ts + tf, iv)

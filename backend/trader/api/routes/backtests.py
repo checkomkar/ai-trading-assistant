@@ -63,6 +63,7 @@ class BacktestIn(BaseModel):
     strategy_params: StrategyParamsIn = StrategyParamsIn()
     engine_params: EngineParamsIn = EngineParamsIn()
     execution_params: ExecutionParamsIn = ExecutionParamsIn()
+    calibrate: bool = True  # synthetic prices use the calibration fitted on real options, when one exists
     slippage_pct: float = Field(0.05, ge=0, le=5)  # stock strategies: per side
     quantity: int | None = Field(None, ge=1, le=1_000_000)  # stock strategies: fixed shares per trade (None = size from capital)
 
@@ -105,7 +106,7 @@ def option_request(request: Request, body: BacktestIn, spec: dict | None, versio
         source=body.source, pricing=body.pricing, strategy=strategy, spec=spec, strategy_version_id=version_id,
         strategy_params=body.strategy_params.model_dump(), engine_params=body.engine_params.model_dump(),
         execution_params=body.execution_params.model_dump(),
-        risk_free_rate=request.app.state.md.settings.risk_free_rate,
+        risk_free_rate=request.app.state.md.settings.risk_free_rate, calibrate=body.calibrate,
     )
 
 

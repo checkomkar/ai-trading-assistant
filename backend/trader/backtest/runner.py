@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from trader.backtest import data as bt_data
+from trader.backtest.calibration import load_default as load_calibration, summary_line as calibration_summary
 from trader.backtest.costs import default_cost_model
 from trader.backtest.engine import BacktestEngine, EngineConfig
 from trader.backtest.metrics import compute_metrics
@@ -42,6 +43,7 @@ class BacktestRequest:
     engine_params: dict = field(default_factory=dict)
     execution_params: dict = field(default_factory=dict)
     risk_free_rate: float = 0.065
+    calibrate: bool = True  # use the synthetic-price calibration fitted on real options when one exists (PRD §24.9)
 
 
 def _momentum_params(p: dict) -> MomentumParams:
@@ -102,13 +104,15 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
     strategy, eng_cfg, roll, strat_report, uses_vwap = build_strategy(req)
     cal = get_calendar()
     ovr = default_expiry_overrides()  # expiry dates corrected by the expired-option downloader's probing
+    calib = load_calibration(req.underlying) if req.calibrate and req.pricing in ("synthetic", "hybrid") else None
     if req.pricing == "real":
         pricer = RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll, expiry_overrides=ovr)
     elif req.pricing == "synthetic":
-        pricer = SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll, expiry_overrides=ovr)
+        pricer = SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll, expiry_overrides=ovr, calibration=calib)
     elif req.pricing == "hybrid":
         pricer = HybridPricer(RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll, expiry_overrides=ovr),
-                              SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll, expiry_overrides=ovr))
+                              SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll, expiry_overrides=ovr,
+                                              calibration=calib))
     else:
         raise ValueError(f"Unknown pricing mode {req.pricing}")
     coverage = (bt_data.option_coverage(data, req.underlying, req.start, cal, roll, ovr)
@@ -127,6 +131,8 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
     if data.built_from and data.built_from != req.timeframe:
         warnings.append(f"{req.timeframe} candles were built from stored {data.built_from} candles "
                         "(exact OHLCV aggregation, anchored to the 09:15 open).")
+    if calib is not None:
+        warnings.append(calibration_summary(calib))
     if coverage and coverage["pct"] is not None and coverage["pct"] < 95:
         warnings.insert(0, f"Only {coverage['pct']}% of the at-the-money contracts this period could trade are stored "
                            f"({coverage['stored_contracts']} of {coverage['expected_contracts']}; "
@@ -146,6 +152,7 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
         "no_trade_reasons": result.no_trade_reasons,
         "skipped_entries": result.skipped_entries,
         "option_coverage": coverage,
+        "calibration": calib.version if calib is not None else None,
         "timings": {"engine_s": round(t1 - t0, 3), "metrics_s": round(t2 - t1, 3)},
         "warnings": warnings,
         "metrics": metrics,

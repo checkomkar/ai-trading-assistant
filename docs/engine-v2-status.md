@@ -187,3 +187,31 @@ stocks (daily runs) are not tagged yet.
 1. Try one spec with `"option_selection": {"strike": "OTM1"}` and one with `{"delta": 0.4}` and compare with ATM.
 2. Tell me if you want the delta measured with the option's own implied volatility once real option prices are
    stored (it would make the choice depend on the data source).
+
+---
+
+## B8 — Synthetic prices calibrated against real ones
+
+**Built**
+- **Fit (B8.1):** `python -m trader.scripts.calibrate_pricing --underlying both --start 2023-01-01 --end 2026-10-20`
+  reads your stored 1m option candles near the money (one every 15 minutes, one expiry at a time), backs out each one's
+  implied volatility, divides by INDIA VIX and stores the median ratio per moneyness x days-to-expiry x time-of-day
+  bucket (thin buckets fall back to coarser ones). Saved to `backend/data/calibration/<UNDERLYING>.json`; it is derived
+  from your licensed Fyers data, so it stays out of git.
+- **Use (B8.2):** synthetic and hybrid backtests use it automatically when the file exists; the report names the
+  calibration version and its fit period (`calibration` in the result). `"calibrate": false` in a backtest request
+  turns it off for comparison.
+- **Validation (B8.3):** the script fits on all but the last `--holdout-days` (default 90) and reports the median and
+  90th-percentile pricing error on those held-out days, calibrated vs the plain VIX model, plus the bias.
+- **Spread (B8.4):** if the live collector recorded option quotes, the script reports the median bid-ask spread of
+  near-the-money options, to replace the 0.30% assumption. Spreads cannot be measured from candles.
+- Tests build a market with a known smile; the fit recovers it to 0.01 and the calibrated pricer reproduces its prices
+  within 2% where the plain model is off by more than 10%.
+
+**Not done:** the strategy-level P&L gap (Real vs calibrated Synthetic on the same days). Run a Research or Strategies
+backtest in both modes on the held-out months; I did not automate it.
+
+**What I need from you**
+1. After the option download: run the calibration command above and send me the output (the ratio table and the
+   held-out error). If the calibrated error is not clearly lower than the plain one, I will change the buckets.
+2. The default synthetic warning stays on every report until we agree on an acceptable error.
