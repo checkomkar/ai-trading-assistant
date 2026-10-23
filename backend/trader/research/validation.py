@@ -136,6 +136,11 @@ def tunables(spec: dict | None) -> list[dict]:
     for k, lbl in (("activate_pct", "trail starts at +%"), ("trail_pct", "trail distance %")):
         if (ex.get("trail") or {}).get(k) is not None:
             out.append({"path": f"spec.exits.trail.{k}", "label": lbl, "value": ex["trail"][k]})
+    for which in ("index_stop", "index_target"):
+        for k, lbl in (("points", "points"), ("pct", "% of the index"), ("atr_mult", "x ATR")):
+            if (ex.get(which) or {}).get(k) is not None:
+                out.append({"path": f"spec.exits.{which}.{k}", "label": f"{which.replace('_', ' ')} in {lbl}",
+                            "value": ex[which][k]})
     if (spec.get("risk") or {}).get("max_trades_per_day") is not None:
         out.append({"path": "spec.risk.max_trades_per_day", "label": "max trades per day", "value": spec["risk"]["max_trades_per_day"]})
 

@@ -48,7 +48,7 @@ class LinearPricer:
 
     mode = "synthetic"
 
-    def contract(self, underlying, option_type, spot, day, lot_size=None):
+    def contract(self, underlying, option_type, spot, day, lot_size=None, selection="ATM", at=None, vix=None):
         return Contract(underlying, day + timedelta(days=7), 25000.0, option_type, 10)
 
     def _p(self, c, s):

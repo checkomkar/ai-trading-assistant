@@ -160,3 +160,30 @@ and unverified lot sizes, and `skipped_entries` shows the reasons.
 stocks (daily runs) are not tagged yet.
 
 **What I need from you:** the band edges above are my defaults. Tell me if you think in other bands (e.g. VIX 12/16/20).
+
+---
+
+## B7 — Strike choice and exits on the index
+
+**Built**
+- **Strike choice (B7.1):** spec `option_selection.strike` = ATM, ITM1-3 or OTM1-3, or `option_selection.delta` (0.1-0.9)
+  for "the strike whose delta is closest". One function (`options/selection.py`) decides for both the backtester and the
+  paper runner; a test checks they pick the same strike and expiry for the same spot (ATM, ITM2, OTM1, delta 0.4 at
+  three spots). Delta uses Black-Scholes with INDIA VIX x the underlying multiplier, the same rule synthetic pricing
+  uses, so it is reproducible; it is not the option's own implied volatility. If the chosen strike has no stored data
+  in Real mode, the entry is skipped and counted (never moved to another strike). Real-mode loading widens to the
+  strikes the selection can reach.
+- **Parity fix found on the way:** the paper runner broke an exact ATM tie downwards (spot 25025 → 25000) while the
+  backtester rounded up (25050). Both now use the backtester's rule.
+- **Exits on the index (B7.2):** `exits.index_stop` / `exits.index_target`, each as `points`, `pct` of the index or
+  `atr_mult` x ATR(n), measured from the index price at entry, next to the premium stop/target. Backtest: a gap through
+  the level fills at the open; an intrabar index stop fills at the bar's lowest premium (the safe bound), an index target
+  at the lower of the bar's open/close premium; a stop wins a tie. Paper: checked on every heartbeat against the live
+  index, in the same order; the levels survive a restart.
+- **Sizing (B7.3):** already on master (`risk_per_trade_pct`); the risk engine still caps quantities in paper (B7.4).
+- The AI translator knows the new fields; the Research tab can sweep index-exit distances.
+
+**What I need from you**
+1. Try one spec with `"option_selection": {"strike": "OTM1"}` and one with `{"delta": 0.4}` and compare with ATM.
+2. Tell me if you want the delta measured with the option's own implied volatility once real option prices are
+   stored (it would make the choice depend on the data source).

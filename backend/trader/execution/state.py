@@ -29,13 +29,15 @@ def signal_to_dict(s: Signal) -> dict:
     return {"direction": s.direction.value, "confidence": s.confidence, "underlying": s.underlying,
             "option_selection": s.option_selection, "entry_ref": s.entry_ref, "stop_loss_pct": s.stop_loss_pct,
             "target_pct": s.target_pct, "reason": s.reason, "timestamp": s.timestamp.isoformat(),
-            "strategy": s.strategy, "features": s.features}
+            "strategy": s.strategy, "features": s.features, "risk_pct": s.risk_pct,
+            "index_stop_dist": s.index_stop_dist, "index_target_dist": s.index_target_dist}
 
 
 def signal_from_dict(d: dict) -> Signal:
     return Signal(Direction(d["direction"]), d["confidence"], d["underlying"], d["option_selection"], d["entry_ref"],
                   d["stop_loss_pct"], d["target_pct"], d["reason"], datetime.fromisoformat(d["timestamp"]),
-                  d["strategy"], d.get("features") or {})
+                  d["strategy"], d.get("features") or {}, risk_pct=d.get("risk_pct"),
+                  index_stop_dist=d.get("index_stop_dist"), index_target_dist=d.get("index_target_dist"))
 
 
 def build_snapshot(risk: RiskEngine, broker: PaperBroker, lives: list[dict], unfilled: set[str]) -> dict:

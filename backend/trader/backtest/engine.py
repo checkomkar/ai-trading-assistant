@@ -25,14 +25,15 @@ from trader.instruments.calendar import IST
 from trader.instruments.strikes import OptionType
 from trader.market_data.candles import Candle
 from trader.strategy.sizing import lots_for_risk
-from trader.strategy.base import MarketState, NoTrade, Signal, Strategy
+from trader.strategy.base import Direction, MarketState, NoTrade, Signal, Strategy
 
 
 class Pricer(Protocol):
     mode: str
 
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
-                 lot_size: int | None = None) -> Contract | None: ...
+                 lot_size: int | None = None, selection: str = "ATM", at: datetime | None = None,
+                 vix: float | None = None) -> Contract | None: ...
 
     def bar(self, c: Contract, u: Candle, tf: timedelta, vix: float | None) -> PremiumBar | None: ...
 
@@ -100,6 +101,8 @@ class _Position:
     bars: int = 0
     no_print_bars: int = 0
     regime: dict = field(default_factory=dict)
+    index_stop: float | None = None  # index levels (PRD §24.8 B7.2), from the index price at entry
+    index_target: float | None = None
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 
@@ -259,9 +262,10 @@ class BacktestEngine:
 
     # ---- position lifecycle -------------------------------------------------------------------
     def _open(self, sig: Signal, bar: Candle, vix: float | None, skipped: Counter) -> _Position | None:
-        # ATM is chosen from the price at entry (this bar's open), as a live trader would.
+        # The strike (ATM, ITM/OTM n, or a delta target) is chosen from the price at entry (this bar's open), as a live
+        # trader would, with the same function the paper runner uses.
         c = self.pricer.contract(self.u, sig.direction.option_type, bar.open, bar.ts.astimezone(IST).date(),
-                                 self.cfg.lot_size)
+                                 self.cfg.lot_size, sig.option_selection, bar.ts, vix)
         if c is None:
             skipped["no option data for contract"] += 1
             return None
@@ -285,8 +289,14 @@ class BacktestEngine:
                 return None
         stop = paid * (1 - sig.stop_loss_pct / 100)
         target = paid * (1 + sig.target_pct / 100)
-        return _Position(sig, c, lots * c.lot_size, bar.ts, paid, mid, stop, target, mid, mid, bar.open,
-                         initial_stop=stop, last_mid=mid)
+        pos = _Position(sig, c, lots * c.lot_size, bar.ts, paid, mid, stop, target, mid, mid, bar.open,
+                        initial_stop=stop, last_mid=mid)
+        sign = 1 if sig.direction == Direction.LONG else -1  # a call gains when the index rises
+        if sig.index_stop_dist:
+            pos.index_stop = bar.open - sign * sig.index_stop_dist
+        if sig.index_target_dist:
+            pos.index_target = bar.open + sign * sig.index_target_dist
+        return pos
 
     def _manage(self, p: _Position, bar: Candle, vix: float | None, last_bar_of_day: bool) -> Trade | None:
         pb = self.pricer.bar(p.contract, bar, self.tf, vix)
@@ -310,14 +320,25 @@ class BacktestEngine:
             return self._close(p, bar.ts, bar.ts, pb.open, "stop (gap)", bar.open)
         if pb.open >= p.target:
             return self._close(p, bar.ts, bar.ts, pb.open, "target (gap)", bar.open)
+        up = p.signal.direction == Direction.LONG
+        if p.index_stop is not None and (bar.open <= p.index_stop if up else bar.open >= p.index_stop):
+            return self._close(p, bar.ts, bar.ts, pb.open, "index stop (gap)", bar.open)
+        if p.index_target is not None and (bar.open >= p.index_target if up else bar.open <= p.index_target):
+            return self._close(p, bar.ts, bar.ts, pb.open, "index target (gap)", bar.open)
 
         p.low_water = min(p.low_water, pb.low)
+        idx_stop = p.index_stop is not None and (bar.low <= p.index_stop if up else bar.high >= p.index_stop)
+        if idx_stop:  # the premium at that moment is unknown: its lowest print in the bar is the safe bound
+            return self._close(p, bar.ts, end, pb.low, "index stop", bar.close)
         if pb.low <= p.stop:  # also when the target was touched too: assume the worse outcome
             reason = "trailing stop" if p.stop > p.initial_stop + 1e-9 else "stop"
             return self._close(p, bar.ts, end, self.exe.stop_fill(p.stop, pb.high, pb.low), reason, bar.close)
         if pb.high >= p.target:
             p.high_water = max(p.high_water, pb.high)
             return self._close(p, bar.ts, end, p.target, "target", bar.close)
+        if p.index_target is not None and (bar.high >= p.index_target if up else bar.low <= p.index_target):
+            p.high_water = max(p.high_water, pb.high)
+            return self._close(p, bar.ts, end, min(pb.open, pb.close), "index target", bar.close)
         p.last_mid = pb.close
 
         p.high_water = max(p.high_water, pb.high)

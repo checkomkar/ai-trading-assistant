@@ -222,7 +222,11 @@ class RuleStrategy(Strategy):
         if spec.exits.conditions is not None:
             conds.append(spec.exits.conditions)
         refs = [o for c in conds for o in walk_operands(c) if isinstance(o, Ind)]
-        self.bank = _Bank({o.key for o in refs}, minutes(spec.timeframe) if spec.timeframe != "1d" else 375)
+        # index exits measured in ATR need that ATR at the signal bar
+        self.index_levels = {k: lvl for k, lvl in (("stop", spec.exits.index_stop), ("target", spec.exits.index_target))
+                             if lvl is not None}
+        atr_keys = {Ind(ind="atr", period=lvl.atr_period).key for lvl in self.index_levels.values() if lvl.atr_mult}
+        self.bank = _Bank({o.key for o in refs} | atr_keys, minutes(spec.timeframe) if spec.timeframe != "1d" else 375)
         depth = max([o.shift for o in refs] + [0]) + max(_within(c) for c in conds) + 2  # +1 for crosses, + how far back they look
         self.hist: deque[dict] = deque(maxlen=depth)
         self.window = tuple(time.fromisoformat(x) for x in spec.filters.time_window)
@@ -307,16 +311,28 @@ class RuleStrategy(Strategy):
                 return None  # warming up
             if not r:
                 return NoTrade("filter: " + render_condition(c).lstrip("- "))
+        dists = {}
+        for k, lvl in self.index_levels.items():
+            if lvl.points is not None:
+                dists[k] = lvl.points
+            elif lvl.pct is not None:
+                dists[k] = f.close * lvl.pct / 100
+            else:
+                atr = self.hist[0].get(Ind(ind="atr", period=lvl.atr_period).key) if self.hist else None
+                if atr is None:
+                    return None  # ATR still warming up: the exit cannot be set yet
+                dists[k] = atr * lvl.atr_mult
         for d in (Direction.LONG, Direction.SHORT):
             cond = self.entries[d]
             if cond is not None and self.eval(cond) is True:
-                return Signal(d, 0.5, state.underlying, "ATM", f.close, self.spec.exits.stop_loss_pct,
+                return Signal(d, 0.5, state.underlying, self.spec.option_selection.code, f.close, self.spec.exits.stop_loss_pct,
                               self.spec.exits.target_pct, f"{self.spec.name}: {d.value.lower()} rules met",
                               f.ts, f"spec:{self.spec.hash}",
                               {label(k): (round(v, 4) if isinstance(v, float) else v)
                                for k, v in ((k, v[0] if isinstance(v, list) else v)
                                             for k, v in (self.hist[0] if self.hist else {}).items())},
-                              risk_pct=self.spec.risk.risk_per_trade_pct, checks=self._checks(cond))
+                              risk_pct=self.spec.risk.risk_per_trade_pct, checks=self._checks(cond),
+                              index_stop_dist=dists.get("stop"), index_target_dist=dists.get("target"))
         return None
 
     def _checks(self, entry) -> tuple:  # noqa: ANN001

@@ -218,6 +218,21 @@ class Trail(_Strict):
     trail_pct: float = Field(gt=0, lt=100)
 
 
+class IndexLevel(_Strict):
+    """A distance on the index (not the option premium), measured from the index price at entry. Exactly one of
+    `points`, `pct` (% of the index at the signal) or `atr_mult` (x ATR(`atr_period`) at the signal)."""
+    points: float | None = Field(None, gt=0, le=5000)
+    pct: float | None = Field(None, gt=0, le=10)
+    atr_mult: float | None = Field(None, gt=0, le=20)
+    atr_period: int = Field(14, ge=2, le=100)
+
+    @model_validator(mode="after")
+    def _one(self) -> "IndexLevel":
+        if sum(x is not None for x in (self.points, self.pct, self.atr_mult)) != 1:
+            raise ValueError("give exactly one of points, pct or atr_mult")
+        return self
+
+
 class Exits(_Strict):
     stop_loss_pct: float = Field(gt=0, lt=100)
     target_pct: float = Field(gt=0, le=1000)
@@ -225,12 +240,24 @@ class Exits(_Strict):
     time_exit_bars: int | None = Field(None, ge=1, le=375)
     conditions: Condition | None = None  # exit the position when true (checked on bar close)
     eod: str = "15:15"
+    # Exits on the INDEX (PRD §24.8 B7.2): e.g. stop 1 x ATR(14) below the index at entry for a call. They work next to
+    # the premium stop/target above; whichever is hit first closes the trade (a stop wins a tie).
+    index_stop: IndexLevel | None = None
+    index_target: IndexLevel | None = None
 
 
 class OptionSelection(_Strict):
-    strike: Literal["ATM"] = "ATM"
+    # ATM, or 1-3 strikes in / out of the money (PRD §24.8 B7.1)
+    strike: Literal["ATM", "ITM1", "ITM2", "ITM3", "OTM1", "OTM2", "OTM3"] = "ATM"
+    # buy the strike whose delta is closest to this instead (e.g. 0.4); volatility = INDIA VIX x multiplier
+    delta: float | None = Field(None, ge=0.1, le=0.9)
     expiry: Literal["nearest"] = "nearest"
     roll_on_expiry_day: bool = True
+
+    @property
+    def code(self) -> str:
+        """The selection as the backtester and the paper runner read it: ATM, ITM1, OTM2 or D40."""
+        return f"D{round(self.delta * 100)}" if self.delta is not None else self.strike
 
 
 class Risk(_Strict):
@@ -345,6 +372,9 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
                 errs.append(f"{where}: compares two constants")
     errs += _tf_errors(spec, conds)
     if spec.market == "equity":
+        if spec.exits.index_stop or spec.exits.index_target or spec.option_selection.strike != "ATM" \
+                or spec.option_selection.delta is not None:
+            errs.append("index exits and strike choice are for option strategies")
         return errs + _equity_errors(spec, conds)
     if spec.timeframe == "1d":
         errs.append("daily candles are for stock strategies (market \"equity\"); option strategies use 1m-60m")
@@ -562,7 +592,10 @@ def render_english(spec: StrategySpec) -> str:
     lines = [f"Strategy: {spec.name}",
              f"Underlying: {', '.join(spec.underlyings)} · {spec.timeframe} candles · decisions on candle close, "
              f"orders at the next candle's open"]
-    for side, verb in (("long", "Buy the ATM call (CE)"), ("short", "Buy the ATM put (PE)")):
+    o = spec.option_selection
+    which = (f"delta-{o.delta:g}" if o.delta is not None else "ATM" if o.strike == "ATM"
+             else f"{o.strike[3]}-strike {'in' if o.strike.startswith('ITM') else 'out of'} the money")
+    for side, verb in (("long", f"Buy the {which} call (CE)"), ("short", f"Buy the {which} put (PE)")):
         s = getattr(spec.sides, side)
         if s is None:
             continue
@@ -583,6 +616,12 @@ def render_english(spec: StrategySpec) -> str:
                     if e.trail else "")
                  + (f"; exit after {e.time_exit_bars} candles" if e.time_exit_bars else "")
                  + f"; always flat by {e.eod} IST.")
+    for lvl, what in ((e.index_stop, "stop"), (e.index_target, "target")):
+        if lvl is not None:
+            dist = (f"{lvl.points:g} points" if lvl.points is not None else f"{lvl.pct:g}% of the index"
+                    if lvl.pct is not None else f"{lvl.atr_mult:g} x ATR({lvl.atr_period})")
+            lines.append(f"Index {what}: exit when the index moves {dist} {'against' if what == 'stop' else 'in favour of'} "
+                         "the trade from its price at entry.")
     if e.conditions is not None:
         lines.append("Also exit at the next candle's open when:")
         lines.append(render_condition(e.conditions))

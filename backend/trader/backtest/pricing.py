@@ -21,6 +21,7 @@ from trader.instruments.specs import ExpiryCycle, get_spec
 from trader.instruments.strikes import OptionType, atm_strike
 from trader.market_data.candles import Candle
 from trader.options import black_scholes as bs
+from trader.options.selection import choose_strike
 
 
 # NSE expiry conventions over time: (effective_from, cycle, weekday Mon=0). A rule applies to *trading days* from
@@ -168,15 +169,19 @@ class SyntheticPricer:
         self.unverified_lots: set[tuple[str, int]] = set()
 
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
-                 lot_size: int | None = None) -> Contract | None:
+                 lot_size: int | None = None, selection: str = "ATM", at: datetime | None = None,
+                 vix: float | None = None) -> Contract | None:
         exp = expiry_for(underlying, day, self.cal, self.roll, self.overrides)
+        strike = choose_strike(underlying, option_type, spot, selection, expiry=exp, at=at, vix=vix, r=self.r)
+        if strike is None:
+            return None
         if day < VERIFIED_RULES_FROM and (underlying, exp) not in self._confirmed:
             self.unverified_expiry_dates.add(day)
         if lot_size is None:
             lot_size, ok = lot_size_for(underlying, exp, get_spec(underlying).lot_size)
             if not ok:
                 self.unverified_lots.add((underlying, lot_size))
-        return Contract(underlying, exp, float(atm_strike(underlying, spot)), option_type, lot_size)
+        return Contract(underlying, exp, float(strike), option_type, lot_size)
 
     def iv(self, underlying: str, vix: float | None) -> float:
         if vix is None or vix <= 0:
@@ -223,11 +228,14 @@ class HybridPricer:
         return self.synthetic.unverified_expiry_dates
 
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
-                 lot_size: int | None = None) -> Contract | None:
-        real = self.real.contract(underlying, option_type, spot, day, lot_size)
+                 lot_size: int | None = None, selection: str = "ATM", at: datetime | None = None,
+                 vix: float | None = None) -> Contract | None:
+        real = self.real.contract(underlying, option_type, spot, day, lot_size, selection, at, vix)
         if real is not None:
             return real
-        m = self.synthetic.contract(underlying, option_type, spot, day, lot_size)  # no stored candles for this contract at all
+        m = self.synthetic.contract(underlying, option_type, spot, day, lot_size, selection, at, vix)  # nothing stored
+        if m is None:
+            return None
         return Contract(m.underlying, m.expiry, m.strike, m.option_type, m.lot_size, True)
 
     def bar(self, c: Contract, u: Candle, tf: timedelta, vix: float | None) -> PremiumBar | None:
@@ -254,11 +262,15 @@ class RealPricer:
         self._expiries = {k[0] for k in candles}
 
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
-                 lot_size: int | None = None) -> Contract | None:
+                 lot_size: int | None = None, selection: str = "ATM", at: datetime | None = None,
+                 vix: float | None = None) -> Contract | None:
         # The contract a trader would have bought is fixed by the exchange calendar, never by which contracts happen
         # to be stored: if the true expiry is missing, the entry is skipped rather than moved to a later expiry.
         exp = expiry_for(underlying, day, self.cal, self.roll, self.overrides)
-        strike = float(atm_strike(underlying, spot))
+        k = choose_strike(underlying, option_type, spot, selection, expiry=exp, at=at, vix=vix)
+        if k is None:
+            return None
+        strike = float(k)
         key = (exp, strike, option_type)
         if key not in self.candles:
             if exp not in self._expiries:

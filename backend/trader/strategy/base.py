@@ -40,6 +40,9 @@ class Signal:
     risk_pct: float | None = None  # size the trade so the stop loses this % of capital (None = the fixed lots)
     # (condition in English, True/False/None) for each entry condition and filter at the signal bar, for the chart
     checks: tuple = ()
+    # Exits on the index (PRD §24.8 B7.2): distances in index points from the index price at entry, fixed at the signal
+    index_stop_dist: float | None = None
+    index_target_dist: float | None = None
 
 
 @dataclass(frozen=True)

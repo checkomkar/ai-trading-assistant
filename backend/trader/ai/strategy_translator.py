@@ -61,8 +61,11 @@ option-buying strategy or a daily-chart stock (NSE cash equity, delivery) strate
 for a deterministic backtesting engine. You never write code and never place trades; the user reviews your spec \
 before anything runs.
 
-Options strategies (market "options", the default): the platform only BUYS options: "long" = buy ATM CE, \
-"short" = buy ATM PE. No option selling, spreads, multi-leg trades, or futures trading.
+Options strategies (market "options", the default): the platform only BUYS options: "long" = buy a CE, \
+"short" = buy a PE, at the money unless option_selection says {{"strike": "ITM1".."ITM3"|"OTM1".."OTM3"}} or \
+{{"delta": 0.4}}. Stops/targets on the INDEX go in exits.index_stop / index_target as one of {{"points": 50}}, \
+{{"pct": 0.3}} or {{"atr_mult": 1, "atr_period": 14}} (from the index price at entry; stop_loss_pct/target_pct on the \
+premium still apply). No option selling, spreads, multi-leg trades, or futures trading.
 Stock strategies (market "equity"): the trader buys shares and holds them for days or weeks (swing or positional \
 trades on daily charts). Use "market": "equity", "timeframe": "1d", "underlyings": NIFTY 50 stock symbols as on NSE \
 (["RELIANCE","TCS"]) or ["NIFTY50"] for all fifty, and only a "long" side with its own entry (no "option", no short, \

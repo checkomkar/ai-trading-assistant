@@ -156,11 +156,22 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
     }
 
 
+def strike_pad(req: BacktestRequest) -> int:
+    """Strikes either side of the day's range to load: wider when the strategy buys away from the money."""
+    sel = (req.spec or {}).get("option_selection") or {}
+    if sel.get("delta") is not None:
+        from trader.options.selection import SEARCH_STEPS
+
+        return 2 + SEARCH_STEPS
+    k = str(sel.get("strike", "ATM"))
+    return 2 + (int(k[3:]) if k[:3] in ("ITM", "OTM") else 0)
+
+
 async def load_for(sessionmaker: async_sessionmaker, req: BacktestRequest) -> bt_data.BacktestData:
     """Everything a run of `req` reads, warm-up days included. Raises LookupError when nothing is stored."""
     async with sessionmaker() as s:
         data = await bt_data.load(s, req.underlying, req.timeframe, req.start - timedelta(days=WARMUP_DAYS), req.end, req.source,
-                                  with_options=req.pricing in ("real", "hybrid"))
+                                  with_options=req.pricing in ("real", "hybrid"), strike_pad=strike_pad(req))
     if not any(b.ts.astimezone(IST).date() >= req.start for b in data.bars):
         raise LookupError(f"No {req.timeframe} candles for {req.underlying} between {req.start} and {req.end} "
                           f"(source={req.source}). Backfill history first.")

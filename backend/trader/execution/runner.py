@@ -38,12 +38,12 @@ from trader.execution.types import Order, OrderRequest, OrderStatus, Side
 from trader.features import FeatureEngine, Features
 from trader.instruments.calendar import IST
 from trader.strategy.sizing import lots_for_risk
-from trader.instruments.specs import get_spec
-from trader.instruments.strikes import OptionType, moneyness_offset
+from trader.instruments.specs import VIX_SYMBOL, get_spec
 from trader.logging import get_logger
 from trader.market_data.candles import TIMEFRAMES, Candle
 from trader.market_data.service import TOPIC_CANDLES, MarketDataService
 from trader.risk import OrderIntent, RiskContext, RiskEngine
+from trader.options.selection import choose_strike
 from trader.strategy.base import Direction, MarketState, NoTrade, Signal
 
 log = get_logger("paper")
@@ -87,6 +87,8 @@ class _Live:
     bars: int = 0
     exit_reason: str | None = None
     exit_attempts: int = 0
+    index_stop: float | None = None  # index levels (PRD §24.8 B7.2), set from the index price at the fill
+    index_target: float | None = None
 
 
 class Lane:
@@ -125,7 +127,7 @@ def _live_to_dict(lane: Lane, lv: _Live) -> dict:
         "entry_price": lv.entry_price, "entry_time": lv.entry_time.isoformat() if lv.entry_time else None,
         "stop": lv.stop, "initial_stop": lv.initial_stop, "target": lv.target, "high_water": lv.high_water,
         "low_water": lv.low_water, "last_bid": lv.last_bid, "bars": lv.bars, "exit_reason": lv.exit_reason,
-        "exit_attempts": lv.exit_attempts}
+        "exit_attempts": lv.exit_attempts, "index_stop": lv.index_stop, "index_target": lv.index_target}
 
 
 def _live_from_dict(d: dict, inst: Instrument) -> _Live:
@@ -133,7 +135,7 @@ def _live_from_dict(d: dict, inst: Instrument) -> _Live:
                  Order.from_dict(d["entry_order"]), None, d["entry_price"],
                  datetime.fromisoformat(d["entry_time"]) if d.get("entry_time") else None, d["stop"],
                  d["initial_stop"], d["target"], d["high_water"], d["low_water"], d["last_bid"], d["bars"],
-                 d.get("exit_reason"), d.get("exit_attempts", 0))
+                 d.get("exit_reason"), d.get("exit_attempts", 0), d.get("index_stop"), d.get("index_target"))
 
 
 class PaperRunner:
@@ -412,16 +414,10 @@ class PaperRunner:
         strikes = reg.strikes(und, exp)
         if not strikes:
             return None
-        sel = sig.option_selection.upper()
-        steps = 0
-        if sel.startswith(("ITM", "OTM")):
-            n = int(sel[3:] or 1)
-            steps = moneyness_offset(sig.direction.option_type, n if sel.startswith("ITM") else -n)
-        elif sel != "ATM":
-            return None
-        step = self.md._strike_step(und, exp)
-        atm = min(strikes, key=lambda k: abs(k - spot))
-        return reg.option(und, exp, atm + steps * step, sig.direction.option_type)
+        # The same choice the backtester makes (options/selection.py): ATM, ITM/OTM n, or a delta target.
+        k = choose_strike(und, sig.direction.option_type, spot, sig.option_selection, expiry=exp, at=now,
+                          vix=self.md.spot(VIX_SYMBOL), available=[float(x) for x in strikes])
+        return None if k is None else reg.option(und, exp, k, sig.direction.option_type)
 
     def _risk_context(self, underlying: str, token: str, now: datetime) -> RiskContext:
         und_inst = self.md.registry.index(underlying)
@@ -458,6 +454,12 @@ class PaperRunner:
             live.stop = live.initial_stop = px * (1 - sig.stop_loss_pct / 100)
             live.target = px * (1 + sig.target_pct / 100)
             live.high_water = live.low_water = live.last_bid = px
+            spot = self.md.spot(sig.underlying)
+            sign = 1 if sig.direction == Direction.LONG else -1  # a call gains when the index rises
+            if spot is not None and sig.index_stop_dist:
+                live.index_stop = spot - sign * sig.index_stop_dist
+            if spot is not None and sig.index_target_dist:
+                live.index_target = spot + sign * sig.index_target_dist
             self.risk.update_entry(live.cid, px * live.quantity)
             for s in lane.signals:
                 if s.get("correlation_id") == cid:
@@ -518,12 +520,18 @@ class PaperRunner:
         live.low_water = min(live.low_water, bid)
         live.high_water = max(live.high_water, bid)
         reason = None
+        up = live.signal.direction == Direction.LONG
+        spot = self.md.spot(live.signal.underlying) if live.index_stop is not None or live.index_target is not None else None
         if now.astimezone(IST).time() >= lane.eng.eod_exit:
             reason = "eod"
+        elif spot is not None and live.index_stop is not None and (spot <= live.index_stop if up else spot >= live.index_stop):
+            reason = "index stop"  # checked before any target, as the backtester does (a stop wins a tie)
         elif bid <= live.stop:
             reason = "trailing stop" if live.stop > live.initial_stop + 1e-9 else "stop"
         elif bid >= live.target:
             reason = "target"
+        elif spot is not None and live.index_target is not None and (spot >= live.index_target if up else spot <= live.index_target):
+            reason = "index target"
         else:
             eng = lane.eng
             if eng.trail_activate_pct is not None and eng.trail_pct is not None \
