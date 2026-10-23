@@ -246,6 +246,28 @@ def test_equities_only_merge_adds_stock_history_without_touching_the_rest(tmp_pa
     assert merge(src, dst, equities_only=True) == {"instruments": 0, "candles": 0, "option_snapshots": 0}  # safe to repeat
 
 
+def test_equities_only_merge_copies_daily_candles_unless_asked_for_more(tmp_path):
+    """1m stock history kept locally (fetch_equity_history) must not inflate the small stocks pack for a server."""
+    import sqlite3
+
+    from trader.scripts.merge_market_data import create_target, merge
+
+    src, dst, dst2 = tmp_path / "src.db", tmp_path / "dst.db", tmp_path / "dst2.db"
+    url = f"sqlite+aiosqlite:///{src.as_posix()}"
+    upgrade_db(url)
+    asyncio.run(seed(url))
+    con = sqlite3.connect(src)
+    iid = con.execute("select id from instruments where instrument_type = 'EQ' limit 1").fetchone()[0]
+    con.execute("insert into candles (instrument_id, timeframe, ts, open, high, low, close, volume) "
+                "values (?, '1m', '2026-10-01 03:45:00.000000', 1, 1, 1, 1, 0)", (iid,))
+    con.commit()
+    con.close()
+    create_target(dst)
+    assert merge(src, dst, equities_only=True)["candles"] == 3 * DAYS
+    create_target(dst2)
+    assert merge(src, dst2, equities_only=True, timeframes=["1d", "1m"])["candles"] == 3 * DAYS + 1
+
+
 def test_daily_stock_runs_may_span_many_years_but_intraday_runs_stay_at_three():
     from pydantic import ValidationError as VE
 

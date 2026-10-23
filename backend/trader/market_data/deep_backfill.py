@@ -82,3 +82,31 @@ async def backfill_older(history: Callable[[Instrument, str, datetime, datetime]
             break
     res.earliest = await first_stored(sm, instrument_id, timeframe)
     return res
+
+
+async def last_stored(sm, instrument_id: int, timeframe: str) -> datetime | None:  # noqa: ANN001
+    async with sm() as s:
+        ts = (await s.execute(select(CandleRow.ts).where(CandleRow.instrument_id == instrument_id,
+                                                        CandleRow.timeframe == timeframe)
+                              .order_by(CandleRow.ts.desc()).limit(1))).scalar_one_or_none()
+    return _utc(ts) if ts else None
+
+
+async def backfill_newer(history: Callable[[Instrument, str, datetime, datetime], Awaitable[list]], sm,  # noqa: ANN001
+                         inst: Instrument, instrument_id: int, timeframe: str, now: datetime,
+                         window: timedelta = WINDOW) -> int:
+    """Fetch (last stored candle, now] forward in windows; the counterpart of `backfill_older`. Returns candles stored."""
+    last = await last_stored(sm, instrument_id, timeframe)
+    if last is None:
+        return 0
+    tf_len = TIMEFRAMES[timeframe]
+    cur = last + tf_len  # stored history candles are closed: start after the last one
+    stored = 0
+    while cur < now:
+        hi = min(now, cur + window)
+        candles = [c for c in await history(inst, timeframe, cur, hi) if c.ts + tf_len <= now]
+        if candles:
+            async with sm() as s, s.begin():
+                stored += await repo.upsert_candles(s, candles, {inst.token: instrument_id})
+        cur = hi
+    return stored

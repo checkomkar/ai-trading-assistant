@@ -71,6 +71,20 @@ backend/.venv/Scripts/python -m trader.scripts.fetch_prime_history --years 7 --s
 
 After the holidays step, review what it added: `git diff backend/config/nse_holidays.yaml`.
 
+## Fyers Prime: NIFTY 50 stock history (local)
+
+Daily and 1-minute candles for 5 years (about 1,400 requests; resumable). See the plan first:
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.fetch_equity_history --years 5 --dry-run
+```
+
+```bash
+backend/.venv/Scripts/python -m trader.scripts.fetch_equity_history --years 5 --quiet
+```
+
+Daily only: add `--timeframes 1d`. The stocks pack for the server (`merge_market_data --equities-only`) still copies only daily candles; add `--timeframes 1d,1m` to include the minute data.
+
 ## Keep a copy of the data (local)
 
 Gzip CSV files plus a manifest with checksums. Re-running only rewrites months that changed:

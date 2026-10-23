@@ -33,7 +33,12 @@ def create_target(path: Path) -> None:
     eng.dispose()
 
 
-def merge(src_path: Path, dst_path: Path, equities_only: bool = False) -> dict[str, int]:
+def merge(src_path: Path, dst_path: Path, equities_only: bool = False,
+          timeframes: list[str] | None = None) -> dict[str, int]:
+    """`timeframes` limits the candles copied; with `equities_only` it defaults to daily (`1d`), so 1m stock
+    history kept locally does not end up in the small stocks pack."""
+    if equities_only and timeframes is None:
+        timeframes = ["1d"]
     src, dst = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True), sqlite3.connect(dst_path)
     added = {"instruments": 0, "candles": 0, "option_snapshots": 0}
     try:
@@ -52,7 +57,11 @@ def merge(src_path: Path, dst_path: Path, equities_only: bool = False) -> dict[s
         ccols = ",".join(("instrument_id",) + CANDLE_COLS)
         cmarks = ",".join("?" * (len(CANDLE_COLS) + 1))
         before = dst.execute("select count(*) from candles").fetchone()[0]
-        cur = src.execute(f"select {ccols} from candles")
+        tf_where, tf_args = "", ()
+        if timeframes:
+            tf_where = f" where timeframe in ({','.join('?' * len(timeframes))})"
+            tf_args = tuple(timeframes)
+        cur = src.execute(f"select {ccols} from candles{tf_where}", tf_args)
         while rows := cur.fetchmany(BATCH):
             dst.executemany(f"insert or ignore into candles ({ccols}) values ({cmarks})",
                             [(remap[r[0]], *r[1:]) for r in rows if r[0] in remap])
@@ -83,13 +92,16 @@ def main() -> None:
     ap.add_argument("--from", dest="src", required=True, type=Path)
     ap.add_argument("--to", dest="dst", required=True, type=Path)
     ap.add_argument("--create", action="store_true", help="create the target with only the market tables")
-    ap.add_argument("--equities-only", action="store_true", help="only the stock instruments and their candles")
+    ap.add_argument("--equities-only", action="store_true",
+                    help="only the stock instruments and their daily candles (add --timeframes 1d,1m for more)")
+    ap.add_argument("--timeframes", help="comma list of candle timeframes to copy (default: all; 1d with --equities-only)")
     a = ap.parse_args()
     if a.create:
         if a.dst.exists():
             raise SystemExit(f"{a.dst} already exists")
         create_target(a.dst)
-    for table, n in merge(a.src, a.dst, a.equities_only).items():
+    tfs = [t.strip() for t in a.timeframes.split(",") if t.strip()] if a.timeframes else None
+    for table, n in merge(a.src, a.dst, a.equities_only, tfs).items():
         print(f"{table}: {n} rows added")
 
 

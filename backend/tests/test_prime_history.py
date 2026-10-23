@@ -243,3 +243,19 @@ async def test_simulated_data_is_never_archived(world, tmp_path):
     assert not any("2026-09" in k for k in res.written)
     with gzip.open(tmp_path / "a" / "instruments.csv.gz", "rt") as f:
         assert "SIM:" not in f.read()
+
+
+async def test_forward_fill_continues_from_the_last_stored_candle(empty_db):
+    sm, iid = empty_db
+    hist = fake_history(depth=date(2020, 1, 1))
+    start = datetime.combine(date(2026, 10, 12), time(0), tzinfo=IST).astimezone(timezone.utc)
+    await deep_backfill.backfill_older(hist, sm, INST, iid, "1m", start, start + timedelta(days=3),
+                                       say=lambda _: None)
+    n = await count(sm)
+    calls: list = []
+    added = await deep_backfill.backfill_newer(fake_history(date(2020, 1, 1), calls), sm, INST, iid, "1m", NOW)
+    assert added > 0 and await count(sm) == n + added
+    last = await deep_backfill.last_stored(sm, iid, "1m")
+    assert last.astimezone(IST).date() == date(2026, 10, 22)  # 22 Oct (Thu) is the last weekday before NOW
+    assert await deep_backfill.backfill_newer(hist, sm, INST, iid, "1m", NOW) == 0  # nothing new, nothing re-counted
+
