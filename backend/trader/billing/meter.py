@@ -140,19 +140,23 @@ class Meter:
         }
 
     # ---- enforcing ----
-    async def reserve(self, p: Principal, resource: str) -> Hold:
-        """Check the plan's limit for `resource` (and the AI cost ceiling for model calls) and take one unit."""
+    async def reserve(self, p: Principal, resource: str, units: int = 1) -> Hold:
+        """Check the plan's limit for `resource` (and the AI cost ceiling for model calls) and take `units` (a sweep of
+        50 settings takes 50 backtests up front; `adjust` gives back the ones it did not run)."""
         plan = get_plan(p.plan)
         async with self._lock(p.id):
             async with self._sm() as s, s.begin():
                 used, cost = await self._counts(s, p)
                 lim = plan.limit(resource) if resource in EVENT_RESOURCES else None
-                if lim is not None and used.get(resource, 0) >= lim:
-                    raise QuotaExceeded(resource, plan, lim, used.get(resource, 0))
+                if lim is not None and used.get(resource, 0) + units > lim:
+                    raise QuotaExceeded(resource, plan, lim, used.get(resource, 0),
+                                        None if units == 1 else
+                                        f"This needs {units} {LABELS.get(resource, resource)} and your {plan.name} plan has "
+                                        f"{max(lim - used.get(resource, 0), 0)} left this month. Try fewer settings or upgrade.")
                 if resource in AI_RESOURCES or resource == "ai_other":
                     if plan.ai_budget_usd is not None and cost >= plan.ai_budget_usd:
                         raise QuotaExceeded("ai_budget", plan, plan.ai_budget_usd, cost)
-                row = UsageEventRow(owner=p.id, kind=resource, units=0 if resource == "ai_other" else 1, status="held",
+                row = UsageEventRow(owner=p.id, kind=resource, units=0 if resource == "ai_other" else units, status="held",
                                     created_at=datetime.now(timezone.utc))
                 s.add(row)
                 await s.flush()
@@ -174,6 +178,16 @@ class Meter:
             row = await s.get(UsageEventRow, hold.event_id)
             if row is not None:
                 row.status, row.cost_usd, row.tokens_in, row.tokens_out, row.model = "done", cost, tokens_in, tokens_out, model
+
+    async def adjust(self, hold: Hold, units: int) -> None:
+        """Settle a multi-unit hold at the units really used (0 = refund it)."""
+        if units <= 0:
+            await self.refund(hold)
+            return
+        async with self._sm() as s, s.begin():
+            row = await s.get(UsageEventRow, hold.event_id)
+            if row is not None:
+                row.units, row.status = units, "done"
 
     async def refund(self, hold: Hold) -> None:
         async with self._sm() as s, s.begin():

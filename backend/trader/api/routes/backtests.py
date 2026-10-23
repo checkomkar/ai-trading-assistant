@@ -82,8 +82,8 @@ async def coverage(request: Request, underlying: str = Query("NIFTY"), timeframe
         return await bt_data.coverage(s, underlying.upper(), timeframe)
 
 
-@router.post("")
-async def run(request: Request, body: BacktestIn, user: CurrentUser, meter: MeterDep) -> dict:
+async def resolve(request: Request, body: BacktestIn, user) -> tuple[dict | None, str | None, str]:  # noqa: ANN001
+    """(spec, strategy version id, strategy kind) for a request, loading a saved strategy the caller owns."""
     spec, version_id, strategy = body.spec, None, body.strategy
     if body.strategy_id:
         async with request.app.state.sessionmaker() as s:
@@ -91,19 +91,30 @@ async def run(request: Request, body: BacktestIn, user: CurrentUser, meter: Mete
         if row is None or row.owner != user.id:
             raise HTTPException(404, "strategy not found")
         spec, version_id, strategy = row.spec, row.id, "spec"
-    if spec and spec.get("market") == "equity":
-        return await _run_equity(request, body, spec, version_id, user, meter)
+    return spec, version_id, strategy
+
+
+def option_request(request: Request, body: BacktestIn, spec: dict | None, version_id: str | None, strategy: str) -> BacktestRequest:
+    """An index-option backtest request (stock strategies are routed elsewhere before this)."""
     if body.underlying not in ("NIFTY", "BANKNIFTY"):
         raise HTTPException(422, "underlying must be NIFTY or BANKNIFTY")
     if body.timeframe == "1d":
         raise HTTPException(422, "daily candles are for stock strategies")
-    req = BacktestRequest(
+    return BacktestRequest(
         underlying=body.underlying, start=body.start, end=body.end, timeframe=body.timeframe,
         source=body.source, pricing=body.pricing, strategy=strategy, spec=spec, strategy_version_id=version_id,
         strategy_params=body.strategy_params.model_dump(), engine_params=body.engine_params.model_dump(),
         execution_params=body.execution_params.model_dump(),
         risk_free_rate=request.app.state.md.settings.risk_free_rate,
     )
+
+
+@router.post("")
+async def run(request: Request, body: BacktestIn, user: CurrentUser, meter: MeterDep) -> dict:
+    spec, version_id, strategy = await resolve(request, body, user)
+    if spec and spec.get("market") == "equity":
+        return await _run_equity(request, body, spec, version_id, user, meter)
+    req = option_request(request, body, spec, version_id, strategy)
     try:
         async with meter.counted(user, "backtests"):  # no model involved: only a count, refunded if the run fails
             return await run_and_store(request.app.state.sessionmaker, req, owner=user.id)

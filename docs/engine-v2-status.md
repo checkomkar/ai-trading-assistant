@@ -106,3 +106,37 @@ and unverified lot sizes, and `skipped_entries` shows the reasons.
 1. After the downloads, run (from `backend/`):
    `.venv/Scripts/python -m trader.scripts.bench_backtest --start 2025-10-01 --end 2026-10-01 --sweep 24`
    and send me the output. I will set the research-job limits (and decide if SQLite needs help) from your numbers.
+
+---
+
+## B5 — Walk-forward, sweeps and overfitting checks (new **Research** tab)
+
+**Built**
+- **Sweeps (B5.3):** grid, seeded random, or Optuna TPE (optional: `pip install -e ".[research]"`) over any setting:
+  Momentum #1's settings, or any number in a saved spec (stop/target/trail, every constant in a condition, every
+  indicator period; `POST /research/tunables` lists them). Up to 4 parameters and 500 runs; a typo in a setting is
+  refused before anything runs.
+- **Stability (B5.4):** a heatmap of the score over the first two parameters, coloured against break-even, and each
+  setting's worst neighbour; a profitable setting whose neighbour loses or scores under half is flagged **fragile**.
+- **Multiple-testing honesty (B5.5):** every result states how many settings were tried and shows the **Deflated Sharpe
+  Ratio**. It is implemented from the paper's formulas; the tests check its definition (one trial = the probabilistic
+  Sharpe; falls with more trials), its "best by luck" term against a Monte-Carlo, and that the best of 200 noise
+  strategies is rejected while a real drift is accepted. I could not open the paper itself to check its worked example.
+- **Bootstrap (B5.6):** 1,000 reshuffles of the daily P&L: 5th–95th percentile P&L, drawdown, chance of a loss.
+- **Walk-forward (B5.1):** rolling or anchored train/test windows with an embargo day; the setting is chosen on each
+  training window only and run unchanged on the next test window; the headline is the stitched out-of-sample result,
+  with walk-forward efficiency and the in-sample average shown separately.
+- **Holdout (B5.2):** "Hold back last N days" removes the most recent days from sweeps and walk-forward; the
+  **Holdout check** runs a chosen setting on them **once** per strategy version, setting and window (a second request
+  is refused with 409).
+- **Minimum evidence (B5.7):** fewer than 100 trades = "Not enough trades to judge".
+- **Jobs and quota:** each sweep/walk-forward is a background job (progress bar, cancel, recent jobs list). It reserves
+  as many backtests from the plan as it will run, and gives back the ones it did not run.
+- **UI (B5.8):** Research tab: strategy and data, mode tabs, settings with ranges, verdict banner, best setting, Deflated
+  Sharpe, bootstrap, heatmap, all settings ranked, equity curve, folds table.
+
+**What I need from you**
+1. Defaults to confirm (PRD §24.12 items 4): minimum trades to judge = **100**; holdout suggested **90 days**; walk-forward
+   default **180-day training / 60-day tests**. Change any you prefer.
+2. Once real option data is in, run a walk-forward of Momentum #1 on NIFTY (2–3 years, Modelled or Real-where-stored)
+   and check it reproduces the §21.2 conclusion (no out-of-sample edge).
