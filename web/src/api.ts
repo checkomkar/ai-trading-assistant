@@ -194,6 +194,34 @@ export interface BacktestTrade {
   minutes_held: number;
   underlying_entry: number;
   underlying_exit: number;
+  pricing?: string; // "real" (stored option candles) | "modelled"
+  no_print_bars?: number; // bars held in which the option did not trade
+  checks?: [string, boolean | null][]; // entry conditions and filters at the signal bar
+  features?: Record<string, number | null>;
+}
+
+/** One indicator line on the backtest chart, computed on the server by the engine's own code (PRD §24.3). */
+export interface ChartSeries {
+  id: string; // "name|period|mult|tf"
+  name: string;
+  label: string;
+  source: "strategy" | "user";
+  level: string;
+  pane: string; // "price" draws on the candles; anything else gets its own band below
+  thresholds: number[];
+  points: [number, number][];
+}
+
+/** A catalogue entry from GET /indicators. */
+export interface IndicatorInfo {
+  name: string;
+  label: string;
+  category: string;
+  aliases: string[];
+  pane: string;
+  level: string;
+  period: { default: number; min: number; max: number } | null;
+  mult: { default: number; min: number; max: number } | null;
 }
 
 export interface BacktestMetrics {

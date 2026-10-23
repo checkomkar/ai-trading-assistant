@@ -287,6 +287,17 @@ class StrategyFolderItemRow(Base):
     folder_id: Mapped[str] = mapped_column(String(16), ForeignKey("strategy_folders.id"), nullable=False, index=True)
 
 
+class UserPrefRow(Base):
+    """Small per-account UI preferences (e.g. the indicators added to backtest charts), JSON per key."""
+
+    __tablename__ = "user_prefs"
+
+    owner: Mapped[str] = mapped_column(String(32), primary_key=True, default="local")
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict | list] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 # ---- SaaS: accounts, sessions, usage ledger, billing events (PRD §23) ----
 class AccountRow(Base):
     __tablename__ = "accounts"

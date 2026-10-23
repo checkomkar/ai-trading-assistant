@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from trader.api.deps import current_principal, require_admin
-from trader.api.routes import auth, backtests, billing, brokers, chat, equity, health, market, options, paper, speech, strategies, ws
+from trader.api.routes import auth, backtests, billing, brokers, chat, equity, health, indicators, market, options, paper, speech, strategies, ws
 from trader.accounts.sms import build_sender
 from trader.billing.meter import Meter, QuotaExceeded
 from trader.config import Settings, get_settings
@@ -84,7 +84,8 @@ def create_app(settings: Settings | None = None, *, start_collector: bool = True
     # Public: health, sign-in, plans and the payment webhook. Market data needs a login; the paper runner is the
     # operator's single shared runner until per-account runners exist (PRD §23.4 S1), so it is admin-only.
     # Strategies, backtests, chat and speech resolve the caller themselves because their data is per account.
-    for r in (health.router, auth.router, billing.router, strategies.router, backtests.router, brokers.router, chat.router, speech.router, ws.router):
+    for r in (health.router, auth.router, billing.router, strategies.router, backtests.router, brokers.router, chat.router, speech.router,
+              indicators.router, ws.router):
         app.include_router(r)
     for r in (market.router, options.router, equity.router):
         app.include_router(r, dependencies=[Depends(current_principal)])

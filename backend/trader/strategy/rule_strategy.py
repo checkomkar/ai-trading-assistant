@@ -47,7 +47,7 @@ DIV_PIVOT_BARS = 3  # swing width used for RSI divergence
 
 
 FACTORIES = {  # kind -> indicator object, from the operand's period and mult
-    "wma": lambda p, m: X.WMA(p), "hma": lambda p, m: X.HMA(p), "vwma": lambda p, m: X.VWMA(p), "dema": lambda p, m: X.DEMA(p),
+    "wma": lambda p, m: X.WMAClose(p), "hma": lambda p, m: X.HMA(p), "vwma": lambda p, m: X.VWMA(p), "dema": lambda p, m: X.DEMA(p),
     "tema": lambda p, m: X.TEMA(p), "rma": lambda p, m: X.RMA(p), "linreg": lambda p, m: X.LinReg(p),
     "supertrend": lambda p, m: X.Supertrend(p, m), "psar": lambda p, m: X.ParabolicSAR(), "aroon": lambda p, m: X.Aroon(p),
     "vortex": lambda p, m: X.Vortex(p), "ichimoku": lambda p, m: X.Ichimoku(), "stoch": lambda p, m: X.Stochastic(p),
@@ -316,8 +316,14 @@ class RuleStrategy(Strategy):
                               {label(k): (round(v, 4) if isinstance(v, float) else v)
                                for k, v in ((k, v[0] if isinstance(v, list) else v)
                                             for k, v in (self.hist[0] if self.hist else {}).items())},
-                              risk_pct=self.spec.risk.risk_per_trade_pct)
+                              risk_pct=self.spec.risk.risk_per_trade_pct, checks=self._checks(cond))
         return None
+
+    def _checks(self, entry) -> tuple:  # noqa: ANN001
+        """Each filter and top-level entry condition with its result at this bar (an `any` group is one line per option)."""
+        parts = list(self.spec.filters.all) + (list(entry.all) if isinstance(entry, All) else
+                                               list(entry.any) if isinstance(entry, Any_) else [entry])
+        return tuple((" ".join(render_condition(c).replace("- ", "", 1).split()), self.eval(c)) for c in parts)
 
     def exit_signal(self, state: MarketState, direction: Direction) -> str | None:
         self._observe(state)

@@ -43,3 +43,40 @@ You asked for all phases in one go, so I did not stop between them; review them 
 
 **How to see it:** run the same NIFTY month in Real mode; the warnings list coverage, missing expiries, no-print trades
 and unverified lot sizes, and `skipped_entries` shows the reasons.
+
+---
+
+## B2 + B3 — Strategy indicators on the chart, indicator search, one indicator list
+
+**Built**
+- **What the strategy saw (B2.1):** `GET /backtests/{id}/chart` returns `series`: every indicator the run's strategy used,
+  computed by the engine's own code (`FeatureEngine` + the interpreter's indicator bank) from the run's first bar. A test
+  checks that the chart's RSI and EMA at each signal bar equal the values stored on the signal.
+- **Panes and thresholds (B2.2, B2.3):** price-scale indicators overlay the candles; futures/VWAP, 0-100 oscillators, MACD,
+  points, percent, VIX and pattern flags each get a band below. Constants the strategy compares with (RSI 55/45, ADX 18)
+  are dashed lines. Selecting a trade lists each entry condition and filter with ✓/✗ at the signal bar (`checks` on
+  every trade of a spec strategy).
+- **Indicator search (B2.4):** the "ƒ Indicators" button opens a TradingView-style dialog: search by name, alias
+  ("moving average", "cpr", "williams", "boll"), grouped by category; add up to 10 with their own length, multiplier and
+  colour; chips under the chart hide/show or remove them. Added indicators are computed on the server too.
+- **Saved per account (B2.5):** `/prefs/chart-indicators` (new owner-scoped `user_prefs` table, migration `e1a7c3f09b52`),
+  with this browser as a fallback.
+- **One implementation (B2.7):** the browser-side indicator maths (`indicators.ts`) is gone.
+- **One catalogue (B3.1):** `strategy/catalogue.py` adds categories, aliases, TradingView default settings and panes to the
+  spec's own indicator table; `GET /indicators?q=` serves it. 99 indicators, including the new **CPR** top/bottom central
+  pivots (`cpr_tc`, `cpr_bc`).
+- **Golden tests (B3.4):** 36 indicators checked against TA-Lib (test-only dependency, `pip install -e .[dev]`) or against
+  TradingView's formula where TA-Lib has none (Keltner, Hull); plus a test that every catalogue operand runs.
+- **Bug fixed on the way:** a strategy using the `wma` operand crashed the interpreter (wrong call signature). Fixed,
+  and now covered by the every-operand test.
+- The stock (daily) chart uses the same series.
+
+**Not done / changed from the plan**
+- B3.2 (`params` object per indicator): not needed. Master already gives indicators a second setting via `mult`.
+- B3.3: master already had most of the list; only CPR was missing.
+
+**What I need from you**
+1. Open a backtest, press **ƒ Indicators**, search and add a few; tell me if the panes get too crowded on your screen
+   (I can make bands collapsible).
+2. Run `pip install -e ".[dev]"` in `backend/` once, so the TA-Lib golden tests run on your machine too (they are
+   skipped when TA-Lib is missing).

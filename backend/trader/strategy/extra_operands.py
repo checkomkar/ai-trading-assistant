@@ -70,6 +70,8 @@ EXTRA_INDICATORS: dict[str, tuple[bool, tuple[int, int] | None, str, str]] = {
     "pivot_r2": (False, None, "pivot resistance 2", "index"),
     "pivot_s1": (False, None, "pivot support 1", "index"),
     "pivot_s2": (False, None, "pivot support 2", "index"),
+    "cpr_tc": (False, None, "CPR top central pivot", "index"),
+    "cpr_bc": (False, None, "CPR bottom central pivot", "index"),
 }
 
 MULT_DEFAULTS: dict[str, float] = {  # operands with a second setting, and TradingView's default for it
@@ -92,11 +94,11 @@ SOURCE: dict[str, tuple[str, str]] = {
     "bb_pctb": ("bb_extra", "pctb"), "bb_width": ("bb_extra", "width"),
     "hl2": ("prices", "hl2"), "hlc3": ("prices", "hlc3"), "ohlc4": ("prices", "ohlc4"), "true_range": ("prices", "tr"),
 }
-PIVOTS = {"pivot": "pivot", "pivot_r1": "r1", "pivot_r2": "r2", "pivot_s1": "s1", "pivot_s2": "s2"}  # from the previous day
+PIVOTS = {"pivot": "pivot", "pivot_r1": "r1", "pivot_r2": "r2", "pivot_s1": "s1", "pivot_s2": "s2", "cpr_tc": "tc", "cpr_bc": "bc"}  # from the previous day
 
 # mirroring a long rule into a short one
 MIRROR = {"keltner_upper": "keltner_lower", "keltner_lower": "keltner_upper", "donchian_high": "donchian_low",
           "donchian_low": "donchian_high", "pivot_r1": "pivot_s1", "pivot_s1": "pivot_r1", "pivot_r2": "pivot_s2",
-          "pivot_s2": "pivot_r2"}
+          "pivot_s2": "pivot_r2", "cpr_tc": "cpr_bc", "cpr_bc": "cpr_tc"}
 REFLECT_100 = {"stoch_k", "stoch_d", "stoch_rsi_k", "stoch_rsi_d", "mfi", "ult_osc", "aroon_up", "aroon_down"}  # x -> 100 - x
 REFLECT_NEG = {"cci", "mom", "cmo", "ao", "trix", "aroon_osc", "supertrend_dir", "cmf", "obv", "ad_line"}  # x -> -x

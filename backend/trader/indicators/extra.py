@@ -37,6 +37,17 @@ class WMA:
         return self.value
 
 
+class WMAClose(_Base):
+    """WMA of the close, in the bar-fed shape the strategy interpreter calls (`wma` operand)."""
+
+    def __init__(self, period: int) -> None:
+        super().__init__("value")
+        self._w = WMA(period)
+
+    def update(self, o, h, l, c, v) -> None:  # noqa: ANN001, E741
+        self.values["value"] = self._w.update(c)
+
+
 class HMA(_Base):
     """Hull MA: WMA(2*WMA(n/2) - WMA(n), sqrt(n))."""
 
@@ -531,6 +542,10 @@ class PriceTransforms(_Base):
 
 
 def pivot_levels(high: float, low: float, close: float) -> dict[str, float]:
-    """Classic floor-trader pivots from the previous day's range."""
+    """Classic floor-trader pivots from the previous day's range, plus the central pivot range (CPR): the bottom and top
+    central pivots, ordered so `tc` >= `bc` as TradingView draws them."""
     p = (high + low + close) / 3
-    return {"pivot": p, "r1": 2 * p - low, "s1": 2 * p - high, "r2": p + (high - low), "s2": p - (high - low)}
+    bc = (high + low) / 2
+    tc = 2 * p - bc
+    return {"pivot": p, "r1": 2 * p - low, "s1": 2 * p - high, "r2": p + (high - low), "s2": p - (high - low),
+            "tc": max(tc, bc), "bc": min(tc, bc)}

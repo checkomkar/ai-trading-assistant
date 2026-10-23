@@ -78,6 +78,7 @@ class Trade:
     features: dict = field(default_factory=dict)
     pricing: str = ""  # "real" (stored option candles) or "modelled" (Black-Scholes); set for every option trade
     no_print_bars: int = 0  # bars held in which the option did not trade (real candles): stops could not fire there
+    checks: list = field(default_factory=list)  # [condition text, result] at the signal bar (spec strategies)
 
 
 @dataclass
@@ -318,7 +319,7 @@ class BacktestEngine:
             bars_held=p.bars, minutes_held=(exit_ts - p.entry_time).total_seconds() / 60,
             underlying_entry=round(p.underlying_entry, 2), underlying_exit=round(underlying_px, 2),
             features=p.signal.features, pricing="modelled" if p.contract.synthetic or self.pricer.mode == "synthetic" else "real",
-            no_print_bars=p.no_print_bars,
+            no_print_bars=p.no_print_bars, checks=[list(c) for c in p.signal.checks],
         )
 
     def _warnings(self, trades: list[Trade]) -> list[str]:

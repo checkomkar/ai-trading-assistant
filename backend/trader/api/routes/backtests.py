@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
@@ -8,10 +10,10 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from trader.api.deps import CurrentUser, MeterDep
+from trader.backtest import chart_series
 from trader.backtest import data as bt_data
-from trader.backtest.runner import BacktestRequest, run_and_store
+from trader.backtest.runner import WARMUP_DAYS, BacktestRequest, run_and_store
 from trader.db.models import BacktestRunRow, StrategyRow
-from trader.features import FeatureConfig, FeatureEngine
 from trader.instruments.calendar import IST
 from trader.market_data.resample import minutes
 
@@ -137,73 +139,94 @@ async def list_runs(request: Request, user: CurrentUser, limit: int = Query(20, 
              **{k: (r.summary or {}).get(k) for k in keys}} for r in rows]
 
 
-async def _equity_chart(s, row: BacktestRunRow, symbol: str | None, from_date: date | None, last_days: int | None) -> dict:
+async def _equity_chart(s, row: BacktestRunRow, symbol: str | None, from_date: date | None, last_days: int | None,
+                        extras: list | None = None) -> dict:
+    from trader.backtest.equity import BAR_MINUTES
     from trader.backtest.equity_runner import parse_spec
     from trader.instruments import equities as eq
     from trader.market_data import equity_daily
 
+    sp = (row.result.get("params") or {})["strategy"]
     traded = sorted({t["contract"] for t in row.result.get("trades", [])})
-    universe = eq.expand(parse_spec((row.result.get("params") or {})["strategy"]["spec"]).underlyings)
+    universe = eq.expand(parse_spec(sp["spec"]).underlyings)
     sym = symbol or (traded[0] if traded else universe[0])
     if sym not in universe:
         raise HTTPException(404, f"{sym} is not part of this run")
-    lo = from_date or row.start  # a stock chart shows the whole run: daily bars are few
-    cs = (await equity_daily.load_daily(s, [sym], eq.warmup_start(max(lo, row.start)), row.end)).get(sym, [])
-    fe = FeatureEngine(375, FeatureConfig())
-    bars, fast, slow = [], [], []
-    for b in cs:
-        f = fe.update(b)
-        if eq.day_of(b.ts) < lo:
-            continue
-        t = int(b.ts.timestamp())
-        bars.append([t, b.open, b.high, b.low, b.close])
-        if f["ema_fast"] is not None:
-            fast.append([t, round(f["ema_fast"], 2)])
-        if f["ema_slow"] is not None:
-            slow.append([t, round(f["ema_slow"], 2)])
-    return {"underlying": sym, "symbol": sym, "symbols": sorted(set(traded) | {sym}), "timeframe": "1d",
-            "data_source": "real", "bars": bars, "ema_fast": {"period": 9, "points": fast},
-            "ema_slow": {"period": 21, "points": slow}}
+    lo = max(from_date or row.start, row.start)  # a stock chart shows the whole run: daily bars are few
+    # Fed from the run's own warm-up start, like the engine, so indicator values are the ones it used.
+    cs = (await equity_daily.load_daily(s, [sym], eq.warmup_start(row.start), row.end)).get(sym, [])
+    try:
+        specs = chart_series.strategy_series(sp)
+    except ValueError:
+        specs = []
+    seen = {x.key for x in specs}
+    specs += [x for x in (extras or []) if x.key not in seen]
+    keep = next((b.ts for b in cs if eq.day_of(b.ts) >= lo), None)
+    # the stock's own volume plays the role futures volume has for indices, as in backtest/equity.py
+    values = chart_series.compute(cs, {b.ts: b for b in cs}, {}, specs, BAR_MINUTES, keep)
+    bars = [[int(b.ts.timestamp()), b.open, b.high, b.low, b.close] for b in cs if keep is not None and b.ts >= keep]
+    series = chart_series.describe(specs, values)
+    by_id = {x["id"]: x["points"] for x in series}
+    return {"underlying": sym, "symbol": sym, "symbols": sorted(set(traded) | {sym}), "timeframe": "1d", "run_timeframe": "1d",
+            "exact": True, "data_source": "real", "bars": bars, "series": series,
+            "ema_fast": {"period": 9, "points": by_id.get("ema|9||", [])}, "ema_slow": {"period": 21, "points": by_id.get("ema|21||", [])}}
 
 
 @router.get("/{run_id}/chart")
 async def chart(request: Request, run_id: str, user: CurrentUser, timeframe: str | None = None, from_date: date | None = None,
-                last_days: int | None = Query(None, ge=1, le=400), symbol: str | None = None) -> dict:
-    """Underlying candles for a run at any timeframe (built exactly from 1m) + the EMA overlays the strategy saw.
-    `from_date` / `last_days` trim the range, so 1m charts stay small."""
+                last_days: int | None = Query(None, ge=1, le=400), symbol: str | None = None,
+                extra: str | None = Query(None, max_length=600)) -> dict:
+    """Underlying candles for a run at any timeframe (built exactly from 1m) + indicator series (PRD §24.3 B2).
+
+    `series` holds every indicator the run's strategy referenced (source "strategy", with the constants it compared them
+    with as `thresholds`) and the indicators the viewer added (`extra` = "name:period:mult,..."; source "user"). On the
+    run's own timeframe they are computed from the run's first bar by the engine's own code, so they are exactly what
+    the strategy saw (`exact: true`). `from_date` / `last_days` trim the candles returned, so 1m charts stay small."""
+    try:
+        extras = chart_series.parse_extra(extra)
+    except ValueError as exc:
+        raise HTTPException(422, f"extra: {exc}") from None
     async with request.app.state.sessionmaker() as s:
         row = await s.get(BacktestRunRow, run_id)
         if row is None or row.owner != user.id:
             raise HTTPException(404, "backtest not found")
         if row.timeframe == "1d":  # a stock run: daily candles of one of its stocks
-            return await _equity_chart(s, row, symbol, from_date, last_days)
+            return await _equity_chart(s, row, symbol, from_date, last_days, extras)
         tf = timeframe or row.timeframe
         try:
             minutes(tf)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-        lo = from_date or row.start
+        lo = max(from_date or row.start, row.start)
         if last_days:
             lo = max(lo, row.end - timedelta(days=int(last_days * 1.5) + 2))  # calendar days ≈ 1.5x trading days
-        data = await bt_data.load(s, row.underlying, tf, max(lo, row.start), row.end, row.data_source)
+        exact = tf == row.timeframe
+        # Indicators need the bars before the window: from the run's own warm-up start on its timeframe (identical values),
+        # else a warm-up of the same length before the window.
+        feed_from = (row.start if exact else lo) - timedelta(days=WARMUP_DAYS)
+        data = await bt_data.load(s, row.underlying, tf, feed_from, row.end, row.data_source)
     sp = (row.result.get("params") or {}).get("strategy", {})
-    cfg = FeatureConfig(ema_fast=int(sp.get("ema_fast", 9)), ema_slow=int(sp.get("ema_slow", 21)))
-    fe = FeatureEngine(minutes(tf), cfg)
-    bars, fast, slow = [], [], []
-    for b in data.bars:
-        f = fe.update(b)
-        t = int(b.ts.timestamp())
-        bars.append([t, b.open, b.high, b.low, b.close])
-        if f["ema_fast"] is not None:
-            fast.append([t, round(f["ema_fast"], 2)])
-        if f["ema_slow"] is not None:
-            slow.append([t, round(f["ema_slow"], 2)])
+    try:
+        specs = chart_series.strategy_series(sp)
+    except ValueError:
+        specs = []  # a run stored by an older version whose spec no longer validates: candles only
+    seen = {x.key for x in specs}
+    specs += [x for x in extras if x.key not in seen]
+    window_from = datetime.combine(lo, datetime.min.time(), tzinfo=IST).astimezone(timezone.utc)
     if last_days:  # keep exactly the last N trading days
-        keep = set(data.trading_days[-last_days:])
-        bars = [b for b in bars if datetime.fromtimestamp(b[0], tz=timezone.utc).astimezone(IST).date().isoformat() in keep]
-    return {"underlying": row.underlying, "timeframe": tf, "data_source": data.source,
-            "bars": bars, "ema_fast": {"period": cfg.ema_fast, "points": fast},
-            "ema_slow": {"period": cfg.ema_slow, "points": slow}}
+        days = [d for d in data.trading_days if d >= lo.isoformat()][-last_days:]
+        if days:
+            window_from = max(window_from, datetime.combine(date.fromisoformat(days[0]), datetime.min.time(),
+                                                            tzinfo=IST).astimezone(timezone.utc))
+    values = await asyncio.to_thread(chart_series.compute, data.bars, data.futures, data.vix, specs, minutes(tf), window_from)
+    bars = [[int(b.ts.timestamp()), b.open, b.high, b.low, b.close] for b in data.bars if b.ts >= window_from]
+    series = chart_series.describe(specs, values)
+    by_name = {x["id"]: x["points"] for x in series}
+    ema9, ema21 = by_name.get("ema|9||"), by_name.get("ema|21||")
+    return {"underlying": row.underlying, "timeframe": tf, "run_timeframe": row.timeframe, "exact": exact,
+            "data_source": data.source, "bars": bars, "series": series,
+            # kept for older clients
+            "ema_fast": {"period": 9, "points": ema9 or []}, "ema_slow": {"period": 21, "points": ema21 or []}}
 
 
 @router.get("/{run_id}")

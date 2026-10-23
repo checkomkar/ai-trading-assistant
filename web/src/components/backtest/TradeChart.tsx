@@ -10,55 +10,38 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { getJSON, type BacktestTrade } from "../../api";
+import { getJSON, sendJSON, type BacktestTrade, type ChartSeries, type IndicatorInfo } from "../../api";
 import { fmtPrice } from "../../format";
-import { bollinger, ema, macd, rsi, sma, type Bar, type Pt } from "./indicators";
+import { IndicatorPicker, PALETTE, type AddedIndicator } from "./IndicatorPicker";
 
 // Lightweight Charts renders UTC; shift by +5:30 so the axis reads IST.
 const IST = 19_800;
 const sec = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 const T = (utcSec: number) => (utcSec + IST) as UTCTimestamp;
 
-const COLORS = { up: "#22c55e", down: "#f43f5e", emaFast: "#3987e5", emaSlow: "#d95926", sma: "#a78bfa", bb: "#64748b", rsi: "#eab308", macd: "#3987e5", signal: "#d95926" };
+const COLORS = { up: "#22c55e", down: "#f43f5e", emaFast: "#3987e5", emaSlow: "#d95926" };
+// Strategy indicators: the validated EMA colours first, then the shared palette.
+const STRATEGY_COLORS = ["#3987e5", "#d95926", "#eab308", "#a78bfa", "#14b8a6", "#ec4899", "#84cc16", "#f97316", "#06b6d4", "#64748b"];
 
 const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "60m"] as const;
 // Trading days of history requested per timeframe, so a 1m chart does not pull a year of minutes.
 const DAYS: Record<string, number> = { "1m": 8, "3m": 25, "5m": 60, "15m": 150, "30m": 250, "60m": 250, "1d": 400 };
 // Bars shown on first paint.
 const VISIBLE: Record<string, number> = { "1m": 375, "3m": 250, "5m": 230, "15m": 200, "30m": 150, "60m": 120, "1d": 160 };
+const PREF_KEY = "chart-indicators";
+const LOCAL_KEY = "trade-chart-indicators-v2";
+
+type Bar = [number, number, number, number, number];
 
 interface ChartData {
   underlying: string;
   timeframe: string;
+  run_timeframe?: string;
+  exact?: boolean;
   bars: Bar[];
+  series?: ChartSeries[];
   symbol?: string;
   symbols?: string[];
-}
-
-interface Settings {
-  emaA: { on: boolean; period: number };
-  emaB: { on: boolean; period: number };
-  sma: { on: boolean; period: number };
-  bb: { on: boolean; period: number };
-  rsi: { on: boolean; period: number };
-  macd: { on: boolean };
-}
-
-const DEFAULTS: Settings = {
-  emaA: { on: true, period: 9 },
-  emaB: { on: true, period: 21 },
-  sma: { on: false, period: 50 },
-  bb: { on: false, period: 20 },
-  rsi: { on: false, period: 14 },
-  macd: { on: false },
-};
-
-function loadSettings(): Settings {
-  try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("trade-chart-indicators") ?? "{}") };
-  } catch {
-    return DEFAULTS;
-  }
 }
 
 interface Hover {
@@ -80,6 +63,22 @@ function compact(v: number) {
 }
 
 const istDay = (t: number) => new Date((t + IST) * 1000).toISOString().slice(0, 10);
+const extraParam = (xs: AddedIndicator[]) => xs.map((x) => `${x.name}:${x.period ?? ""}:${x.mult ?? ""}`).join(",");
+
+function loadLocal(): AddedIndicator[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOCAL_KEY) ?? "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The series id the server gives an added indicator ("name|period|mult|"), to match its colour. */
+const sameIndicator = (s: ChartSeries, a: AddedIndicator) => {
+  const [n, p, m] = s.id.split("|");
+  return n === a.name && (p === "" ? a.period == null : Number(p) === a.period) && (m === "" || a.mult == null || Number(m) === a.mult);
+};
 
 export function TradeChart({
   runId,
@@ -108,16 +107,36 @@ export function TradeChart({
   const [data, setData] = useState<ChartData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
-  const [cfg, setCfg] = useState<Settings>(loadSettings);
-  const [menu, setMenu] = useState(false);
+  const [added, setAdded] = useState<AddedIndicator[]>(loadLocal);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [catalogue, setCatalogue] = useState<IndicatorInfo[] | null>(null);
+  const [picker, setPicker] = useState(false);
+  const prefsLoaded = useRef(false);
 
+  // The viewer's added indicators: per account on the server (falls back to this browser if that fails).
+  useEffect(() => {
+    getJSON<{ value: AddedIndicator[] | null }>(`/prefs/${PREF_KEY}`)
+      .then((r) => {
+        if (Array.isArray(r.value)) setAdded(r.value);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        prefsLoaded.current = true;
+      });
+  }, []);
   useEffect(() => {
     try {
-      localStorage.setItem("trade-chart-indicators", JSON.stringify(cfg));
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(added));
     } catch {
-      /* storage unavailable: settings just won't persist */
+      /* storage unavailable: settings just won't persist in this browser */
     }
-  }, [cfg]);
+    if (prefsLoaded.current) sendJSON("PUT", `/prefs/${PREF_KEY}`, { value: added }).catch(() => undefined);
+  }, [added]);
+
+  const openPicker = () => {
+    setPicker(true);
+    if (!catalogue) getJSON<IndicatorInfo[]>("/indicators").then(setCatalogue).catch((e: Error) => setError(e.message));
+  };
 
   // Index for hover lookups: bar time -> trades entering or exiting on that bar.
   const byBar = useMemo(() => {
@@ -130,6 +149,7 @@ export function TradeChart({
     return m;
   }, [trades]);
 
+  const extra = extraParam(added);
   useEffect(() => {
     let alive = true;
     setError(null);
@@ -138,13 +158,14 @@ export function TradeChart({
     if (daily && symbol) q.set("symbol", symbol);
     if (fromDate) q.set("from_date", fromDate);
     else if (!daily) q.set("last_days", String(DAYS[tf ?? "5m"] ?? 60));
+    if (extra) q.set("extra", extra);
     getJSON<ChartData>(`/backtests/${runId}/chart?${q}`)
       .then((d) => alive && setData(d))
       .catch((e: Error) => alive && setError(e.message));
     return () => {
       alive = false;
     };
-  }, [runId, tf, fromDate, symbol, daily]);
+  }, [runId, tf, fromDate, symbol, daily, extra]);
 
   // Picking a trade of another stock switches the chart to that stock.
   useEffect(() => {
@@ -162,6 +183,29 @@ export function TradeChart({
     const entry = sec(selected.entry_time);
     if (entry < data.bars[0][0]) setFromDate(istDay(entry - 4 * 86_400));
   }, [selected, data]);
+
+  // Colour per series: added indicators keep the colour picked for them; strategy ones get the validated EMA colours first.
+  const series = data?.series ?? [];
+  const colorOf = useMemo(() => {
+    const m = new Map<string, string>();
+    // The strategy's two shortest moving averages take the validated fast / slow EMA colours, the rest the palette.
+    const mas = series
+      .filter((s) => s.source === "strategy" && ["ema", "sma", "wma", "hma", "dema", "tema", "rma", "vwma"].includes(s.name))
+      .sort((a, b) => Number(a.id.split("|")[1]) - Number(b.id.split("|")[1]));
+    mas.slice(0, 2).forEach((s, i) => m.set(s.id, i === 0 ? COLORS.emaFast : COLORS.emaSlow));
+    const rest = STRATEGY_COLORS.filter((c) => c !== COLORS.emaFast && c !== COLORS.emaSlow);
+    let k = 0;
+    for (const s of series) {
+      if (m.has(s.id)) continue;
+      if (s.source === "user") {
+        const a = added.find((x) => sameIndicator(s, x));
+        m.set(s.id, a?.color ?? PALETTE[m.size % PALETTE.length]);
+      } else {
+        m.set(s.id, rest[k++ % rest.length]);
+      }
+    }
+    return m;
+  }, [series, added]);
 
   // Build the chart once per dataset; indicators and markers are layered on in the effects below.
   useEffect(() => {
@@ -210,60 +254,56 @@ export function TradeChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, byBar]);
 
-  // Indicators: overlays share the price scale; RSI / MACD get their own band at the bottom.
+  // Indicators, as the server computed them: "price" ones overlay the candles; every other pane (oscillators, futures,
+  // MACD, VIX, signals ...) gets its own band at the bottom, with the strategy's thresholds as dashed lines.
   useEffect(() => {
     const c = chart.current;
     if (!c || !data) return;
-    const added: ISeriesApi<"Line" | "Histogram">[] = [];
+    const shown = series.filter((s) => !hidden.has(s.id) && s.points.length);
+    const panes = [...new Set(shown.filter((s) => s.pane !== "price").map((s) => s.pane))];
+    const h = panes.length ? Math.min(0.22, 0.6 / panes.length) : 0;
+    const added_: ISeriesApi<"Line" | "Histogram">[] = [];
     const vals = new Map<string, Map<number, number>>();
-    const line = (name: string, color: string, pts: Pt[], opts: { scale?: string; width?: 1 | 2; dashed?: boolean } = {}) => {
-      const s = c.addLineSeries({
-        color, lineWidth: opts.width ?? 2, lineStyle: opts.dashed ? 2 : 0, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, priceScaleId: opts.scale, title: "",
+    for (const s of shown) {
+      const color = colorOf.get(s.id) ?? "#9aa7b8";
+      const scale = s.pane === "price" ? "right" : `pane:${s.pane}`;
+      const histogram = s.pane === "signals" || s.name === "macd_hist" || s.name === "volume";
+      let api: ISeriesApi<"Line" | "Histogram">;
+      if (histogram) {
+        const hs = c.addHistogramSeries({ priceScaleId: scale, priceLineVisible: false, lastValueVisible: false });
+        hs.setData(s.points.map(([t, v]) => ({ time: T(t), value: v, color: s.name === "macd_hist" ? (v >= 0 ? "#22c55e80" : "#f43f5e80") : `${color}aa` })));
+        api = hs;
+      } else {
+        const ls = c.addLineSeries({
+          color, lineWidth: s.source === "strategy" ? 2 : 1, priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false, priceScaleId: scale, title: "",
+        });
+        ls.setData(s.points.map(([t, v]) => ({ time: T(t), value: v })));
+        api = ls;
+      }
+      for (const th of s.thresholds) {
+        api.createPriceLine({ price: th, color: "#64748b", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "" });
+      }
+      added_.push(api);
+      vals.set(s.label, new Map(s.points));
+    }
+    // Scales exist only once a series uses them, so the bands are laid out after the series are added.
+    c.priceScale("right").applyOptions({ scaleMargins: { top: 0.05, bottom: 0.05 + h * panes.length } });
+    panes.forEach((p, i) => {
+      // pane i from the top of the indicator area: bands stack down to the bottom edge
+      const fromBottom = panes.length - 1 - i;
+      c.priceScale(`pane:${p}`).applyOptions({
+        scaleMargins: { top: 1 - h * (fromBottom + 1) + 0.015, bottom: h * fromBottom + 0.015 },
+        borderVisible: false,
       });
-      s.setData(pts.map(([t, v]) => ({ time: T(t), value: v })));
-      added.push(s);
-      vals.set(name, new Map(pts));
-      return s;
-    };
-    if (cfg.emaA.on) line(`EMA${cfg.emaA.period}`, COLORS.emaFast, ema(data.bars, cfg.emaA.period));
-    if (cfg.emaB.on) line(`EMA${cfg.emaB.period}`, COLORS.emaSlow, ema(data.bars, cfg.emaB.period));
-    if (cfg.sma.on) line(`SMA${cfg.sma.period}`, COLORS.sma, sma(data.bars, cfg.sma.period));
-    if (cfg.bb.on) {
-      const b = bollinger(data.bars, cfg.bb.period, 2);
-      line(`BB↑${cfg.bb.period}`, COLORS.bb, b.upper, { width: 1 });
-      line(`BB mid`, COLORS.bb, b.mid, { width: 1, dashed: true });
-      line(`BB↓${cfg.bb.period}`, COLORS.bb, b.lower, { width: 1 });
-    }
-    const subs = [cfg.rsi.on, cfg.macd.on].filter(Boolean).length;
-    const band = (i: number) => ({ top: 1 - 0.2 * (subs - i) + 0.02, bottom: 0.2 * (subs - i - 1) + 0.02 });
-    c.priceScale("right").applyOptions({ scaleMargins: { top: 0.05, bottom: 0.05 + 0.2 * subs } });
-    let slot = 0;
-    if (cfg.rsi.on) {
-      const m = band(slot++);
-      const s = line(`RSI${cfg.rsi.period}`, COLORS.rsi, rsi(data.bars, cfg.rsi.period), { scale: "rsi", width: 1 });
-      c.priceScale("rsi").applyOptions({ scaleMargins: m, borderVisible: false });
-      s.createPriceLine({ price: 70, color: "#475569", lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "" });
-      s.createPriceLine({ price: 30, color: "#475569", lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "" });
-    }
-    if (cfg.macd.on) {
-      const m = band(slot++);
-      const r = macd(data.bars);
-      const h = c.addHistogramSeries({ priceScaleId: "macd", priceLineVisible: false, lastValueVisible: false });
-      h.setData(r.hist.map(([t, v]) => ({ time: T(t), value: v, color: v >= 0 ? "#22c55e80" : "#f43f5e80" })));
-      added.push(h);
-      vals.set("MACD hist", new Map(r.hist));
-      line("MACD", COLORS.macd, r.macd, { scale: "macd", width: 1 });
-      line("MACD sig", COLORS.signal, r.signal, { scale: "macd", width: 1 });
-      c.priceScale("macd").applyOptions({ scaleMargins: m, borderVisible: false });
-    }
+    });
     values.current = vals;
     return () => {
       // When the dataset changed the chart itself is already disposed (its cleanup ran first), taking the series with it.
-      if (chart.current === c) for (const s of added) c.removeSeries(s);
+      if (chart.current === c) for (const s of added_) c.removeSeries(s);
       values.current = new Map();
     };
-  }, [data, cfg, byBar]);
+  }, [data, series, hidden, colorOf, byBar]);
 
   // Markers: all trades, labelled only for the selected one (labels on every trade are unreadable).
   useEffect(() => {
@@ -314,31 +354,19 @@ export function TradeChart({
   }, [selected, data]);
 
   const active = daily ? "1d" : (tf ?? data?.timeframe ?? "");
-  const toggle = <K extends keyof Settings>(k: K, patch: Partial<Settings[K]>) => setCfg((s) => ({ ...s, [k]: { ...s[k], ...patch } }));
   const pickTf = (x: string) => {
     setTf(x);
     setFromDate(null);
     setData(null);
   };
-
-  const row = (label: string, k: keyof Settings, period: boolean, color: string) => {
-    const s = cfg[k] as { on: boolean; period?: number };
-    return (
-      <label key={k} className="flex items-center gap-2 py-0.5">
-        <input type="checkbox" checked={s.on} onChange={(e) => toggle(k, { on: e.target.checked } as never)} />
-        <span className="h-0.5 w-3 rounded" style={{ background: color }} />
-        <span className="w-24 text-ink-200">{label}</span>
-        {period && (
-          <input
-            type="number" min={2} max={200} value={s.period}
-            onChange={(e) => toggle(k, { period: Math.min(200, Math.max(2, Number(e.target.value) || 2)) } as never)}
-            className="num w-14 rounded border border-ink-700 bg-ink-850 px-1 py-0.5 text-right text-ink-100"
-            aria-label={`${label} period`}
-          />
-        )}
-      </label>
-    );
-  };
+  const toggle = (id: string) =>
+    setHidden((h) => {
+      const n = new Set(h);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const removeAdded = (s: ChartSeries) => setAdded((xs) => xs.filter((x) => !sameIndicator(s, x)));
 
   return (
     <section className="rounded-lg border border-ink-800 bg-ink-900">
@@ -378,32 +406,39 @@ export function TradeChart({
               </button>
             ))}
           </div>
-          <div className="relative">
-            <button
-              onClick={() => setMenu((m) => !m)}
-              aria-expanded={menu}
-              className="rounded-md border border-ink-700 px-2 py-1 text-[11px] text-ink-200 hover:bg-ink-800"
-            >
-              Indicators ▾
-            </button>
-            {menu && (
-              <div className="absolute right-0 z-20 mt-1 w-60 rounded-md border border-ink-700 bg-ink-850 p-2 text-[11px] shadow-lg">
-                {row("EMA", "emaA", true, COLORS.emaFast)}
-                {row("EMA", "emaB", true, COLORS.emaSlow)}
-                {row("SMA", "sma", true, COLORS.sma)}
-                {row("Bollinger (2σ)", "bb", true, COLORS.bb)}
-                {row("RSI", "rsi", true, COLORS.rsi)}
-                {row("MACD (12,26,9)", "macd", false, COLORS.macd)}
-                <button onClick={() => setCfg(DEFAULTS)} className="mt-1 text-ink-400 hover:text-ink-100">Reset</button>
-              </div>
-            )}
-          </div>
+          <button
+            onClick={openPicker}
+            className="rounded-md border border-ink-700 px-2 py-1 text-[11px] text-ink-200 hover:bg-ink-800"
+          >
+            ƒ Indicators{added.length ? ` (${added.length})` : ""}
+          </button>
         </div>
         <ul className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-300" aria-label="Legend">
           <li className="flex items-center gap-1"><span style={{ color: COLORS.up }}>▲</span>{daily ? "Buy shares" : "Buy CE"}</li>
           {!daily && <li className="flex items-center gap-1"><span style={{ color: COLORS.down }}>▼</span>Buy PE</li>}
           <li className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: COLORS.up }} />/<span className="inline-block h-2 w-2 rounded-full" style={{ background: COLORS.down }} />Exit, profit / loss</li>
         </ul>
+        {series.length > 0 && (
+          <ul className="flex w-full flex-wrap items-center gap-1.5 pb-0.5 text-[11px]" aria-label="Indicators on the chart">
+            {series.map((s) => (
+              <li key={s.id} className={`flex items-center gap-1 rounded border px-1.5 py-0.5 ${hidden.has(s.id) ? "border-ink-800 text-ink-500" : "border-ink-700 text-ink-200"}`}>
+                <button onClick={() => toggle(s.id)} className="flex items-center gap-1" aria-pressed={!hidden.has(s.id)} title={hidden.has(s.id) ? "Show" : "Hide"}>
+                  <span className="inline-block h-0.5 w-3 rounded" style={{ background: colorOf.get(s.id) }} />
+                  {s.label}
+                  {s.source === "strategy" && <span className="text-[10px] text-ink-500">strategy</span>}
+                </button>
+                {s.source === "user" && (
+                  <button onClick={() => removeAdded(s)} className="text-ink-500 hover:text-down" aria-label={`Remove ${s.label}`}>✕</button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {data && data.exact === false && series.some((s) => s.source === "strategy") && (
+          <p className="w-full text-[11px] text-amber-300/90">
+            Strategy indicators are drawn on {data.timeframe} candles; the strategy itself ran on {data.run_timeframe}. Switch back to {data.run_timeframe} to see the exact values it used.
+          </p>
+        )}
       </div>
 
       <div className="num flex min-h-[20px] flex-wrap gap-x-3 px-3 pt-1 text-[11px] text-ink-400">
@@ -432,15 +467,35 @@ export function TradeChart({
         ) : null}
       </div>
 
-      <div className="relative h-[480px]">
+      <div className="relative h-[520px]">
         <div ref={box} className="absolute inset-0" />
         {!data && !error && <div className="absolute inset-0 grid place-items-center text-xs text-ink-400">Loading candles…</div>}
         {error && <div className="absolute inset-0 grid place-items-center text-xs text-down">{error}</div>}
       </div>
       {selected && (
-        <div className="flex justify-end px-3 pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pb-2">
+          {selected.checks?.length ? (
+            <div className="text-[11px]">
+              <p className="mb-0.5 text-ink-400">At the signal bar ({new Date(selected.signal_time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false })}):</p>
+              <ul className="space-y-0.5" aria-label="Entry conditions">
+                {selected.checks.map(([text, ok], i) => (
+                  <li key={i} className={ok ? "text-ink-200" : ok === false ? "text-down" : "text-ink-500"}>
+                    <span aria-hidden="true">{ok ? "✓" : ok === false ? "✗" : "?"}</span> {text}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : <span />}
           <button onClick={() => onSelect(null)} className="text-[11px] text-ink-400 hover:text-ink-100">Clear selection</button>
         </div>
+      )}
+      {picker && (
+        <IndicatorPicker
+          catalogue={catalogue ?? []}
+          added={added}
+          onChange={setAdded}
+          onClose={() => setPicker(false)}
+        />
       )}
     </section>
   );

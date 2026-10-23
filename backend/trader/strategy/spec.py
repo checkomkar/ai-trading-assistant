@@ -364,7 +364,7 @@ def semantic_errors(spec: StrategySpec) -> list[str]:
 
 TF_BLOCKED = {  # operands that exist only for the strategy's own bars (session or daily context), not for built candles
     "or_high", "or_low", "prev_day_high", "prev_day_low", "prev_day_close", "fut_close", "vwap", "vix", "daily_ema", "daily_sma",
-    "daily_rsi", "pivot", "pivot_r1", "pivot_r2", "pivot_s1", "pivot_s2",
+    "daily_rsi", "pivot", "pivot_r1", "pivot_r2", "pivot_s1", "pivot_s2", "cpr_tc", "cpr_bc",
 }
 
 

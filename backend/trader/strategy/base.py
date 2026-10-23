@@ -38,6 +38,8 @@ class Signal:
     strategy: str
     features: dict = field(default_factory=dict)  # snapshot for the audit trail (PRD §2.3)
     risk_pct: float | None = None  # size the trade so the stop loses this % of capital (None = the fixed lots)
+    # (condition in English, True/False/None) for each entry condition and filter at the signal bar, for the chart
+    checks: tuple = ()
 
 
 @dataclass(frozen=True)
