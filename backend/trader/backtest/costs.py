@@ -58,7 +58,11 @@ class CostModel:
 
     def schedule_for(self, d: date) -> CostSchedule:
         applicable = [s for s in self.schedules if s.effective_from <= d]
-        return applicable[-1] if applicable else self.schedules[0]
+        if not applicable:
+            # Never price an old trade with a later schedule (STT alone changed three times since 2019).
+            raise ValueError(f"no cost schedule covers {d}: the earliest in costs.yaml starts "
+                             f"{self.schedules[0].effective_from}; add an older version")
+        return applicable[-1]
 
     def order_charges(self, trade_date: date, premium: float, quantity: int, side: str) -> Charges:
         """Charges for one executed option order. `side` is "BUY" or "SELL"; quantity in units (lots x lot size)."""

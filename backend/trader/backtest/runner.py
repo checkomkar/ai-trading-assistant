@@ -16,6 +16,7 @@ from trader.backtest.metrics import compute_metrics
 from trader.backtest.pricing import ExecutionModel, HybridPricer, RealPricer, SyntheticPricer
 from trader.db.models import BacktestRunRow
 from trader.instruments.calendar import IST, get_calendar
+from trader.instruments.contract_history import default_expiry_overrides
 from trader.market_data.resample import minutes
 from trader.strategy import MomentumParams, MomentumStrategy, Strategy
 from trader.strategy.rule_strategy import RuleStrategy
@@ -99,15 +100,18 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
     """Pure, synchronous part (CPU-bound): safe to run in a worker thread."""
     strategy, eng_cfg, roll, strat_report, uses_vwap = build_strategy(req)
     cal = get_calendar()
+    ovr = default_expiry_overrides()  # expiry dates corrected by the expired-option downloader's probing
     if req.pricing == "real":
-        pricer = RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll)
+        pricer = RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll, expiry_overrides=ovr)
     elif req.pricing == "synthetic":
-        pricer = SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll)
+        pricer = SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll, expiry_overrides=ovr)
     elif req.pricing == "hybrid":
-        pricer = HybridPricer(RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll),
-                              SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll))
+        pricer = HybridPricer(RealPricer(data.options, data.option_lot_sizes, cal, roll_on_expiry_day=roll, expiry_overrides=ovr),
+                              SyntheticPricer(cal, req.risk_free_rate, roll_on_expiry_day=roll, expiry_overrides=ovr))
     else:
         raise ValueError(f"Unknown pricing mode {req.pricing}")
+    coverage = (bt_data.option_coverage(data, req.underlying, req.start, cal, roll, ovr)
+                if req.pricing in ("real", "hybrid") else None)
     tf_min = minutes(req.timeframe)
     engine = BacktestEngine(req.underlying, strategy, pricer, default_cost_model(),
                             tf_min, eng_cfg, ExecutionModel(**req.execution_params))
@@ -119,6 +123,12 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
     if data.built_from and data.built_from != req.timeframe:
         warnings.append(f"{req.timeframe} candles were built from stored {data.built_from} candles "
                         "(exact OHLCV aggregation, anchored to the 09:15 open).")
+    if coverage and coverage["pct"] is not None and coverage["pct"] < 95:
+        warnings.insert(0, f"Only {coverage['pct']}% of the at-the-money contracts this period could trade are stored "
+                           f"({coverage['stored_contracts']} of {coverage['expected_contracts']}; "
+                           f"{coverage['expiries_without_any_contract']} of {coverage['expiries']} expiries have none). "
+                           + ("Entries without stored data were skipped." if req.pricing == "real"
+                              else "Those trades use modelled prices."))
     if not data.futures and uses_vwap:
         warnings.append("No futures candles in range: the VWAP condition blocked every setup. "
                         "Backfill futures or set use_vwap=false.")
@@ -131,6 +141,7 @@ def execute(req: BacktestRequest, data: bt_data.BacktestData) -> dict:
         "signals": result.signals,
         "no_trade_reasons": result.no_trade_reasons,
         "skipped_entries": result.skipped_entries,
+        "option_coverage": coverage,
         "warnings": warnings,
         "metrics": metrics,
         "trades": [t.__dict__ for t in result.trades],

@@ -61,7 +61,7 @@ class LinearPricer:
 
 
 FREE = CostModel([CostSchedule(date(2000, 1, 1), 0, 0, 0, 0, 0, 0, 0, 0)])
-NO_FRICTION = ExecutionModel(spread_pct=0.0, slippage_ticks=0, tick=0.05)
+NO_FRICTION = ExecutionModel(spread_pct=0.0, slippage_ticks=0, tick=0.05, stop_slippage_range_pct=0.0)
 
 
 def engine(strategy, **cfg):

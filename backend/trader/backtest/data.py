@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trader.db.models import CandleRow, InstrumentRow
-from trader.instruments.calendar import IST
+from trader.instruments.calendar import IST, TradingCalendar, get_calendar
 from trader.instruments.specs import VIX_SYMBOL
 from trader.instruments.strikes import OptionType
 from trader.market_data.candles import Candle
@@ -170,8 +170,13 @@ async def load(s: AsyncSession, underlying: str, timeframe: str, start: date, en
                                         *[getattr(InstrumentRow, k) == v for k, v in where.items()])
         return list((await s.execute(q)).scalars().all())
 
+    holidays = set(get_calendar().holidays)
+
     def up(cs: list[Candle]) -> list[Candle]:
-        cs = sorted({c.ts: c for c in cs if in_session(c.ts)}.values(), key=lambda c: c.ts)
+        # Exchange holidays can still carry a short special session (Diwali Muhurat trading, e.g. 13:45-14:45 on
+        # 21 Oct 2025): those candles are not a normal trading day and are left out of backtests.
+        cs = sorted({c.ts: c for c in cs if in_session(c.ts) and c.ts.astimezone(IST).date() not in holidays}.values(),
+                    key=lambda c: c.ts)
         return resample(cs, timeframe, src_tf) if src_tf != timeframe else cs
 
     idx = await instruments(symbol=underlying, instrument_type="INDEX")
@@ -201,3 +206,30 @@ async def load(s: AsyncSession, underlying: str, timeframe: str, start: date, en
             data.options[key] = {c.ts: c for c in up(cs)}
             data.option_lot_sizes[key] = inst.lot_size
     return data
+
+
+def option_coverage(data: BacktestData, underlying: str, start: date, cal: TradingCalendar, roll_on_expiry_day: bool = True,
+                    overrides: dict | None = None) -> dict:
+    """How much of what a strategy could trade is stored (PRD §24.2 B1.8): for every bar from `start`, the contract
+    at the money at that bar's open on the expiry the calendar gives, both CE and PE. Reported before a Real or
+    hybrid run is trusted, so a 20% coverage run is not read as a market result."""
+    from trader.backtest.pricing import expiry_for
+    from trader.instruments.strikes import atm_strike
+
+    needed: set[tuple[date, float, OptionType]] = set()
+    by_day: dict[date, date] = {}
+    for b in data.bars:
+        d = b.ts.astimezone(IST).date()
+        if d < start:
+            continue
+        e = by_day.get(d) or by_day.setdefault(d, expiry_for(underlying, d, cal, roll_on_expiry_day, overrides))
+        k = float(atm_strike(underlying, b.open))
+        needed.update({(e, k, OptionType.CE), (e, k, OptionType.PE)})
+    have = sum(1 for k in needed if k in data.options)
+    exps = sorted({k[0] for k in needed})
+    missing_exps = [e for e in exps if not any(k[0] == e for k in data.options)]
+    return {"expected_contracts": len(needed), "stored_contracts": have,
+            "pct": round(100 * have / len(needed), 1) if needed else None,
+            "expiries": len(exps), "expiries_without_any_contract": len(missing_exps),
+            "missing_expiries_sample": [e.isoformat() for e in missing_exps[:5]]}
+

@@ -1,0 +1,21 @@
+# Historical index-option lot sizes (PRD §24.2 B1.5).
+#
+# Today's lot size comes from the broker symbol master. Contracts downloaded from Fyers' expired-contract API
+# carry no lot size, and synthetic backtests of earlier years need the size in force then. Each row applies to
+# contracts EXPIRING on or after `from` (NSE changes lot sizes from a named expiry series onwards).
+#
+# `verified: false` rows are best-effort from memory of the NSE circulars and MUST be checked against the
+# circulars (nseindia.com > Resources > Exchange Communication > Circulars, search "revision in market lot")
+# before trusting rupee P&L for those years. Reports name every unverified size they used.
+NIFTY:
+  - {from: 2015-10-29, lot: 75, verified: false}
+  - {from: 2021-07-29, lot: 50, verified: false}
+  - {from: 2024-04-25, lot: 25, verified: false}
+  - {from: 2024-12-26, lot: 75, verified: false}
+  - {from: 2025-12-30, lot: 65, verified: false}
+BANKNIFTY:
+  - {from: 2018-10-25, lot: 25, verified: false}
+  - {from: 2023-07-27, lot: 15, verified: false}
+  - {from: 2024-12-24, lot: 30, verified: false}
+  - {from: 2025-04-24, lot: 35, verified: false}
+  - {from: 2025-12-30, lot: 30, verified: false}

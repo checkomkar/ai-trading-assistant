@@ -5,6 +5,42 @@
 # Source: Fyers charges list (fyers.in/charges-list), checked 2026-10-20.
 # Verify against a real contract note before trusting P&L to the rupee (M3 DoD).
 versions:
+  # Older versions for multi-year backtests (PRD §24.2 B1.6). The STT and stamp-duty steps are statutory; the
+  # pre-Oct-2024 NSE transaction charge (0.053%) and SEBI fee are approximations that change P&L by paise per
+  # lot: confirm against an old contract note if one is available.
+  - effective_from: 2019-01-01
+    note: "STT on option sell premium 0.05%; stamp duty state-wise before Jul 2020 (approximated 0.002%); NSE txn ~0.053% (approx.)"
+    brokerage_per_order: 20.0
+    stt_sell_pct: 0.05
+    exchange_txn_pct: 0.053
+    clearing_pct: 0.0
+    sebi_per_crore: 10.0
+    ipft_per_crore: 0.01
+    stamp_buy_pct: 0.002
+    gst_pct: 18.0
+
+  - effective_from: 2020-07-01
+    note: "Uniform stamp duty 0.003% on buys (Indian Stamp Act amendment)"
+    brokerage_per_order: 20.0
+    stt_sell_pct: 0.05
+    exchange_txn_pct: 0.053
+    clearing_pct: 0.0
+    sebi_per_crore: 10.0
+    ipft_per_crore: 0.01
+    stamp_buy_pct: 0.003
+    gst_pct: 18.0
+
+  - effective_from: 2023-04-01
+    note: "STT on option sell premium 0.0625% (Finance Act 2023)"
+    brokerage_per_order: 20.0
+    stt_sell_pct: 0.0625
+    exchange_txn_pct: 0.053
+    clearing_pct: 0.0
+    sebi_per_crore: 10.0
+    ipft_per_crore: 0.01
+    stamp_buy_pct: 0.003
+    gst_pct: 18.0
+
   - effective_from: 2024-10-01
     note: "STT on option sell premium 0.1% (Finance Act 2024)"
     brokerage_per_order: 20.0

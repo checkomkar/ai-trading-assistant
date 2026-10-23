@@ -77,6 +77,7 @@ class Trade:
     underlying_exit: float
     features: dict = field(default_factory=dict)
     pricing: str = ""  # "real" (stored option candles) or "modelled" (Black-Scholes); set for every option trade
+    no_print_bars: int = 0  # bars held in which the option did not trade (real candles): stops could not fire there
 
 
 @dataclass
@@ -95,6 +96,7 @@ class _Position:
     initial_stop: float
     last_mid: float
     bars: int = 0
+    no_print_bars: int = 0
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 
@@ -235,6 +237,9 @@ class BacktestEngine:
         if pb is None:
             skipped["no option print at entry bar"] += 1
             return None
+        if pb.volume is not None and pb.volume < self.exe.min_entry_lots * c.lot_size:
+            skipped["illiquid entry bar"] += 1  # real candles: too little traded to assume a fill
+            return None
         mid = pb.open
         paid = self.exe.buy(mid)
         lots = self.cfg.lots
@@ -253,7 +258,10 @@ class BacktestEngine:
         local_t = bar.ts.astimezone(IST).time()
         end = bar.ts + self.tf
         if pb is None:
-            # No print this bar (real data): we can only exit at EOD, at the last traded premium.
+            # No print this bar (real data): nothing can fill. The position is carried to the next bar that trades,
+            # where a gap through the stop fills at that bar's open; on the last bar of the day it exits at the last
+            # traded premium.
+            p.no_print_bars += 1
             if last_bar_of_day or local_t >= self.cfg.eod_exit:
                 return self._close(p, bar.ts, end, p.last_mid, "eod (no print)", bar.close)
             return None
@@ -271,7 +279,7 @@ class BacktestEngine:
         p.low_water = min(p.low_water, pb.low)
         if pb.low <= p.stop:  # also when the target was touched too: assume the worse outcome
             reason = "trailing stop" if p.stop > p.initial_stop + 1e-9 else "stop"
-            return self._close(p, bar.ts, end, p.stop, reason, bar.close)
+            return self._close(p, bar.ts, end, self.exe.stop_fill(p.stop, pb.high, pb.low), reason, bar.close)
         if pb.high >= p.target:
             p.high_water = max(p.high_water, pb.high)
             return self._close(p, bar.ts, end, p.target, "target", bar.close)
@@ -310,6 +318,7 @@ class BacktestEngine:
             bars_held=p.bars, minutes_held=(exit_ts - p.entry_time).total_seconds() / 60,
             underlying_entry=round(p.underlying_entry, 2), underlying_exit=round(underlying_px, 2),
             features=p.signal.features, pricing="modelled" if p.contract.synthetic or self.pricer.mode == "synthetic" else "real",
+            no_print_bars=p.no_print_bars,
         )
 
     def _warnings(self, trades: list[Trade]) -> list[str]:
@@ -336,6 +345,20 @@ class BacktestEngine:
         if missing_c:
             w.append(f"{len(missing_c)} signals had no stored option data and were skipped. Choose \"Real where stored, else modelled\" "
                      "to trade those with modelled prices instead (each trade is labelled with the source it used).")
+        lots = getattr(self.pricer, "unverified_lots", set())
+        if lots:
+            w.append("Lot sizes from config/lot_sizes.yaml not yet checked against the NSE circulars were used for older "
+                     "contracts: " + ", ".join(f"{u} {n}" for u, n in sorted(lots)) + ". Rupee P&L for those trades "
+                     "scales with the lot size.")
+        gone = getattr(self.pricer, "missing_expiries", set()) if self.pricer.mode == "real" else set()
+        if gone:
+            w.append(f"{len(gone)} expiries had no stored contracts at all (e.g. {', '.join(str(d) for d in sorted(gone)[:3])}); "
+                     "entries on those days were skipped rather than moved to a later expiry. Download them with "
+                     "fetch_expired_bulk / fetch_prime_history.")
+        held = [t for t in trades if t.no_print_bars]
+        if held:
+            w.append(f"{len(held)} trades held bars in which the option did not trade (at most "
+                     f"{max(t.no_print_bars for t in held)} in a row); stops could not fire there.")
         if not trades:
             w.append("No trades were taken in this period.")
         return w

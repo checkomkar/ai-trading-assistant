@@ -23,13 +23,20 @@ from trader.market_data.candles import Candle
 from trader.options import black_scholes as bs
 
 
-# NSE expiry conventions over time: (effective_from, cycle, weekday Mon=0). Used to pick the
-# contract a strategy would have traded on a historical date. Pre-2025 rows: verify before
-# relying on synthetic results for those years.
+# NSE expiry conventions over time: (effective_from, cycle, weekday Mon=0). A rule applies to *trading days* from
+# `effective_from`, so each date is the day after the last expiry under the previous rule. Used to pick the contract a
+# strategy would have traded on a historical date. Rows before VERIFIED_RULES_FROM are from memory of the NSE circulars;
+# the expired-option downloader checks them against what Fyers lists and records corrections in
+# data/fyers/expiry_map.json, which expiry_for() applies (`overrides`). Known simplification: Sep 2023 - Feb 2024 the
+# BANKNIFTY monthly contract expired on the last Thursday while weeklies were on Wednesdays.
 EXPIRY_RULES: dict[str, list[tuple[date, ExpiryCycle, int]]] = {
-    "NIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3), (date(2025, 9, 1), ExpiryCycle.WEEKLY, 1)],
-    "BANKNIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3), (date(2023, 9, 4), ExpiryCycle.WEEKLY, 2),
-                  (date(2024, 11, 20), ExpiryCycle.MONTHLY, 3), (date(2025, 9, 1), ExpiryCycle.MONTHLY, 1)],
+    "NIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3),      # Thursday weeklies
+              (date(2025, 8, 29), ExpiryCycle.WEEKLY, 1)],    # Tuesday from 2 Sep 2025
+    "BANKNIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3),   # Thursday weeklies
+                  (date(2023, 9, 1), ExpiryCycle.WEEKLY, 2),   # Wednesday weeklies from 6 Sep 2023
+                  (date(2024, 11, 14), ExpiryCycle.MONTHLY, 2),  # weeklies end after 13 Nov 2024; monthly, last Wednesday
+                  (date(2024, 12, 25), ExpiryCycle.MONTHLY, 3),  # monthly, last Thursday from Jan 2025
+                  (date(2025, 8, 29), ExpiryCycle.MONTHLY, 1)],  # monthly, last Tuesday from Sep 2025
 }
 VERIFIED_RULES_FROM = date(2025, 9, 1)
 
@@ -45,8 +52,13 @@ def _last_weekday(y: int, m: int, wd: int) -> date:
     return last - timedelta(days=(last.weekday() - wd) % 7)
 
 
-def expiry_for(underlying: str, day: date, cal: TradingCalendar, roll_on_expiry_day: bool = True) -> date:
-    """Nearest expiry on/after `day` under the rules in force then (holidays roll back a day)."""
+def expiry_for(underlying: str, day: date, cal: TradingCalendar, roll_on_expiry_day: bool = True,
+               overrides: "dict[tuple[str, date], date | None] | None" = None) -> date:
+    """Nearest expiry on/after `day` under the rules in force then (holidays roll back a day).
+
+    `overrides` maps a rule-derived expiry to the date the exchange really used (from the expired-option
+    downloader's probing, `contract_history.load_expiry_overrides`); a None value means no contract existed
+    that week, so that candidate is dropped."""
     cycle, wd = _rule(underlying, day)
     candidates: list[date] = []
     if cycle == ExpiryCycle.WEEKLY:
@@ -59,8 +71,31 @@ def expiry_for(underlying: str, day: date, cal: TradingCalendar, roll_on_expiry_
         for _ in range(3):
             candidates.append(cal.roll_back_to_trading_day(_last_weekday(y, m, wd)))
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    if overrides:
+        mapped = [overrides.get((underlying, c), c) for c in candidates]
+        candidates = [c for c in mapped if c is not None]
     live = sorted(c for c in candidates if c > day or (c == day and not roll_on_expiry_day))
     return live[0]
+
+
+def lot_size_for(underlying: str, expiry: date, fallback: int | None = None) -> tuple[int, bool]:
+    """(lot size, verified) for a contract expiring on `expiry`.
+
+    The broker's symbol master is the source for live contracts (`fallback`, trusted). The dated table is used
+    for expiries before its newest row: contracts from earlier lot-size regimes, which the broker no longer lists
+    and the expired-contract download does not describe."""
+    from trader.instruments.contract_history import lot_size_table
+
+    table = lot_size_table()
+    rows = table.rows.get(underlying.upper(), [])
+    row = table.on(underlying, expiry)
+    if row is not None and rows and expiry < rows[-1].since:
+        return row.lot, row.verified
+    if fallback:
+        return fallback, True
+    if row is not None:
+        return row.lot, row.verified
+    return get_spec(underlying).lot_size, False
 
 
 @dataclass(frozen=True)
@@ -92,6 +127,15 @@ class ExecutionModel:
     spread_pct: float = 0.30  # full bid-ask spread as % of premium (ATM index options are tight)
     slippage_ticks: int = 1
     tick: float = 0.05
+    # A stop is a market order once touched: in a fast bar it fills below the level. The fill is moved this share
+    # of the bar's premium range below the stop (never below the bar's low), on top of spread and tick slippage.
+    stop_slippage_range_pct: float = 10.0
+    # Real option candles: the entry bar must have traded at least this many lots, or the entry is skipped.
+    min_entry_lots: float = 1.0
+
+    def stop_fill(self, stop: float, bar_high: float, bar_low: float) -> float:
+        """Mid-price level an intrabar stop fills at (before the spread and tick slippage of `sell`)."""
+        return max(bar_low, stop - (bar_high - bar_low) * self.stop_slippage_range_pct / 100)
 
     def half_spread(self, mid: float) -> float:
         return max(self.tick / 2, mid * self.spread_pct / 200)
@@ -111,21 +155,28 @@ class SyntheticPricer:
     mode = "synthetic"
 
     def __init__(self, cal: TradingCalendar, risk_free_rate: float = 0.065, iv_multiplier: dict | None = None,
-                 default_iv: float = 0.14, roll_on_expiry_day: bool = True) -> None:
+                 default_iv: float = 0.14, roll_on_expiry_day: bool = True,
+                 expiry_overrides: dict | None = None) -> None:
         self.cal, self.r = cal, risk_free_rate
         self.iv_mult = iv_multiplier or {"NIFTY": 1.0, "BANKNIFTY": 1.15}
         self.default_iv = default_iv
         self.roll = roll_on_expiry_day
+        self.overrides = expiry_overrides or {}
+        self._confirmed = {(u, v) for (u, _), v in self.overrides.items() if v is not None}
         self.missing_vix_bars = 0
         self.unverified_expiry_dates: set[date] = set()
+        self.unverified_lots: set[tuple[str, int]] = set()
 
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
                  lot_size: int | None = None) -> Contract | None:
-        if day < VERIFIED_RULES_FROM:
+        exp = expiry_for(underlying, day, self.cal, self.roll, self.overrides)
+        if day < VERIFIED_RULES_FROM and (underlying, exp) not in self._confirmed:
             self.unverified_expiry_dates.add(day)
-        spec = get_spec(underlying)
-        return Contract(underlying, expiry_for(underlying, day, self.cal, self.roll),
-                        float(atm_strike(underlying, spot)), option_type, lot_size or spec.lot_size)
+        if lot_size is None:
+            lot_size, ok = lot_size_for(underlying, exp, get_spec(underlying).lot_size)
+            if not ok:
+                self.unverified_lots.add((underlying, lot_size))
+        return Contract(underlying, exp, float(atm_strike(underlying, spot)), option_type, lot_size)
 
     def iv(self, underlying: str, vix: float | None) -> float:
         if vix is None or vix <= 0:
@@ -163,6 +214,14 @@ class HybridPricer:
     def missing_vix_bars(self) -> int:
         return self.synthetic.missing_vix_bars
 
+    @property
+    def unverified_lots(self) -> set[tuple[str, int]]:
+        return self.real.unverified_lots | self.synthetic.unverified_lots
+
+    @property
+    def unverified_expiry_dates(self) -> set[date]:
+        return self.synthetic.unverified_expiry_dates
+
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
                  lot_size: int | None = None) -> Contract | None:
         real = self.real.contract(underlying, option_type, spot, day, lot_size)
@@ -186,25 +245,31 @@ class RealPricer:
 
     def __init__(self, candles: dict[tuple[date, float, OptionType], dict[datetime, Candle]],
                  lot_sizes: dict[tuple[date, float, OptionType], int], cal: TradingCalendar,
-                 roll_on_expiry_day: bool = True) -> None:
+                 roll_on_expiry_day: bool = True, expiry_overrides: dict | None = None) -> None:
         self.candles, self.lot_sizes, self.cal, self.roll = candles, lot_sizes, cal, roll_on_expiry_day
+        self.overrides = expiry_overrides or {}
         self.missing_contracts: set[str] = set()
-        self._expiries = sorted({k[0] for k in candles})
+        self.missing_expiries: set[date] = set()  # the true expiry had no stored contracts at all
+        self.unverified_lots: set[tuple[str, int]] = set()
+        self._expiries = {k[0] for k in candles}
 
     def contract(self, underlying: str, option_type: OptionType, spot: float, day: date,
                  lot_size: int | None = None) -> Contract | None:
-        live = [e for e in self._expiries if e > day or (e == day and not self.roll)]
-        if not live:
-            self.missing_contracts.add(f"{underlying} {day} no expiry with data")
-            return None
-        exp = live[0]
+        # The contract a trader would have bought is fixed by the exchange calendar, never by which contracts happen
+        # to be stored: if the true expiry is missing, the entry is skipped rather than moved to a later expiry.
+        exp = expiry_for(underlying, day, self.cal, self.roll, self.overrides)
         strike = float(atm_strike(underlying, spot))
         key = (exp, strike, option_type)
         if key not in self.candles:
+            if exp not in self._expiries:
+                self.missing_expiries.add(exp)
             self.missing_contracts.add(f"{underlying} {exp} {strike:g} {option_type.value}")
             return None
-        return Contract(underlying, exp, strike, option_type, self.lot_sizes.get(key) or lot_size
-                        or get_spec(underlying).lot_size)
+        if lot_size is None:
+            lot_size, ok = lot_size_for(underlying, exp, self.lot_sizes.get(key))
+            if not ok:
+                self.unverified_lots.add((underlying, lot_size))
+        return Contract(underlying, exp, strike, option_type, lot_size)
 
     def bar(self, c: Contract, u: Candle, tf: timedelta, vix: float | None) -> PremiumBar | None:
         k = self.candles.get((c.expiry, c.strike, c.option_type), {}).get(u.ts)
