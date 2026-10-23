@@ -25,7 +25,8 @@ class BrokerSpec:
     status: str  # available | planned
     data_note: str
     docs_url: str
-    daily_login: bool = False  # the access token expires daily and the customer signs in again (Fyers)
+    daily_login: bool = False  # the access token expires daily and the customer signs in again
+    login_kind: str = "oauth"  # oauth: the broker's own sign-in page (Fyers); password: password + 2FA code typed in the app (Shoonya)
 
 
 CATALOG: dict[str, BrokerSpec] = {b.id: b for b in (
@@ -38,9 +39,14 @@ CATALOG: dict[str, BrokerSpec] = {b.id: b for b in (
                "planned", "SmartAPI data is free.", "https://smartapi.angelbroking.com/docs"),
     BrokerSpec("dhan", "Dhan", (Field_("client_id", "Client ID", False), Field_("access_token", "Access token")),
                "planned", "Data API is a paid add-on (about ₹499 / month).", "https://dhanhq.co/docs/v2/"),
+    BrokerSpec("flattrade", "Flattrade", (Field_("api_key", "API key", False), Field_("api_secret", "API secret")),
+               "available", "Free API with live data. Each day you sign in on Flattrade's own page; we never see your password.",
+               "https://pi.flattrade.in/docs", daily_login=True),
     BrokerSpec("zerodha", "Zerodha (Kite Connect)", (Field_("api_key", "API key", False), Field_("api_secret", "API secret")),
                "planned", "Live and historical data need the paid Connect plan (about ₹500 / month).", "https://kite.trade/docs/connect/v3/"),
-    BrokerSpec("shoonya", "Shoonya (Finvasia)", (Field_("user_id", "User ID", False), Field_("api_key", "API key"),
-                                                 Field_("vendor_code", "Vendor code", False), Field_("totp_secret", "TOTP secret")),
-               "planned", "Free API (confirm with Shoonya).", "https://github.com/Shoonya-Dev/ShoonyaApi-py"),
+    BrokerSpec("shoonya", "Shoonya (Finvasia)", (Field_("user_id", "User ID (e.g. FA12345)", False), Field_("api_key", "API key (secret code)"),
+                                                 Field_("vendor_code", "Vendor code (e.g. FA12345_U)", False),
+                                                 Field_("imei", "Device ID (any short text, e.g. striktek)", False)),
+               "available", "Free API with live data. Each day you sign in with your password and the 6-digit code; they are never stored.",
+               "https://github.com/Shoonya-Dev/ShoonyaApi-py", daily_login=True, login_kind="password"),
 )}

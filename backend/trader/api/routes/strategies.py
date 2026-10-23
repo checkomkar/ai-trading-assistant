@@ -12,11 +12,14 @@ from sqlalchemy import func, select
 
 from trader.api.deps import CurrentUser, MeterDep
 from trader.db import folder_repo
-from trader.ai.providers import TranslatorUnavailable, build_provider, describe
+from trader.ai.providers import TranslatorUnavailable, build_provider, describe, public_message
 from trader.ai.strategy_translator import StrategyTranslator
 from trader.db.models import StrategyRow
 from trader.strategy.spec import MOMENTUM_V1, StrategySpec, render_english, semantic_errors
 
+from trader.logging import get_logger
+
+log = get_logger("strategies")
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 
@@ -85,11 +88,12 @@ async def translate(request: Request, body: TranslateIn, user: CurrentUser, mete
     """One AI generation. The unit is taken first (402 when the plan is used up) and given back if no model call
     was billed, e.g. when no provider is reachable."""
     try:
-        provider = build_provider(request.app.state.settings)
+        provider = build_provider(request.app.state.settings, user.is_admin)
         async with meter.metered(user, "generations", provider) as mp:
             out = await asyncio.to_thread(StrategyTranslator(mp).translate, body.text, body.base_spec)
     except TranslatorUnavailable as exc:
-        raise HTTPException(503, str(exc)) from None
+        log.warning("translate unavailable", event="translate.unavailable", error=str(exc)[:600])
+        raise HTTPException(503, public_message(exc, user.is_admin)) from None
     return out.__dict__
 
 

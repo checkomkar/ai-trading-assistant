@@ -21,8 +21,10 @@ from typing import Any, Awaitable, Callable
 from trader.ai.providers import LLMProvider, TranslatorUnavailable
 
 MAX_STEPS = 6
-MAX_TOOL_CHARS = 7000
-MAX_HISTORY = 20
+MAX_TOOL_CHARS = 4000  # every step re-sends earlier tool results, so keep each one short
+MAX_HISTORY = 8  # earlier turns re-sent with each model call; older replies are shortened (see _trim_history)
+OLD_REPLY_CHARS = 500
+MAX_KB_LINES = 15
 MAX_ATTACHED_CHARS = 12000  # per turn, across attached files
 
 ACTION_SCHEMA = {
@@ -73,6 +75,9 @@ _LOOKUPS = [  # (question pattern, tool, args): what to fetch ourselves when the
     (re.compile(r"\b(backtest\w*)\b", re.I), "list_backtests", {"limit": 8}),
     (re.compile(r"\b(paper|journal|trades?|p&l|pnl|performance|win ?rate)\b", re.I), "paper_journal", {}),
 ]
+LAST_CALL = ("You have used your tool calls. Do not call another tool. Reply now with action \"answer\" and write the full reply "
+             "in \"text\", using only what the tools returned. If it was not enough, say what you found and what is missing.")
+EMPTY_REPLY = "Your reply had no text. Reply again with action \"answer\" and put the full reply in \"text\"."
 FORCED = ("Here are the results of looking this up in the trader's own data. Answer ONLY from these results and the "
           "snapshot. If they don't contain the answer, say you couldn't find it.")
 
@@ -80,9 +85,11 @@ FORCED = ("Here are the results of looking this up in the trader's own data. Ans
 def system_prompt(tools: dict[str, Tool], memory: list[str], docs: list[dict], snapshot: str = "") -> str:
     tool_lines = "\n".join(f"- {name}: {t.description}" for name, t in tools.items())
     mem = "\n".join(f"- {m}" for m in memory) or "(nothing yet)"
-    kb = "\n".join(f"- {d['filename']} ({d['kind']}): {d['summary'][:200]}" for d in docs[:40]) or "(no files uploaded)"
-    return f"""You are the trader's private assistant inside their NIFTY/BANKNIFTY option-buying research and paper-trading \
-platform. You know their strategies, backtests, paper trades and uploaded notes, and you help them understand, describe, \
+    kb = "\n".join(f"- {d['filename']} ({d['kind']}): {d['summary'][:120]}" for d in docs[:MAX_KB_LINES]) or "(no files uploaded)"
+    if len(docs) > MAX_KB_LINES:
+        kb += f"\n(+{len(docs) - MAX_KB_LINES} more files: search_knowledge finds them)"
+    return f"""You are the trader's private assistant inside their NIFTY/BANKNIFTY option-buying (intraday) and NIFTY 50 stock (daily charts, delivery) research and \
+paper-trading platform. You know their strategies, backtests, paper trades and uploaded notes, and you help them understand, describe, \
 compare and improve strategies. Today is {date.today().isoformat()}.
 
 ## Hard limits
@@ -119,9 +126,32 @@ def _clip(obj: Any) -> str:
     return s if len(s) <= MAX_TOOL_CHARS else s[:MAX_TOOL_CHARS] + "…[truncated]"
 
 
+def _trim_history(history: list[dict]) -> list[dict]:
+    """The last few turns in full; older assistant replies shortened (long answers are the bulk of a chat's tokens)."""
+    recent = history[-MAX_HISTORY:]
+    keep_full = 2
+    return [m if (i >= len(recent) - keep_full or m["role"] != "assistant" or len(m["content"]) <= OLD_REPLY_CHARS)
+            else {**m, "content": m["content"][:OLD_REPLY_CHARS] + "…"} for i, m in enumerate(recent)]
+
+
+async def _lookups(tools: dict[str, Tool], user_text: str, result: "ChatResult") -> list[str]:
+    """Run the obvious lookups for this question ourselves (cheap database reads) as <tool_result> blocks."""
+    todo = [(name, args) for pattern, name, args in _LOOKUPS if name in tools and pattern.search(user_text)]
+
+    async def one(name: str, args: dict | None) -> str:
+        try:
+            out = await tools[name].run(args if args is not None else {"query": user_text})
+            result.tools_used.append(name)
+        except Exception as exc:  # noqa: BLE001
+            out = {"error": str(exc)[:200]}
+        return f"<tool_result name={json.dumps(name)}>\n{_clip(out)}\n</tool_result>"
+
+    return list(await asyncio.gather(*(one(n, a) for n, a in todo)))
+
+
 async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[dict], user_text: str,
                    memory: list[str], docs: list[dict], attached: list[dict] | None = None,
-                   snapshot: str = "") -> ChatResult:
+                   snapshot: str = "", prefetch: bool = True) -> ChatResult:
     """`history` is prior [{role, content}] turns. `attached` = [{filename, text}] files the user just attached."""
     system = system_prompt(tools, memory, docs, snapshot)
     nudged = forced = False
@@ -131,9 +161,18 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
         body = (a["text"] or "(no text could be read from this file)")[:max(budget, 0)]
         budget -= len(body)
         content += f"\n\n<attached_file name={json.dumps(a['filename'])}>\n{body}\n</attached_file>"
-    messages: list[dict] = [*history[-MAX_HISTORY:], {"role": "user", "content": content}]
     result = ChatResult("")
+    if prefetch and tools and _DATA_WORDS.search(user_text):
+        # Fetch the obvious data up front (cheap database reads): one model call instead of a look-up round trip first,
+        # and every extra call re-sends the whole prompt.
+        pre = await _lookups(tools, user_text, result)
+        if pre:
+            content += "\n\n<already_looked_up>\n" + "\n".join(pre) + "\n</already_looked_up>"
+    messages: list[dict] = [*_trim_history(history), {"role": "user", "content": content}]
+    empty_retried = False
     for step in range(MAX_STEPS):
+        if step == MAX_STEPS - 1 and result.tools_used:
+            messages.append({"role": "user", "content": LAST_CALL})  # no more tool calls: write the reply from what was found
         reply = await asyncio.to_thread(provider.complete, system, messages, ACTION_SCHEMA, native_specs(tools) or None)
         result.model = provider.label
         try:
@@ -141,7 +180,7 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
             assert isinstance(act, dict)
         except (json.JSONDecodeError, AssertionError):
             raise TranslatorUnavailable(f"The model's reply was not a valid JSON action: {reply.text[:120]!r}") from None
-        ungrounded = (act.get("action") == "answer" and not result.tools_used and tools
+        ungrounded = (prefetch and act.get("action") == "answer" and not result.tools_used and tools
                       and _DATA_WORDS.search(user_text) and step < MAX_STEPS - 2)
         if ungrounded and not nudged:
             nudged = True  # first: ask it to check the data instead of answering from imagination
@@ -149,21 +188,19 @@ async def run_chat(provider: LLMProvider, tools: dict[str, Tool], history: list[
             continue
         if ungrounded and not forced:
             forced = True  # it still would not look: fetch the obvious data ourselves and hand it over
-            fetched = []
-            for pattern, name, args in _LOOKUPS:
-                if name in tools and pattern.search(user_text):
-                    try:
-                        out = await tools[name].run(args if args is not None else {"query": user_text})
-                        result.tools_used.append(name)
-                        fetched.append(f"<tool_result name={json.dumps(name)}>\n{_clip(out)}\n</tool_result>")
-                    except Exception as exc:  # noqa: BLE001
-                        fetched.append(f"<tool_result name={json.dumps(name)}>\n{_clip({'error': str(exc)[:200]})}\n</tool_result>")
+            fetched = await _lookups(tools, user_text, result)
             if fetched:
                 messages += [{"role": "assistant", "content": reply.text},
                              {"role": "user", "content": FORCED + "\n\n" + "\n".join(fetched)}]
                 continue
+        if act.get("action") == "answer" and not (act.get("text") or "").strip() and not empty_retried and step < MAX_STEPS - 1:
+            empty_retried = True  # weaker models sometimes return an empty reply: ask once more
+            messages += [{"role": "assistant", "content": reply.text}, {"role": "user", "content": EMPTY_REPLY}]
+            continue
         if act.get("action") == "answer" or step == MAX_STEPS - 1:
-            result.text = (act.get("text") or "").strip() or "I couldn't put together an answer. Could you rephrase?"
+            result.text = (act.get("text") or "").strip() or (
+                "I read through your files but couldn't finish an answer. Try a narrower request, for example: "
+                "\"Summarise the entry rules in PAPA DECISION SHEET\", then \"Draft a strategy from those rules\".")
             result.remember = [str(x).strip()[:300] for x in act.get("remember", []) if str(x).strip()][:5]
             return result
         name = str(act.get("tool", ""))

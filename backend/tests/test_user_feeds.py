@@ -179,3 +179,43 @@ def test_operator_without_a_broker_still_sees_the_shared_feed_and_local_mode_is_
     st2 = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{(tmp_path / 'l.db').as_posix()}", market_data_provider="simulated")
     with TestClient(create_app(st2, start_collector=False)) as c:
         assert c.get("/market/overview").status_code == 200
+
+
+def test_a_shoonya_customer_gets_their_own_feed_after_signing_in(env, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(br.shoonya_auth, "sign_in", lambda *a, **k: {
+        "token": "SESSION", "user_id": "FA1", "name": "O", "expires_at": (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()})
+    app = env.app()
+    with TestClient(app) as c:
+        seen = []
+
+        def factory(settings, holder):
+            seen.append((settings.market_data_provider, settings.shoonya_user_id, holder["token"]))
+            return env.factory(settings, holder)
+
+        app.state.feeds.factory = factory
+        sign_up(c, "sh@x.com")
+        assert c.get("/market/overview").status_code == 409  # no broker yet
+        c.post("/brokers/connections", json={"broker": "shoonya", "values": {"user_id": "FA1", "api_key": "K", "vendor_code": "FA1_U", "imei": "x"}})
+        r = c.get("/market/overview")
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "signin_required" and "Shoonya" in r.json()["detail"]["message"]
+        assert c.post("/brokers/shoonya/login", json={"password": "p", "totp": "123456"}).status_code == 200
+        assert c.get("/market/overview").status_code == 200
+        assert seen == [("shoonya", "FA1", "SESSION")]
+
+
+async def test_a_feed_that_will_not_stop_does_not_hang_the_request_that_drops_it(monkeypatch):
+    import asyncio
+
+    from trader.market_data import feeds
+
+    class Stuck:
+        async def stop(self):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(feeds, "STOP_TIMEOUT_S", 0.05)
+    fm = feeds.FeedManager(Settings(_env_file=None), None)
+    fm._feeds["o"] = feeds._Feed(Stuck(), {}, "c", 0.0)
+    await asyncio.wait_for(fm.drop("o"), 2)
+    assert "o" not in fm._feeds

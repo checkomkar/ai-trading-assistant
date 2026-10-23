@@ -24,6 +24,7 @@ from trader.features import FeatureConfig, FeatureEngine
 from trader.instruments.calendar import IST
 from trader.instruments.strikes import OptionType
 from trader.market_data.candles import Candle
+from trader.strategy.sizing import lots_for_risk
 from trader.strategy.base import MarketState, NoTrade, Signal, Strategy
 
 
@@ -75,6 +76,7 @@ class Trade:
     underlying_entry: float
     underlying_exit: float
     features: dict = field(default_factory=dict)
+    pricing: str = ""  # "real" (stored option candles) or "modelled" (Black-Scholes); set for every option trade
 
 
 @dataclass
@@ -124,7 +126,9 @@ class BacktestEngine:
         self.features = FeatureEngine(timeframe_minutes, features)
 
     def run(self, bars: list[Candle], futures: dict[datetime, Candle] | None = None,
-            vix: dict[datetime, float] | None = None) -> BacktestResult:
+            vix: dict[datetime, float] | None = None, trade_from: date | None = None) -> BacktestResult:
+        """`bars` may begin before `trade_from`: those days only warm the indicators up (a 61-period Hull MA on 9-minute candles
+        needs a day and a half of history); no signal, entry or day is counted before it."""
         futures, vix = futures or {}, vix or {}
         trades: list[Trade] = []
         no_trade: Counter[str] = Counter()
@@ -138,8 +142,16 @@ class BacktestEngine:
         last_vix: float | None = None
         days: set[date] = set()
 
+        warm_bars = 0
         for i, bar in enumerate(bars):
             local = bar.ts.astimezone(IST)
+            if trade_from is not None and local.date() < trade_from:
+                v = vix.get(bar.ts)
+                last_vix = v if v is not None else last_vix
+                feats = self.features.update(bar, futures.get(bar.ts), v)
+                self.strategy.generate_signal(MarketState(self.u, feats))  # keeps the strategy's own indicators warm
+                warm_bars += 1
+                continue
             if local.date() != day:
                 day, trades_today, day_pnl, loss_hit = local.date(), 0, 0.0, False
                 pending = None  # signals never carry across days
@@ -205,7 +217,7 @@ class BacktestEngine:
                     pending = decision
 
         warnings = self._warnings(trades)
-        return BacktestResult(trades, dict(no_trade), signals, dict(skipped), len(bars), len(days),
+        return BacktestResult(trades, dict(no_trade), signals, dict(skipped), len(bars) - warm_bars, len(days),
                               self.pricer.mode, warnings)
 
     # ---- position lifecycle -------------------------------------------------------------------
@@ -217,14 +229,23 @@ class BacktestEngine:
             skipped["no option data for contract"] += 1
             return None
         pb = self.pricer.bar(c, bar, self.tf, vix)
+        if pb is None and (alt := getattr(self.pricer, "fallback", lambda _c: None)(c)) is not None:
+            c = alt  # hybrid pricing: no stored print at the entry bar, so this trade is priced by the model throughout
+            pb = self.pricer.bar(c, bar, self.tf, vix)
         if pb is None:
             skipped["no option print at entry bar"] += 1
             return None
         mid = pb.open
         paid = self.exe.buy(mid)
+        lots = self.cfg.lots
+        if sig.risk_pct:
+            lots = lots_for_risk(self.cfg.capital, sig.risk_pct, paid, sig.stop_loss_pct, c.lot_size)
+            if lots == 0:
+                skipped["risk budget below one lot"] += 1
+                return None
         stop = paid * (1 - sig.stop_loss_pct / 100)
         target = paid * (1 + sig.target_pct / 100)
-        return _Position(sig, c, self.cfg.lots * c.lot_size, bar.ts, paid, mid, stop, target, mid, mid, bar.open,
+        return _Position(sig, c, lots * c.lot_size, bar.ts, paid, mid, stop, target, mid, mid, bar.open,
                          initial_stop=stop, last_mid=mid)
 
     def _manage(self, p: _Position, bar: Candle, vix: float | None, last_bar_of_day: bool) -> Trade | None:
@@ -288,11 +309,19 @@ class BacktestEngine:
             mfe_pct=round((max(p.high_water, mid_level) / p.entry_price - 1) * 100, 2),
             bars_held=p.bars, minutes_held=(exit_ts - p.entry_time).total_seconds() / 60,
             underlying_entry=round(p.underlying_entry, 2), underlying_exit=round(underlying_px, 2),
-            features=p.signal.features,
+            features=p.signal.features, pricing="modelled" if p.contract.synthetic or self.pricer.mode == "synthetic" else "real",
         )
 
     def _warnings(self, trades: list[Trade]) -> list[str]:
         w: list[str] = []
+        if self.pricer.mode == "hybrid":
+            n_real = sum(1 for t in trades if t.pricing == "real")
+            w.append(f"Option prices are a MIX: {n_real} trade(s) used stored real option candles and {len(trades) - n_real} used the "
+                     "Black-Scholes model (IV = INDIA VIX x multiplier) because no stored candle covered that contract at the entry. "
+                     "Modelled trades are optimistic about liquidity and fills; see each trade's source in the table.")
+            missing = getattr(self.pricer, "missing_vix_bars", 0)
+            if missing:
+                w.append(f"{missing} bars had no VIX; a default IV of {self.pricer.default_iv:.0%} was used.")
         if self.pricer.mode == "synthetic":
             w.append("Option premiums are SYNTHETIC (Black-Scholes, IV = INDIA VIX x multiplier, modelled spread). "
                      "Real fills, IV skew and liquidity are not captured; treat results as optimistic.")
@@ -303,9 +332,10 @@ class BacktestEngine:
             if old:
                 w.append(f"{len(old)} trade dates predate 2025-09-01; historical expiry weekdays for those "
                          "dates are best-effort assumptions.")
-        missing_c = getattr(self.pricer, "missing_contracts", set())
+        missing_c = getattr(self.pricer, "missing_contracts", set()) if self.pricer.mode != "hybrid" else set()
         if missing_c:
-            w.append(f"{len(missing_c)} signals had no stored option data and were skipped.")
+            w.append(f"{len(missing_c)} signals had no stored option data and were skipped. Choose \"Real where stored, else modelled\" "
+                     "to trade those with modelled prices instead (each trade is labelled with the source it used).")
         if not trades:
             w.append("No trades were taken in this period.")
         return w

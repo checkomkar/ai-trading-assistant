@@ -37,6 +37,7 @@ from trader.execution.store import PaperStore
 from trader.execution.types import Order, OrderRequest, OrderStatus, Side
 from trader.features import FeatureEngine, Features
 from trader.instruments.calendar import IST
+from trader.strategy.sizing import lots_for_risk
 from trader.instruments.specs import get_spec
 from trader.instruments.strikes import OptionType, moneyness_offset
 from trader.logging import get_logger
@@ -366,7 +367,12 @@ class PaperRunner:
         if quote is None:
             return skip(f"no quote for {inst.symbol}")
         price = quote.ask if quote.ask and quote.ask > 0 else self.broker.exe.buy(quote.ltp)
-        qty = lane.eng.lots * inst.lot_size
+        lots = lane.eng.lots
+        if sig.risk_pct:  # size so the stop loses about risk_pct % of the paper capital
+            lots = lots_for_risk(self.broker.starting_cash, sig.risk_pct, price, sig.stop_loss_pct, inst.lot_size)
+            if lots == 0:
+                return skip("risk budget below one lot")
+        qty = lots * inst.lot_size
         d.update(option=inst.symbol, entry=round(price, 2),
                  stop=round(price * (1 - sig.stop_loss_pct / 100), 2),
                  target=round(price * (1 + sig.target_pct / 100), 2))

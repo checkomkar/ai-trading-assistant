@@ -23,6 +23,7 @@ from trader.logging import get_logger
 from trader.market_data.service import MarketDataService
 
 log = get_logger("feeds")
+STOP_TIMEOUT_S = 8.0
 
 
 class FeedUnavailable(Exception):
@@ -54,9 +55,18 @@ class _Feed:
     client_id: str
     last_used: float = field(default_factory=time.monotonic)
     history_task: asyncio.Task | None = None
+    broker: str = "fyers"
 
 
 def default_provider(settings: Settings, holder: dict):  # noqa: ANN201
+    if settings.market_data_provider == "shoonya":
+        from trader.market_data.shoonya import ShoonyaMarketDataProvider
+
+        return ShoonyaMarketDataProvider(settings, token_provider=lambda: holder.get("token"))
+    if settings.market_data_provider == "flattrade":
+        from trader.market_data.flattrade import FlattradeMarketDataProvider
+
+        return FlattradeMarketDataProvider(settings, token_provider=lambda: holder.get("token"))
     from trader.brokers.fyers.provider import FyersMarketDataProvider
 
     return FyersMarketDataProvider(settings, token_provider=lambda: holder.get("token"))
@@ -78,9 +88,9 @@ class FeedManager:
         """This customer's feed, started if needed. Raises FeedUnavailable (with a code the UI understands) when it cannot."""
         feed = self._feeds.get(owner)
         if feed is not None:
-            if _expired(feed.holder.get("token")):
+            if _feed_expired(feed.broker, feed.holder):
                 await self.drop(owner)
-                raise SignInNeeded("Your Fyers sign-in has expired. Sign in again on the Brokers page.")
+                raise SignInNeeded(f"Your {BROKER_NAMES[feed.broker]} sign-in has expired. Sign in again on the Brokers page.")
             feed.last_used = self.clock()
             return feed.md
         lock = self._locks.setdefault(owner, asyncio.Lock())
@@ -94,15 +104,20 @@ class FeedManager:
             f.last_used = self.clock()
 
     async def _start(self, owner: str) -> MarketDataService:
-        keys = await self._keys(owner)
+        broker, keys = await self._keys(owner)
         token = keys.get("access_token")
-        if _expired(token) or not token:
-            raise SignInNeeded("Sign in to Fyers on the Brokers page to start your live data.")
+        if _keys_expired(broker, keys):
+            raise SignInNeeded(f"Sign in to {BROKER_NAMES[broker]} on the Brokers page to start your live data.")
         if len(self._feeds) >= self.settings.max_user_feeds:
             raise Busy("Live data is busy right now. Try again in a few minutes.")
-        holder = {"token": token}
-        st = self.settings.model_copy(update={"market_data_provider": "fyers", "fyers_client_id": keys["client_id"],
-                                              "fyers_secret_key": keys["secret_key"]})
+        holder = {"token": token, "expires_at": _parse_expiry(keys.get("expires_at"))}
+        if broker == "shoonya":
+            st = self.settings.model_copy(update={"market_data_provider": "shoonya", "shoonya_user_id": keys["user_id"]})
+        elif broker == "flattrade":
+            st = self.settings.model_copy(update={"market_data_provider": "flattrade", "flattrade_client_id": keys["client_id"]})
+        else:
+            st = self.settings.model_copy(update={"market_data_provider": "fyers", "fyers_client_id": keys["client_id"],
+                                                  "fyers_secret_key": keys["secret_key"]})
         md = MarketDataService(self.factory(st, holder), None, st)  # no sessionmaker: nothing of theirs is stored
         try:
             await md.start()
@@ -113,31 +128,41 @@ class FeedManager:
             except Exception:  # noqa: BLE001
                 pass
             raise FeedUnavailable(f"Could not start your live data: {exc}") from exc
-        feed = _Feed(md, holder, keys["client_id"], self.clock())
+        feed = _Feed(md, holder, keys.get("client_id") or keys.get("user_id", ""), self.clock(), broker=broker)
         feed.history_task = asyncio.create_task(md.load_recent_history(st.feed_history_days))
         self._feeds[owner] = feed
         self._ensure_reaper()
         log.info("feed started", event="feed.started", owner=owner, active=len(self._feeds))
         return md
 
-    async def _keys(self, owner: str) -> dict:
+    async def _keys(self, owner: str) -> tuple[str, dict]:
+        """(broker, keys) to run this customer's feed on: the connected broker that is signed in today, else the first one
+        (so the message names the broker that needs a sign-in)."""
         async with self.sessionmaker() as s:
-            row = (await s.execute(select(BrokerConnectionRow).where(BrokerConnectionRow.owner == owner,
-                                                                      BrokerConnectionRow.broker == "fyers"))).scalars().first()
-        if row is None:
+            rows = (await s.execute(select(BrokerConnectionRow).where(BrokerConnectionRow.owner == owner,
+                                                                       BrokerConnectionRow.broker.in_(tuple(BROKER_NAMES)))
+                                    .order_by(BrokerConnectionRow.created_at))).scalars().all()
+        if not rows:
             raise NoBroker("Connect your broker on the Brokers page to see live data.")
-        try:
-            return vault.unseal(row.secret_blob, self.settings.credential_key)
-        except Exception as exc:  # noqa: BLE001 - key changed or vault off: treat as not connected
-            raise NoBroker("Your saved broker keys can no longer be read. Add them again on the Brokers page.") from exc
+        opened: list[tuple[str, dict]] = []
+        for row in rows:
+            try:
+                opened.append((row.broker, vault.unseal(row.secret_blob, self.settings.credential_key)))
+            except Exception:  # noqa: BLE001 - key changed or vault off: treat as not connected
+                continue
+        if not opened:
+            raise NoBroker("Your saved broker keys can no longer be read. Add them again on the Brokers page.")
+        return next(((b, k) for b, k in opened if not _keys_expired(b, k)), opened[0])
 
     # ---- changes from the Brokers page ------------------------------------------------------
-    async def refresh(self, owner: str, token: str) -> None:
+    async def refresh(self, owner: str, token: str, expires_at: datetime | None = None) -> None:
         """The customer signed in again: give the running feed the new token and reconnect it."""
         feed = self._feeds.get(owner)
         if feed is None:
             return
         feed.holder["token"] = token
+        if expires_at is not None:
+            feed.holder["expires_at"] = expires_at
         await feed.md.restart()
 
     async def drop(self, owner: str) -> None:
@@ -147,7 +172,10 @@ class FeedManager:
         if feed.history_task is not None:
             feed.history_task.cancel()
         try:
-            await feed.md.stop()
+            # A broker SDK's socket can refuse to close: never let that hold up the request that dropped the feed
+            await asyncio.wait_for(feed.md.stop(), STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.warning("feed stop timed out", event="feed.stop_timeout", owner=owner)
         except Exception as exc:  # noqa: BLE001
             log.warning("feed stop failed", event="feed.stop_failed", owner=owner, error=str(exc))
         log.info("feed stopped", event="feed.stopped", owner=owner, active=len(self._feeds))
@@ -178,6 +206,33 @@ class FeedManager:
 
     def active(self) -> int:
         return len(self._feeds)
+
+
+BROKER_NAMES = {"fyers": "Fyers", "shoonya": "Shoonya", "flattrade": "Flattrade"}
+OPAQUE_SESSIONS = ("shoonya", "flattrade")  # session tokens with no readable expiry: it is saved beside the token  # brokers with a live-data adapter
+
+
+def _parse_expiry(value: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+
+
+def _keys_expired(broker: str, keys: dict) -> bool:
+    if not keys.get("access_token"):
+        return True
+    if broker in OPAQUE_SESSIONS:
+        exp = _parse_expiry(keys.get("expires_at"))
+        return exp is None or exp <= datetime.now(timezone.utc)
+    return _expired(keys["access_token"])
+
+
+def _feed_expired(broker: str, holder: dict) -> bool:
+    if broker in OPAQUE_SESSIONS:
+        exp = holder.get("expires_at")
+        return exp is None or exp <= datetime.now(timezone.utc)
+    return _expired(holder.get("token"))
 
 
 def _expired(token: str | None) -> bool:

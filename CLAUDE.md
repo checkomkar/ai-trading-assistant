@@ -17,6 +17,14 @@ Intraday NIFTY/BANKNIFTY **option-buying** research and paper-trading platform. 
   - 20-prompt translator eval (§19.7)
   - contract-note cost check (`clearing_pct` in `backend/config/costs.yaml`)
 
+## Stocks (2026-10-22)
+Daily-chart, long-only, delivery trading of the NIFTY 50 stocks, next to the intraday option platform. Paper and research only.
+- **Spec:** `market: "equity"` (default `"options"`; options hashes are unchanged), `timeframe "1d"`, `underlyings` = stock symbols or `NIFTY50`, only a `long` side with its own entry. Exits are % of the share price, `time_exit_bars` counts days, `risk.max_positions` (equal capital slots) and `risk_per_trade_pct` size positions. Not allowed for stocks: `or_*`, `fut_close`, `vwap`, `vix`, `daily_*` (`semantic_errors`). `volume`/`rel_volume` use the stock's own volume.
+- **Data:** `instruments/equities.py` (universe, tokens `NSE:SYM-EQ`, `InstrumentType.EQUITY` = "EQ"), `market_data/equity_daily.py` (`refresh`, `load_daily`, `coverage`). Daily candles are stored with timeframe `1d` stamped 09:15 IST of the day, upserted only like all history. Load with `python -m trader.scripts.backfill_equities --years 5` (needs the daily Fyers login); move to a server with `merge_market_data --equities-only`. The operator can also press "Fetch latest daily candles" on the Stocks page (`POST /equity/refresh`, admin only).
+- **Engine:** `backtest/equity.py` (rules: signal on close, fill at next open, stop before target, gap fills at the open, costs on both legs from `equity_costs.py`), `equity_runner.py` (backtest + metrics from the daily mark-to-market curve), routed from `POST /backtests` when the spec is `equity`.
+- **Paper:** `backtest/equity_paper.py` + `api/routes/equity.py` + the Stocks page. A portfolio is only a row (`equity_paper`: spec, capital, start day); positions, next-open orders and P&L are the engine re-run from the start day to the latest stored day (cached per latest day), so it needs no runner and survives restarts. Per account, not operator-only. The intraday runner refuses stock strategies.
+- **Not built:** stocks outside the NIFTY 50, shorting, intraday stock trading, corporate-action adjustment (a warning says prices are the broker's), automatic daily refresh (manual button / script), live LTP in portfolios (last close only).
+
 ## Product direction
 Intended to become a hosted multi-user (SaaS) product, paper and research only until the regulatory questions in PRD §23 are settled. Until stage S1 lands (§23.4), keep new code *tenant-ready* without building tenancy: don't add new module-level singletons or process-wide state that belongs to one trader, keep per-account settings out of `os.environ` reads, and put owner-scoped data behind the repository/store layer so an `account_id` can be added later.
 
@@ -45,17 +53,21 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
   - `instruments/`: calendar/holidays, expiry, strikes, registry
   - `options/`: Black-Scholes, chain analytics
   - `indicators/`: incremental indicators
-  - `strategy/`: base, momentum, spec (Strategy Spec v1) and rule_strategy (interpreter)
+  - `strategy/`: base, momentum, spec (Strategy Spec v1) and rule_strategy (interpreter), `sizing.py` (risk-based lots)
+    - Spec operands beyond the basics: candlestick flags `cs_*` and RSI divergence (0/1, use `> 0`), `swing_high`/`swing_low` (dynamic support/resistance), `volume`/`rel_volume` (futures volume; no futures data = unknown = no trade), `daily_ema`/`daily_sma`/`daily_rsi` (completed days only; context, the trading timeframe stays 1m-60m, no overnight holds).
+    - Extra indicators (`indicators/extra.py`, operands in `strategy/extra_operands.py`) follow TradingView's names and defaults; `mult` is the optional second setting (Supertrend factor, Keltner/Bollinger multiplier).
+    - Multiple timeframes: any price/indicator operand takes `tf` (3m, 9m, 15m ...), read on candles built from the strategy's own bars (`strategy/htf.py`), completed candles only, so no look-ahead; `shift` then counts those candles. `tf` must be a whole multiple of the base timeframe; session/daily operands (vwap, or_*, prev_day_*, daily_*, pivots) cannot take one. Intraday strategies only.
+    - `risk.risk_per_trade_pct` sizes lots so the stop loses that % of capital (backtest `capital`, paper `starting_cash`; a single lot over budget = trade skipped); `risk.min_reward_risk` rejects specs whose target/stop is lower. Measured-move targets are not built: use exit conditions on `swing_*`.
   - `execution/`: `Broker` interface, `PaperBroker`, `runner` (live strategy runner), `store` (audit + journal + state row), `state` (snapshot/restore policy), `service`, `summary`, `rehearsal` (in-process replay driver)
   - `risk/`: deterministic `RiskEngine` (pre-order checklist, kill switch). The only gate to the broker.
-  - `backtest/`: costs, pricing (synthetic/real), engine, metrics, data loader, runner
+  - `backtest/`: costs, pricing (synthetic/real), engine, metrics, data loader, runner; stocks: `equity`, `equity_costs`, `equity_runner`, `equity_paper`
   - `ai/strategy_translator.py`: Claude, translation only
   - `api/`: FastAPI routes (market, options, backtests, strategies, paper, health, ws)
   - `db/`: models, migrate, repository
-  - `scripts/`: backfill_history, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal
+  - `scripts/`: backfill_history, backfill_equities, merge_market_data, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal
 - `backend/alembic/`: migrations, run automatically at API start-up
 - `backend/config/`: `nse_holidays.yaml`, `costs.yaml`
-- `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Strategies, Backtest.
+- `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Stocks, Strategies, Assistant, Brokers (backtests are run from Strategies).
 
 ## Commands
 Run from `backend/` unless noted.

@@ -378,3 +378,20 @@ class LoginOtpRow(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consumed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class EquityPaperRow(Base):
+    """A stock paper portfolio: a saved strategy run forward from its start day on real daily candles. Nothing but this
+    row is stored; positions, orders and P&L are recomputed from the candles (see backtest/equity.py)."""
+
+    __tablename__ = "equity_paper"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), nullable=False, default="local", index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    strategy_id: Mapped[str | None] = mapped_column(String(16))
+    spec: Mapped[dict] = mapped_column(JSON, nullable=False)
+    capital: Mapped[float] = mapped_column(Float, nullable=False)
+    start_day: Mapped[date] = mapped_column(Date, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

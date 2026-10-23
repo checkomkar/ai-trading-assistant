@@ -17,6 +17,17 @@ from typing import Any, Protocol
 import httpx
 
 
+# Free model tiers count the reply allowance against their per-minute token limit (Groq: 8,000 for one request), so ask for no more
+# than a strategy spec or a chat answer needs.
+MAX_REPLY_TOKENS = 2000
+BUSY_MESSAGE = "The AI is busy or unavailable right now. Please try again in a minute."
+
+
+def public_message(exc: Exception, is_admin: bool) -> str:
+    """Customers get a plain message; the provider chain's own errors (keys, tiers, rate limits) are the operator's business."""
+    return str(exc) if is_admin else BUSY_MESSAGE
+
+
 class TranslatorUnavailable(RuntimeError):
     """No credentials, a rejected key, a refusal, or the provider could not be reached."""
 
@@ -90,6 +101,9 @@ class AnthropicProvider:
                 "No Anthropic credentials. Set ANTHROPIC_API_KEY in .env (or run `ant auth login`).") from exc
         except anthropic.APIConnectionError as exc:
             raise TranslatorUnavailable("Could not reach the Anthropic API.") from exc
+        except anthropic.APIError as exc:  # rate limit, overloaded, out of credit, unknown model, permission, 5xx ...
+            status = getattr(exc, "status_code", "")
+            raise TranslatorUnavailable(f"Anthropic error {status}: {str(getattr(exc, 'message', exc))[:200]}") from exc
         if resp.stop_reason == "refusal":
             raise TranslatorUnavailable("The model declined this request.")
         if resp.stop_reason == "max_tokens":
@@ -109,7 +123,7 @@ class AnthropicProvider:
                                                       messages=[{"role": "user", "content": content}])
         except anthropic.AuthenticationError as exc:
             raise TranslatorUnavailable("Anthropic rejected the API key (ANTHROPIC_API_KEY).") from exc
-        except (anthropic.APIConnectionError, anthropic.APIStatusError, TypeError) as exc:
+        except (anthropic.APIError, TypeError) as exc:
             raise TranslatorUnavailable(f"Anthropic could not read the image: {exc}") from exc
         return "".join(b.text for b in resp.content if b.type == "text").strip()
 
@@ -184,7 +198,7 @@ class OpenAICompatibleProvider:
         sys_msg = system if tools else (
             f"{system}\n\nReply with ONE JSON object and nothing else, matching this JSON Schema:\n"
             f"{json.dumps(schema, separators=(',', ':'))}")
-        base: dict = {"model": self.model, "temperature": 0, "max_tokens": 8000,
+        base: dict = {"model": self.model, "temperature": 0, "max_tokens": MAX_REPLY_TOKENS,
                       "messages": [{"role": "system", "content": sys_msg}, *messages]}
         if tools:
             # Native function calling: the real lookups plus `respond`, and the model must call exactly one. Models
@@ -243,7 +257,10 @@ class OpenAICompatibleProvider:
             if isinstance(args, dict):
                 args = json.dumps(args)
             if native_tools and fn.get("name") == "respond":  # translate native calls into the engine's action format
-                a = json.loads(args or "{}")
+                try:
+                    a = json.loads(args or "{}")
+                except ValueError as exc:
+                    raise TranslatorUnavailable(f"{self.name} sent a malformed tool call.") from exc
                 return json.dumps({"action": "answer", "tool": "", "args_json": "{}", "text": a.get("text", ""),
                                    "remember": a.get("remember") or []})
             if native_tools and fn.get("name"):
@@ -315,6 +332,13 @@ _COOLDOWN: dict[str, float] = {}
 COOLDOWN_SECONDS = 60.0
 
 
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (TypeError, ValueError):
+        return False
+
+
 class FallbackProvider:
     """Tries each provider in order and moves on when one is unavailable (no key, rate limit, outage, refusal).
     The answer is still validated by the translator, so a different model never changes what is trusted."""
@@ -339,7 +363,9 @@ class FallbackProvider:
         for p in self._order():
             try:
                 reply = p.complete(system, messages, schema, tools)
-            except TranslatorUnavailable as exc:
+                if not _is_json_object(reply.text):  # a model that answers in prose is as useless as one that is down
+                    raise TranslatorUnavailable("returned a reply that is not the required JSON")
+            except Exception as exc:  # noqa: BLE001 - whatever went wrong with this provider, the next one gets its turn
                 failures.append(f"{p.label}: {exc}")
                 if "declined" not in str(exc):  # a refusal says nothing about the model's health
                     _COOLDOWN[p.label] = time.monotonic() + COOLDOWN_SECONDS
@@ -347,6 +373,8 @@ class FallbackProvider:
             _COOLDOWN.pop(p.label, None)
             self.used = p
             return reply
+        if not failures:
+            raise TranslatorUnavailable("No AI model is configured.")
         raise TranslatorUnavailable("; ".join(failures) if len(failures) > 1 else failures[0].split(": ", 1)[1])
 
     def describe_image(self, data: bytes, mime: str, prompt: str) -> str:
@@ -354,7 +382,7 @@ class FallbackProvider:
         for p in self.providers:
             try:
                 text = p.describe_image(data, mime, prompt)
-            except TranslatorUnavailable as exc:
+            except Exception as exc:  # noqa: BLE001 - try the next model
                 failures.append(f"{p.label}: {exc}")
                 continue
             if text:
@@ -415,8 +443,11 @@ def _openrouter_pool(settings: Any, chain: list[LLMProvider]) -> list[LLMProvide
     return out
 
 
-def build_provider(settings: Any) -> LLMProvider:
-    """LLM_PROVIDER first, then each LLM_FALLBACKS entry (`name` or `name:model`) that has credentials. If OpenRouter
+def build_provider(settings: Any, is_admin: bool = False) -> LLMProvider:
+    """For operator accounts: the paid OpenRouter models in ADMIN_LLM_MODELS first (the free-only rule does not apply to them),
+    then the normal chain below. Everyone else gets the normal chain.
+
+    Normal chain: LLM_PROVIDER first, then each LLM_FALLBACKS entry (`name` or `name:model`) that has credentials. If OpenRouter
     is in the chain, other free OpenRouter models follow it, so one model being down or limited doesn't stop the chat."""
     primary = _build_one((settings.llm_provider or "anthropic").strip().lower(), settings, primary=True)
     chain = [primary]
@@ -431,7 +462,19 @@ def build_provider(settings: Any) -> LLMProvider:
     if any(q.name == "openrouter" and _has_key(q) for q in chain):
         at = max(i for i, q in enumerate(chain) if q.name == "openrouter")
         chain[at + 1:at + 1] = _openrouter_pool(settings, chain)  # right after the last pinned OpenRouter model
-    return FallbackProvider(chain) if len(chain) > 1 else primary
+    base: LLMProvider = FallbackProvider(chain) if len(chain) > 1 else primary
+    paid = _admin_models(settings) if is_admin else []
+    if not paid:
+        return base
+    return FallbackProvider([*paid, *(base.providers if isinstance(base, FallbackProvider) else [base])])
+
+
+def _admin_models(settings: Any) -> list[LLMProvider]:
+    ids = [m.strip() for m in (getattr(settings, "admin_llm_models", "") or "").split(",") if m.strip()]
+    if not ids or not getattr(settings, "openrouter_api_key", ""):
+        return []
+    allow_paid = settings.model_copy(update={"openrouter_free_only": False}) if hasattr(settings, "model_copy") else settings
+    return [_build_one("openrouter", allow_paid, primary=False, model=m) for m in ids]
 
 
 def describe(settings: Any) -> dict:

@@ -137,6 +137,74 @@ async def test_engine_survives_unknown_tool_and_tool_errors():
     assert "unknown tool" in p.calls[1][1][-1]["content"] and "db down" in p.calls[2][1][-1]["content"]
 
 
+def test_blank_pages_are_found_and_ocr_text_is_merged_back_in_place():
+    from trader.ai import knowledge as k
+
+    text = "[page 1]\nReal text on page one is long enough.\n\n[page 2]\n\n\n[page 3]\n\n\n[page 4]\nAnother page with real text here."
+    assert k.blank_pdf_pages(text) == [2, 3]
+    merged = k.merge_page_text(text, {2: "Scanned rule: buy the pullback"})
+    assert "[page 2]\nScanned rule: buy the pullback" in merged and "Real text on page one" in merged and "Another page" in merged
+    assert k.blank_pdf_pages(merged) == [3]
+
+
+def test_ocr_reads_images_on_the_requested_pages_and_survives_a_bad_page(monkeypatch):
+    import pypdf
+
+    from trader.ai import knowledge as k
+
+    class Img:
+        def __init__(self, image):
+            self.image = image
+
+    class Page:
+        def __init__(self, images):
+            self.images = images
+
+    class Reader:
+        def __init__(self, _):
+            self.pages = [Page([Img("a")]), Page([Img("bad")]), Page([Img("c")])]
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+
+    def fake(img):
+        if img == "bad":
+            raise RuntimeError("tesseract timeout")
+        return f" text-{img} "
+
+    assert k.ocr_pdf_pages(b"x", [1, 2, 3], ocr=fake) == {1: "text-a", 3: "text-c"}
+
+
+def test_scanned_pdf_is_stored_at_once_then_filled_in_by_ocr(client, monkeypatch):
+    import time
+
+    from trader.api.routes import chat as chat_routes
+
+    monkeypatch.setattr(chat_routes, "ocr_available", lambda: True)
+    monkeypatch.setattr(chat_routes, "extract_text", lambda f, c, d: ("pdf", "[page 1]\nA page with plenty of real text.\n\n[page 2]\n"))
+    monkeypatch.setattr(chat_routes, "ocr_pdf_pages", lambda data, pages: {p: f"Scanned rule {p}: wait for the pullback" for p in pages})
+    doc = upload(client, "book.pdf", b"%PDF-fake").json()
+    assert doc["status"] == "ocr"
+    for _ in range(50):
+        docs = client.get("/knowledge/docs").json()["docs"]
+        if docs[0]["status"] != "ocr":
+            break
+        time.sleep(0.1)
+    assert docs[0]["status"] == "ready" and docs[0]["chars"] > doc["chars"]  # the scanned page's text was added
+
+
+async def test_engine_asks_for_a_final_answer_instead_of_running_out_of_steps():
+    p = Scripted(*[tool("t")] * (chat_mod.MAX_STEPS - 1), answer("Summary of the files."))
+    r = await chat_mod.run_chat(p, {"t": chat_mod.Tool("t", _noop)}, [], "q", [], [])
+    assert r.text == "Summary of the files."
+    assert chat_mod.LAST_CALL in p.calls[-1][1][-1]["content"]
+
+
+async def test_engine_retries_once_when_the_model_returns_an_empty_answer():
+    p = Scripted(answer(""), answer("Now with text."))
+    r = await chat_mod.run_chat(p, {}, [], "hello", [], [])
+    assert r.text == "Now with text." and len(p.calls) == 2
+
+
 async def test_engine_stops_after_max_steps_and_injects_context():
     p = Scripted(*[tool("t")] * 10)
     r = await chat_mod.run_chat(p, {"t": chat_mod.Tool("t", _noop)}, [{"role": "user", "content": "earlier"}], "q",
@@ -165,12 +233,22 @@ def client(tmp_path, monkeypatch):
     with TestClient(create_app(s)) as c:
         c.provider = Scripted()
         for mod in ("trader.api.routes.chat", "trader.api.chat_tools"):
-            monkeypatch.setattr(f"{mod}.build_provider", lambda settings: c.provider)
+            monkeypatch.setattr(f"{mod}.build_provider", lambda settings, is_admin=False: c.provider)
         yield c
 
 
 def upload(c, name, data, ctype="text/plain", **q):
     return c.post("/knowledge/upload", params={"filename": name, **q}, content=data, headers={"content-type": ctype})
+
+
+def test_uploading_the_same_file_again_reuses_the_first_copy(client):
+    client.provider.actions = [{"summary": "rules"}]
+    a = upload(client, "rules.md", b"Opening range breakout. Max loss 3000.").json()
+    b = upload(client, "Rules.MD", b"Opening range breakout. Max loss 3000.").json()
+    assert b["id"] == a["id"] and b["duplicate"] is True and "duplicate" not in a
+    assert len(client.get("/knowledge/docs").json()["docs"]) == 1
+    c = upload(client, "rules.md", b"A different file with the same name.").json()
+    assert c["id"] != a["id"] and len(client.get("/knowledge/docs").json()["docs"]) == 2
 
 
 def test_upload_search_and_delete(client):
@@ -229,6 +307,20 @@ def test_conversation_with_tools_memory_and_cards(client):
     assert client.get(f"/chat/conversations/{conv}").status_code == 404
 
 
+def test_at_mentioned_file_limits_the_search_to_that_file(client):
+    client.provider.actions = [{"summary": "a"}, {"summary": "b"}]
+    a = upload(client, "alpha.txt", b"Risk rule from alpha: stop loss is 10 percent.").json()
+    upload(client, "beta.txt", b"Risk rule from beta: stop loss is 40 percent.")
+    conv = client.post("/chat/conversations").json()["id"]
+    client.provider.actions = [tool("search_knowledge", '{"query":"risk rule stop loss"}'), answer("done")]
+    client.post(f"/chat/conversations/{conv}/messages", json={"text": "What does @alpha.txt say about risk?", "focus_doc_ids": [a["id"]]})
+    system, msgs = client.provider.calls[-1]
+    first_user = client.provider.calls[-2][1][-1]["content"]
+    assert "referred to these files with @" in first_user and "alpha.txt" in first_user
+    hit = msgs[-1]["content"]
+    assert "alpha" in hit and "beta" not in hit  # beta.txt was never searched
+
+
 def test_attached_file_text_reaches_the_model_and_memory_dedupes(client):
     client.provider.actions = [{"summary": "s"}]
     doc = upload(client, "plan.txt", b"MY SECRET PLAN: buy dips on NIFTY").json()
@@ -283,14 +375,15 @@ def test_assistant_has_no_way_to_trade():
         assert banned not in src, banned
 
 
-async def test_engine_makes_the_model_look_up_data_questions_instead_of_inventing():
-    p = Scripted(answer("You have an Iron Condor strategy."), tool("list_strategies"), answer("You have 1 strategy: X."))
+async def test_engine_looks_up_data_questions_itself_so_one_model_call_is_enough():
     async def ls(_):
         return [{"name": "X"}]
+
+    p = Scripted(answer("You have 1 strategy: X."))
     r = await chat_mod.run_chat(p, {"list_strategies": chat_mod.Tool("l", ls)}, [], "list my saved strategies", [], [],
                                 snapshot="Saved strategies (1):\n  - X (v1, 5m)")
-    assert r.text == "You have 1 strategy: X." and r.tools_used == ["list_strategies"]
-    assert chat_mod.NUDGE in p.calls[1][1][-1]["content"]  # the first, ungrounded answer was bounced back
+    assert r.text == "You have 1 strategy: X." and r.tools_used == ["list_strategies"] and len(p.calls) == 1
+    assert '"name":"X"' in p.calls[0][1][-1]["content"] and "<already_looked_up>" in p.calls[0][1][-1]["content"]
     assert "Saved strategies (1)" in p.calls[0][0]  # real facts are in the prompt
 
 
@@ -300,15 +393,69 @@ async def test_engine_does_not_nudge_small_talk():
     assert r.text == "Hello!" and len(p.calls) == 1
 
 
-async def test_engine_fetches_the_data_itself_when_the_model_keeps_refusing_to_look():
+async def test_engine_prefetches_file_search_with_the_question_and_runs_lookups_together():
     fetched = []
 
     async def search(a):
         fetched.append(a)
         return [{"file": "rules.txt", "text": "Never risk more than 2 percent."}]
 
-    p = Scripted(answer("Your max daily loss is 5%."), answer("Also 3 open positions."), answer("Your notes say 2% per trade."))
+    p = Scripted(answer("Your notes say 2% per trade."))
     r = await chat_mod.run_chat(p, {"search_knowledge": chat_mod.Tool("s", search)}, [], "what do my notes say about risk", [], [])
     assert fetched == [{"query": "what do my notes say about risk"}] and r.tools_used == ["search_knowledge"]
-    assert r.text == "Your notes say 2% per trade."  # the invented answers never reach the user
-    assert chat_mod.FORCED in p.calls[2][1][-1]["content"] and "Never risk more than 2 percent" in p.calls[2][1][-1]["content"]
+    assert r.text == "Your notes say 2% per trade." and len(p.calls) == 1
+    assert "Never risk more than 2 percent" in p.calls[0][1][-1]["content"]
+
+
+def test_history_keeps_recent_turns_in_full_and_shortens_older_replies():
+    long = "x" * 3000
+    hist = [{"role": "user", "content": "q"}, {"role": "assistant", "content": long}] * 6
+    out = chat_mod._trim_history(hist)
+    assert len(out) == chat_mod.MAX_HISTORY
+    assert len(out[0]["content"]) <= chat_mod.OLD_REPLY_CHARS + 1 or out[0]["role"] == "user"
+    assert out[-1]["content"] == long  # the latest reply is untouched
+
+
+# ---- talking about the strategy open on the Strategies page ----------------------------------
+def test_strategy_context_is_built_from_the_rules_and_the_owners_own_backtest():
+    from datetime import date, datetime, timezone
+
+    from trader.api import strategy_context as sc
+    from trader.db.models import BacktestRunRow
+    from trader.strategy.spec import MOMENTUM_V1
+
+    ctx = sc.StrategyContextIn(spec=MOMENTUM_V1, backtest_id=None)
+    text = sc.build(ctx, None)
+    assert "NOT been backtested" in text and "draft_strategy" in text and "Buy the ATM call" in text
+    run = BacktestRunRow(id="r1", owner="u", created_at=datetime.now(timezone.utc), underlying="NIFTY", start=date(2026, 1, 1),
+                         end=date(2026, 6, 1), timeframe="5m", strategy="x", data_source="real", pricing_mode="synthetic",
+                         result={"metrics": {"trades": 12, "total_net_pnl": -500, "win_rate": 33.3, "exit_reasons": {"stop loss": 8}},
+                                 "trades": [{"contract": "C", "entry_time": "2026-02-02T04:00:00", "exit_reason": "stop loss", "net_pnl": -900}],
+                                 "params": {"strategy": {}}, "warnings": ["w"]})
+    text = sc.build(ctx, run)
+    assert "id r1" in text and "net P&L -500" in text and "stop loss" in text and "worst trades" in text
+    assert "not valid yet" in sc.build(sc.StrategyContextIn(spec={"nope": 1}), None)
+
+
+def test_talking_about_a_strategy_sends_the_rules_but_stores_only_the_question(client):
+    from trader.strategy.spec import MOMENTUM_V1
+
+    conv = client.post("/chat/conversations").json()["id"]
+    client.provider.actions = [answer("Tighten the stop and add an ADX filter.")]
+    r = client.post(f"/chat/conversations/{conv}/messages",
+                    json={"text": "How can I improve this?", "context": {"spec": MOMENTUM_V1, "backtest_id": "someone-elses"}})
+    assert r.status_code == 200 and r.json()["content"].startswith("Tighten")
+    sent = client.provider.calls[0][1][-1]["content"]
+    assert "Buy the ATM call" in sent and "How can I improve this?" in sent and "NOT been backtested" in sent
+    assert len(client.provider.calls) == 1  # no look-up round trip: the context already has the data
+    stored = client.get(f"/chat/conversations/{conv}").json()["messages"]
+    assert stored[0]["content"] == "How can I improve this?"  # the long context is not kept in the history
+
+
+def test_the_chat_asks_for_the_operator_model_chain_for_the_operator(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr("trader.api.routes.chat.build_provider", lambda settings, is_admin=False: (seen.append(is_admin), client.provider)[1])
+    conv = client.post("/chat/conversations").json()["id"]
+    client.provider.actions = [answer("Hi.")]
+    assert client.post(f"/chat/conversations/{conv}/messages", json={"text": "hello"}).status_code == 200
+    assert seen == [True]  # local mode is the operator's own account

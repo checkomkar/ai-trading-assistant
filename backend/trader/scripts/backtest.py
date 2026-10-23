@@ -93,7 +93,7 @@ def main() -> None:
     p.add_argument("--timeframe", default="5m", choices=list(SUPPORTED),
                    help="built from finer stored candles when not stored itself")
     p.add_argument("--source", default="auto", choices=["auto", "real", "simulated"])
-    p.add_argument("--pricing", default="synthetic", choices=["synthetic", "real"])
+    p.add_argument("--pricing", default="synthetic", choices=["synthetic", "real", "hybrid"])
     p.add_argument("--sl", type=float, default=25.0, help="stop loss, %% of option premium")
     p.add_argument("--target", type=float, default=50.0, help="target, %% of option premium")
     p.add_argument("--max-trades", type=int, default=3)

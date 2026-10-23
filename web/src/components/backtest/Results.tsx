@@ -18,6 +18,7 @@ export function Results({ r }: { r: BacktestResult }) {
     if (t) chartRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const capital = Number((r.params.engine as { capital?: number })?.capital ?? 100000);
+  const daily = r.timeframe === "1d"; // a stock run
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -25,7 +26,13 @@ export function Results({ r }: { r: BacktestResult }) {
           {r.underlying} · {r.start} → {r.end}
         </h2>
         <Badge tone={r.data_source === "real" ? "up" : "sim"}>{r.data_source === "real" ? "REAL DATA" : "SIMULATED DATA"}</Badge>
-        <Badge tone={r.pricing_mode === "real" ? "up" : "accent"}>{r.pricing_mode === "real" ? "REAL OPTION PRICES" : "SYNTHETIC OPTION PRICES"}</Badge>
+        {daily ? (
+          <Badge tone="accent">STOCKS · DAILY · DELIVERY COSTS</Badge>
+        ) : (
+          <Badge tone={r.pricing_mode === "real" ? "up" : "accent"}>
+            {r.pricing_mode === "real" ? "REAL OPTION PRICES" : r.pricing_mode === "hybrid" ? "REAL + MODELLED OPTION PRICES" : "SYNTHETIC OPTION PRICES"}
+          </Badge>
+        )}
         <span className="num ml-auto text-[11px] text-ink-400">
           run {r.id} · {r.timeframe}{r.built_from && r.built_from !== r.timeframe ? ` (from ${r.built_from})` : ""} · {fmtInt(r.bars)} bars · {r.days} days · {r.signals} signals
         </span>
@@ -50,11 +57,15 @@ export function Results({ r }: { r: BacktestResult }) {
         <Tile label="Max drawdown" value={rupee(m.max_drawdown)} sub={`${num(m.max_drawdown_pct)}% from peak`} />
         <Tile label="Sharpe · Sortino" value={`${num(m.sharpe)} · ${num(m.sortino)}`} sub="daily, annualised" />
         <Tile label="Charges" value={rupee(m.total_charges)} sub={`gross ${rupee(m.total_gross_pnl)}`} />
-        <Tile label="Avg hold · MAE / MFE" value={`${num(m.average_holding_minutes, 0)} min`} sub={`${num(m.average_mae_pct, 1)}% / +${num(m.average_mfe_pct, 1)}%`} />
+        <Tile
+          label="Avg hold · MAE / MFE"
+          value={daily ? `${num(m.average_holding_days ?? null, 1)} days` : `${num(m.average_holding_minutes, 0)} min`}
+          sub={`${num(m.average_mae_pct, 1)}% / +${num(m.average_mfe_pct, 1)}%${daily && m.exposure_pct != null ? ` · invested ${num(m.exposure_pct, 0)}%` : ""}`}
+        />
       </div>
 
       <div ref={chartRef} className="scroll-mt-4">
-        <TradeChart runId={r.id} trades={r.trades} selected={selected} onSelect={setSelected} />
+        <TradeChart runId={r.id} trades={r.trades} selected={selected} onSelect={setSelected} daily={daily} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
@@ -66,25 +77,34 @@ export function Results({ r }: { r: BacktestResult }) {
         <Breakdown title="Exit reasons" data={m.exit_reasons} />
         <Breakdown title="No-trade reasons (bars)" data={r.no_trade_reasons} />
         <section className="rounded-lg border border-ink-800 bg-ink-900 p-3 text-xs">
-          <h3 className="mb-2 text-sm font-semibold">By direction</h3>
+          <h3 className="mb-2 text-sm font-semibold">{daily ? "By stock" : "By direction"}</h3>
           <table className="num w-full">
             <thead className="text-[10px] uppercase tracking-wider text-ink-400">
               <tr>
-                <th className="text-left font-medium">Side</th>
+                <th className="text-left font-medium">{daily ? "Stock" : "Side"}</th>
                 <th className="text-right font-medium">Trades</th>
                 <th className="text-right font-medium">Win %</th>
                 <th className="text-right font-medium">Net P&L</th>
               </tr>
             </thead>
             <tbody>
-              {Object.entries(m.by_direction).map(([k, v]) => (
-                <tr key={k} className="border-t border-ink-800">
-                  <td className="py-1">{k === "LONG" ? "Long (CE)" : "Short (PE)"}</td>
-                  <td className="text-right">{v.trades}</td>
-                  <td className="text-right">{num(v.win_rate, 1)}</td>
-                  <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
-                </tr>
-              ))}
+              {daily
+                ? (m.by_symbol ?? []).map((v) => (
+                    <tr key={v.symbol} className="border-t border-ink-800">
+                      <td className="py-1">{v.symbol}</td>
+                      <td className="text-right">{v.trades}</td>
+                      <td className="text-right">{num(v.win_rate, 1)}</td>
+                      <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
+                    </tr>
+                  ))
+                : Object.entries(m.by_direction).map(([k, v]) => (
+                    <tr key={k} className="border-t border-ink-800">
+                      <td className="py-1">{k === "LONG" ? "Long (CE)" : "Short (PE)"}</td>
+                      <td className="text-right">{v.trades}</td>
+                      <td className="text-right">{num(v.win_rate, 1)}</td>
+                      <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
+                    </tr>
+                  ))}
             </tbody>
           </table>
           {m.monthly_pnl.length > 0 && (
@@ -105,7 +125,7 @@ export function Results({ r }: { r: BacktestResult }) {
         </section>
       </div>
 
-      <TradesTable trades={r.trades} selectedId={selected?.trade_id ?? null} onSelect={select} />
+      <TradesTable trades={r.trades} selectedId={selected?.trade_id ?? null} onSelect={select} daily={daily} />
     </div>
   );
 }
@@ -151,7 +171,7 @@ function Breakdown({ title, data }: { title: string; data: Record<string, number
 
 const PAGE = 50;
 
-function TradesTable({ trades, selectedId, onSelect }: { trades: BacktestTrade[]; selectedId: string | null; onSelect: (t: BacktestTrade) => void }) {
+function TradesTable({ trades, selectedId, onSelect, daily }: { trades: BacktestTrade[]; selectedId: string | null; onSelect: (t: BacktestTrade) => void; daily: boolean }) {
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState<"all" | "win" | "loss">("all");
   const rows = useMemo(
@@ -161,7 +181,9 @@ function TradesTable({ trades, selectedId, onSelect }: { trades: BacktestTrade[]
   const pages = Math.max(1, Math.ceil(rows.length / PAGE));
   const shown = rows.slice(page * PAGE, page * PAGE + PAGE);
   const ist = (s: string) =>
-    new Date(s).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+    new Date(s).toLocaleString("en-IN", daily
+      ? { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "2-digit" }
+      : { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false });
 
   return (
     <section className="rounded-lg border border-ink-800 bg-ink-900">
@@ -187,8 +209,9 @@ function TradesTable({ trades, selectedId, onSelect }: { trades: BacktestTrade[]
         <table className="num w-full min-w-[860px] text-xs">
           <thead className="bg-ink-850 text-[10px] uppercase tracking-wider text-ink-400">
             <tr className="[&>th]:px-2 [&>th]:py-1.5 [&>th]:font-medium">
-              <th className="text-left">Entry (IST)</th>
-              <th className="text-left">Contract</th>
+              <th className="text-left">{daily ? "Entry" : "Entry (IST)"}</th>
+              <th className="text-left">{daily ? "Stock" : "Contract"}</th>
+              {daily && <th className="text-right">Qty</th>}
               <th className="text-right">Entry ₹</th>
               <th className="text-right">Exit ₹</th>
               <th className="text-left">Exit</th>
@@ -214,10 +237,11 @@ function TradesTable({ trades, selectedId, onSelect }: { trades: BacktestTrade[]
                   </span>
                   {t.contract}
                 </td>
+                {daily && <td className="px-2 py-1.5 text-right">{t.quantity}</td>}
                 <td className="px-2 py-1.5 text-right">{fmtPrice(t.entry_price)}</td>
                 <td className="px-2 py-1.5 text-right">{fmtPrice(t.exit_price)}</td>
                 <td className="px-2 py-1.5 font-sans text-ink-300">{t.exit_reason}</td>
-                <td className="px-2 py-1.5 text-right">{Math.round(t.minutes_held)}m</td>
+                <td className="px-2 py-1.5 text-right">{daily ? `${Math.round(t.minutes_held / 375)}d` : `${Math.round(t.minutes_held)}m`}</td>
                 <td className="px-2 py-1.5 text-right text-ink-300">
                   {t.mae_pct.toFixed(0)}% / +{t.mfe_pct.toFixed(0)}%
                 </td>
@@ -227,7 +251,7 @@ function TradesTable({ trades, selectedId, onSelect }: { trades: BacktestTrade[]
             ))}
             {shown.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-8 text-center text-ink-400">No trades</td>
+                <td colSpan={daily ? 10 : 9} className="py-8 text-center text-ink-400">No trades</td>
               </tr>
             )}
           </tbody>

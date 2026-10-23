@@ -8,12 +8,13 @@ repair round with the errors fed back. Ambiguity comes back as questions, never 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
 from trader.ai.providers import LLMProvider, TranslatorUnavailable
-from trader.strategy.spec import INDICATORS, MOMENTUM_V1, StrategySpec, render_english, semantic_errors
+from trader.strategy.spec import EQUITY_EXAMPLE, INDICATORS, MOMENTUM_V1, StrategySpec, render_english, semantic_errors
 
 ENVELOPE_SCHEMA = {
     "type": "object",
@@ -21,35 +22,64 @@ ENVELOPE_SCHEMA = {
         "spec_json": {"type": "string", "description": "The Strategy Spec as a JSON string, or empty if you must ask first."},
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "questions": {"type": "array", "items": {"type": "string"}},
+        "choices": {"type": "array", "items": {"type": "array", "items": {"type": "string"}},
+                    "description": "For each question (same order), 2-5 short answers the trader can tap; [] if it needs free text."},
         "unsupported": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["spec_json", "assumptions", "questions", "unsupported"],
+    "required": ["spec_json", "assumptions", "questions", "choices", "unsupported"],
     "additionalProperties": False,
 }
 
 
 def _operand_table() -> str:
+    """One short line per operand: name, allowed period, meaning. (The scale only matters for index vs futures, said in the rules.)"""
     rows = []
     for name, (needs, bounds, label, level) in INDICATORS.items():
-        period = f"period {bounds[0]}-{bounds[1]}" if needs and bounds else "no period"
-        rows.append(f"- `{name}` ({period}; {level} scale): {label.format(p='N')}")
-    return "\n".join(rows)
+        period = f"[{bounds[0]}-{bounds[1]}]" if needs and bounds else ""
+        fut = " (futures scale)" if level == "futures" else ""
+        rows.append(f"{name}{period}: {label.format(p='N', m='M')}{fut}")
+    return chr(10).join(rows)
 
 
-SYSTEM_PROMPT = f"""You translate a trader's plain-English description of an intraday NIFTY/BANKNIFTY \
-option-buying strategy into a Strategy Spec (JSON) for a deterministic backtesting engine. You never \
-write code and never place trades; the user reviews your spec before anything runs.
+def _compact_schema() -> str:
+    """The spec's JSON Schema without what the model does not need: titles, and the long list of operand names (the operand
+    list below has them). A smaller prompt matters: free model tiers reject requests over a few thousand tokens."""
+    def clean(node):  # noqa: ANN001, ANN202
+        if isinstance(node, dict):
+            out = {k: clean(v) for k, v in node.items() if k not in ("title", "additionalProperties")}
+            if out.get("enum") == list(INDICATORS):
+                out.pop("enum")
+                out["description"] = "an operand name from the operand list"
+            return out
+        return [clean(x) for x in node] if isinstance(node, list) else node
 
-The platform only BUYS options: "long" = buy ATM CE, "short" = buy ATM PE. No option selling, spreads, \
-multi-leg trades, stocks, or futures trading. Decisions are made on each candle's close and orders fill at \
-the next candle's open.
+    return json.dumps(clean(StrategySpec.model_json_schema(by_alias=True)), separators=(",", ":"))
+
+
+SYSTEM_PROMPT = f"""You translate a trader's plain-English description of either an intraday NIFTY/BANKNIFTY \
+option-buying strategy or a daily-chart stock (NSE cash equity, delivery) strategy into a Strategy Spec (JSON) \
+for a deterministic backtesting engine. You never write code and never place trades; the user reviews your spec \
+before anything runs.
+
+Options strategies (market "options", the default): the platform only BUYS options: "long" = buy ATM CE, \
+"short" = buy ATM PE. No option selling, spreads, multi-leg trades, or futures trading.
+Stock strategies (market "equity"): the trader buys shares and holds them for days or weeks (swing or positional \
+trades on daily charts). Use "market": "equity", "timeframe": "1d", "underlyings": NIFTY 50 stock symbols as on NSE \
+(["RELIANCE","TCS"]) or ["NIFTY50"] for all fifty, and only a "long" side with its own entry (no "option", no short, \
+no mirror). exits.stop_loss_pct / target_pct are % of the share price, time_exit_bars counts trading DAYS, \
+risk.max_positions is how many stocks are held at once (default 5; capital is split equally) and \
+risk_per_trade_pct sizes each trade by risk. Not available for stocks: or_high/or_low, fut_close, vwap, vix, \
+daily_ema/daily_sma/daily_rsi (the candles already are daily: use ema/sma/rsi directly) and anything intraday (time \
+windows and the EOD exit are ignored). Every other operand works on daily candles: "bars" means days, and "volume" is \
+the stock's own volume. Stocks outside the NIFTY 50 and short selling stocks are not supported: say so in "unsupported".
+Decisions are made on each candle's close and orders fill at the next candle's open.
 
 ## Spec format (JSON Schema)
-{json.dumps(StrategySpec.model_json_schema(by_alias=True), separators=(',', ':'))}
+{_compact_schema()}
 
 ## Operands (whitelist; anything else is unsupported)
 {_operand_table()}
-Each operand may take "shift": N (N bars ago, 0-20). There is no way to refer to future bars.
+Each operand may take "shift": N (N bars ago, 0-20). MULTIPLE TIMEFRAMES: any price or indicator operand may take "tf" (one of 2m, 3m, 5m, 9m, 10m, 15m, 20m, 30m, 45m, 60m) to be read on that higher timeframe while the strategy trades on its own "timeframe" (the entry/base timeframe, say 1m). The tf must be a whole multiple of the base timeframe and larger. Only COMPLETED higher-timeframe candles are used, so there is no look-ahead, and "shift" then counts those candles. Example, base 1m: "price above the 11 EMA on both the 9-minute and 3-minute charts, enter on 1 minute" = all of [close on 9m > ema 11 on 9m, close on 3m > ema 11 on 3m] plus the 1m entry trigger; operands {{"ind":"ema","period":11,"tf":"9m"}}. Session values (vwap, fut_close, vix, or_high/or_low, prev_day_*, daily_*, pivots) cannot take a tf. Never say multiple timeframes are unsupported. A cross is a single-bar event, so several crosses required on the SAME bar almost never happen (a strategy with three of them takes close to no trades). When the trader wants a cross to have happened lately, add "within": N (2-120) to the cross: it is then true on that bar and the N-1 bars before it. For "price crosses the 61 HMA on 9m and 3m, enter on the 1m Supertrend cross", write the 9m and 3m crosses with "within" (say 45 and 20 base bars) and keep the 1m Supertrend cross as the trigger, or use "close above" as a trend filter; mention the choice in "assumptions". Operands whose label shows a second number (Supertrend(N, M), Keltner, Bollinger %B / bandwidth) take an optional "mult": M (default is TradingView's: Supertrend 3, Keltner 2, Bollinger 2). The indicator names and defaults follow TradingView: "Supertrend 10, 3" = {{"ind":"supertrend","period":10,"mult":3}}; use `supertrend_dir` > 0 for "Supertrend is bullish" and "close above Supertrend" is close vs `supertrend`. Stochastic(14,3,3) = stoch_k / stoch_d with period 14. An indicator that is not in this list is not supported: say so in "unsupported" and suggest the closest one. There is no way to refer to future bars.
 
 ## Rules you must follow
 - Conditions: {{"cmp": [a, op, b]}} with op in > < >= <=; {{"cross": [a, "above"|"below", b]}} (true only on the \
@@ -58,12 +88,22 @@ bar where it crosses); {{"between": [value, low, high]}}; and {{"all": [...]}}, 
 Never compare `close`/`high`/`low`/EMA with `vwap`.
 - "Breakout" with a lookback means close vs `highest`/`lowest` of the previous N bars. If the trader says \
 "breakout" without saying of what, ask.
+- Candlestick patterns (`cs_*`) and RSI divergence (`rsi_bull_div`/`rsi_bear_div`) are 0/1 flags: write \
+"pattern present" as {{"cmp": [{{"ind": "cs_hammer"}}, ">", {{"const": 0}}]}}. They are only candle shapes, so combine \
+them with a trend or level condition. `swing_low`/`swing_high` are dynamic support/resistance (latest confirmed swing). \
+`volume`/`rel_volume` come from futures. `daily_ema`/`daily_sma`/`daily_rsi` are daily-timeframe context from completed \
+days; the strategy still trades on intraday candles (1m-60m) and never holds overnight.
+- "Risk 1% of capital per trade" = risk.risk_per_trade_pct 1 (lots are sized so the stop loses that much). \
+"Minimum 1:3 reward to risk" = risk.min_reward_risk 3 with target_pct at least 3x stop_loss_pct.
+- A measured-move target (peak minus trough) is not supported: use target_pct, or an exit condition on a swing level, \
+and say so in "unsupported".
 - If both directions are wanted and the put rules are the mirror image, use {{"mirror_of": "long"}} for the short side.
 - Exit conditions (exits.conditions) are written from the long side's point of view; they are mirrored for puts.
 - Use defaults only for genuinely standard choices (RSI/ADX/ATR period 14, MACD 12/26/9, EMA as written) and \
 list every default you applied in "assumptions". If a choice changes the strategy materially and the text does \
 not settle it (e.g. stop/target missing, which breakout level, which timeframe when several are implied), \
 leave spec_json empty and ask in "questions".
+- When you ask "questions", ask at most 5, each answerable by tapping: give 2-5 short, concrete answers in "choices" (same order; e.g. ["Buy shares (stocks)", "Buy options (calls/puts)"] or ["EMA 9/21 cross", "Price above SMA 50", "RSI above 60"]) and put your recommended answer first. Use [] only when the answer must be a number or free text. Never ask what the text already says.
 - Put anything that cannot be expressed (news, order flow, option Greeks history, selling options, other \
 instruments) in "unsupported" and explain briefly.
 - Keep the name short (max 80 chars).
@@ -73,6 +113,9 @@ Text: "Momentum on NIFTY 5 min: buy calls when futures are above VWAP, EMA 9 abo
 price breaks the last 30 minutes' high; mirror for puts. Only 9:30 to 14:45, skip when ADX under 18 or ATR \
 under 0.04% of price. SL 25%, target 50%, trail 15% after 30% profit, max 3 trades a day."
 spec_json: {json.dumps(MOMENTUM_V1, separators=(',', ':'))}
+
+Text: "Swing trade the NIFTY 50: buy a stock in an uptrend (above its 200-day average) when RSI is under 40 and a bullish engulfing candle forms. Risk 1% per trade, stop 6%, target 18%, at most 5 stocks at a time, sell after 20 days or when RSI passes 70."
+spec_json: {json.dumps(EQUITY_EXAMPLE, separators=(',', ':'))}
 """
 
 
@@ -82,10 +125,48 @@ class Translation:
     english: str | None
     assumptions: list[str] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
+    choices: list[list[str]] = field(default_factory=list)  # tappable answers per question, same order ([] = free text)
     unsupported: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     model: str = ""
     repaired: bool = False
+
+
+_COMMON_CHOICES: list[tuple[re.Pattern, list[str]]] = [  # used when the model sent no tappable answers
+    (re.compile(r"trail", re.I), ["No trailing stop", "Trail 5% after 5% profit", "Trail 10% after 10% profit"]),
+    (re.compile(r"time.based|after (a certain|n|\d+) (number of )?(days|bars|candles)|holding (period|time)", re.I),
+     ["No time exit", "Exit after 5 days", "Exit after 10 days", "Exit after 20 days"]),
+    (re.compile(r"stop.?loss", re.I), ["3%", "5%", "8%", "10%", "20%"]),
+    (re.compile(r"target|take.?profit", re.I), ["5%", "10%", "15%", "25%", "50%"]),
+    (re.compile(r"risk (per|on each) trade|% of capital|position siz", re.I), ["0.5% of capital", "1% of capital", "2% of capital"]),
+    (re.compile(r"concurrent|simultaneous|max(imum)? (number of )?(open )?positions", re.I), ["3 positions", "5 positions", "10 positions"]),
+    (re.compile(r"trades? per day", re.I), ["1", "2", "3", "5"]),
+    (re.compile(r"equity|shares|stocks?.*options?|options?.*stocks?", re.I),
+     ["Buy shares (stocks)", "Buy options (calls/puts)"]),
+    (re.compile(r"long (only )?(or|and) short|direction|both sides", re.I), ["Long only", "Long and short (calls and puts)"]),
+    (re.compile(r"time ?frame|candle (size|interval)|chart interval", re.I), ["5 minutes", "15 minutes", "1 hour", "1 day (stocks)"]),
+    (re.compile(r"exit (condition|rule|signal)|additional exit|other exit", re.I),
+     ["RSI above 70", "Price closes below EMA 21", "MACD crosses below its signal line", "No extra exit rule"]),
+    (re.compile(r"entry|indicator|signal|criteria|momentum|trigger", re.I),
+     ["EMA 9 crosses above EMA 21", "Price above SMA 50 and RSI above 55", "Price breaks the 20-day high", "MACD crosses above its signal line"]),
+]
+
+
+def _common_choices(question: str) -> list[str]:
+    return next((c for pat, c in _COMMON_CHOICES if pat.search(question)), [])
+
+
+def _choices(env: dict) -> list[list[str]]:
+    """One list of short answers per question, padded/trimmed to match `questions` whatever the model returned; common
+    answers for well-known topics (stop loss, trailing, sizing...) fill in when the model sent none."""
+    qs = env.get("questions") or []
+    raw = env.get("choices") or []
+    out = []
+    for i, q in enumerate(qs):
+        c = raw[i] if i < len(raw) and isinstance(raw[i], list) else []
+        c = [str(x).strip()[:80] for x in c if str(x).strip()][:6]
+        out.append(c or _common_choices(str(q)))
+    return out
 
 
 def validate_spec_json(text: str) -> tuple[StrategySpec | None, list[str]]:
@@ -129,7 +210,7 @@ class StrategyTranslator:
         first = self._call(messages)
         env = first["envelope"]
         out = Translation(None, None, env.get("assumptions", []), env.get("questions", []),
-                          env.get("unsupported", []))
+                          _choices(env), env.get("unsupported", []))
         out.model = self.provider.label  # with fallbacks: whoever actually answered
         if not env.get("spec_json"):
             return out  # questions / unsupported only
@@ -144,6 +225,7 @@ class StrategyTranslator:
             out.repaired = True
             out.assumptions = env.get("assumptions", out.assumptions)
             out.questions = env.get("questions", [])
+            out.choices = _choices(env)
             out.unsupported = env.get("unsupported", out.unsupported)
             if not env.get("spec_json"):
                 return out

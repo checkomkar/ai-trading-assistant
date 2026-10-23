@@ -80,6 +80,28 @@ async def add_doc(s: AsyncSession, *, filename: str, mime: str, kind: str, size:
     return doc
 
 
+async def replace_doc_text(s: AsyncSession, doc_id: str, *, text: str, status: str, summary: str | None = None,
+                           owner: str = OWNER) -> bool:
+    """New text for an uploaded file (OCR finished): swap the stored text and re-chunk it for search."""
+    doc = await s.get(KnowledgeDocRow, doc_id)
+    if doc is None or doc.owner != owner:
+        return False
+    doc.text, doc.status = text, status
+    if summary is not None:
+        doc.summary = summary
+    await s.execute(delete(KnowledgeChunkRow).where(KnowledgeChunkRow.doc_id == doc_id))
+    for i, c in enumerate(chunk_text(text)):
+        s.add(KnowledgeChunkRow(doc_id=doc_id, owner=owner, idx=i, text=c))
+    return True
+
+
+async def find_duplicate_doc(s: AsyncSession, filename: str, size: int, owner: str = OWNER) -> KnowledgeDocRow | None:
+    """An earlier upload of the same file (same name and size) by this owner."""
+    return (await s.execute(select(KnowledgeDocRow).where(
+        KnowledgeDocRow.owner == owner, func.lower(KnowledgeDocRow.filename) == filename[:200].lower(),
+        KnowledgeDocRow.size_bytes == size).order_by(KnowledgeDocRow.created_at).limit(1))).scalars().first()
+
+
 async def list_docs(s: AsyncSession, owner: str = OWNER) -> list[KnowledgeDocRow]:
     return list((await s.execute(select(KnowledgeDocRow).where(KnowledgeDocRow.owner == owner)
                                  .order_by(KnowledgeDocRow.created_at.desc()))).scalars())
@@ -101,10 +123,14 @@ async def delete_doc(s: AsyncSession, doc_id: str, owner: str = OWNER) -> bool:
     return True
 
 
-async def search_knowledge(s: AsyncSession, query: str, k: int = 5, owner: str = OWNER) -> list[dict]:
-    rows = list((await s.execute(select(KnowledgeChunkRow, KnowledgeDocRow.filename)
-                                 .join(KnowledgeDocRow, KnowledgeDocRow.id == KnowledgeChunkRow.doc_id)
-                                 .where(KnowledgeChunkRow.owner == owner))).all())
+async def search_knowledge(s: AsyncSession, query: str, k: int = 5, owner: str = OWNER,
+                           doc_ids: list[str] | None = None) -> list[dict]:
+    q = (select(KnowledgeChunkRow, KnowledgeDocRow.filename)
+         .join(KnowledgeDocRow, KnowledgeDocRow.id == KnowledgeChunkRow.doc_id)
+         .where(KnowledgeChunkRow.owner == owner))
+    if doc_ids:
+        q = q.where(KnowledgeChunkRow.doc_id.in_(doc_ids))
+    rows = list((await s.execute(q)).all())
     ranked = bm25_rank(query, [r[0].text for r in rows], k)
     return [{"file": rows[i][1], "chunk": rows[i][0].idx, "score": round(sc, 2), "text": rows[i][0].text}
             for i, sc in ranked]

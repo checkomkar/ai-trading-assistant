@@ -333,3 +333,73 @@ def test_free_models_discovery_filters_and_ranks(monkeypatch):
     got = providers.free_models(ttl=0.0001)
     assert got == [("b/big:free", True), ("a/small:free", False)]  # paid, non-:free, no-tools, safety models excluded
     providers._FREE_CACHE.update(at=0.0, models=providers.STATIC_FREE)
+
+
+def test_paid_openrouter_models_are_for_operator_accounts_only():
+    st = settings(llm_provider="groq", groq_api_key="gk", openrouter_api_key="ok",
+                  admin_llm_models="anthropic/claude-sonnet-4.5, openai/gpt-4o")
+    customer = build_provider(st)
+    assert all(":free" in p.model or p.name != "openrouter" for p in getattr(customer, "providers", [customer]))
+    assert not any("claude-sonnet" in getattr(p, "label", "") for p in getattr(customer, "providers", [customer]))
+    op = build_provider(st, is_admin=True)
+    labels = [p.label for p in op.providers]
+    assert labels[:2] == ["openrouter/anthropic/claude-sonnet-4.5", "openrouter/openai/gpt-4o"]
+    assert labels[2].startswith("groq/")  # the normal chain follows as the fallback
+    # the free-only guard still stops a paid model from being used by anyone through the ordinary settings
+    with pytest.raises(TranslatorUnavailable):
+        build_provider(settings(llm_provider="openrouter", openrouter_api_key="ok", llm_model="anthropic/claude-sonnet-4.5"))
+
+
+def test_without_a_key_or_a_list_operators_get_the_normal_chain():
+    base = settings(llm_provider="groq", groq_api_key="gk")
+    assert build_provider(base, is_admin=True).label == build_provider(base).label
+    no_key = settings(llm_provider="groq", groq_api_key="gk", admin_llm_models="anthropic/claude-sonnet-4.5")
+    assert build_provider(no_key, is_admin=True).label == build_provider(no_key).label  # no OpenRouter key: nothing paid is attempted
+
+
+# ---- the chain keeps going until every provider has been tried ------------------------------------------------
+class Boom:
+    """A provider that fails in a given way, or answers with a given text."""
+
+    name = "boom"
+
+    def __init__(self, label, exc=None, text='{"action":"answer","tool":"","args_json":"{}","text":"ok","remember":[]}'):
+        self.model, self.label, self.exc, self.text = label, label, exc, text
+        self._api_key = "k"
+
+    def complete(self, system, messages, schema, tools=None):
+        if self.exc is not None:
+            raise self.exc
+        return providers.LLMReply(self.text, 1, 1, self.label)
+
+
+def anthropic_error(cls, status):
+    import anthropic
+
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls(message=f"anthropic says {status}", response=httpx.Response(status, request=req), body=None)
+
+
+@pytest.mark.parametrize("status,kind", [(401, "AuthenticationError"), (429, "RateLimitError"), (529, "InternalServerError"),
+                                          (400, "BadRequestError"), (404, "NotFoundError"), (403, "PermissionDeniedError")])
+def test_any_anthropic_failure_falls_through_to_the_next_provider(status, kind):
+    import anthropic
+    from types import SimpleNamespace
+
+    err = anthropic_error(getattr(anthropic, kind), status)
+    client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=lambda **k: (_ for _ in ()).throw(err))))
+    chain = providers.FallbackProvider([providers.AnthropicProvider("claude-x", "k", client=client), Boom("groq/m")])
+    reply = chain.complete("sys", [{"role": "user", "content": "hi"}], {})
+    assert reply.model == "groq/m" and chain.label == "groq/m"
+
+
+def test_unexpected_errors_and_prose_replies_also_move_on_and_an_exhausted_list_says_why():
+    chain = providers.FallbackProvider([Boom("a/1", exc=RuntimeError("socket exploded")), Boom("b/2", text="Sure! Here you go."),
+                                        Boom("c/3", exc=KeyError("x")), Boom("d/4")])
+    assert chain.complete("s", [], {}).model == "d/4"
+    providers._COOLDOWN.clear()
+    dead = providers.FallbackProvider([Boom("a/1", exc=RuntimeError("socket exploded")), Boom("b/2", text="no json")])
+    with pytest.raises(TranslatorUnavailable) as e:
+        dead.complete("s", [], {})
+    msg = str(e.value)
+    assert "a/1: socket exploded" in msg and "b/2:" in msg and "not the required JSON" in msg

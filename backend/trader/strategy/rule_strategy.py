@@ -9,8 +9,15 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import date, time
+from typing import Any
 
-from trader.indicators import ADX, ATR, EMA, MACD, ROC, RSI, SMA, BollingerBands, RollingExtreme
+from trader.market_data.resample import minutes
+
+from trader.indicators import extra as X
+from trader.indicators.extra import pivot_levels
+from trader.strategy.extra_operands import PIVOTS, SOURCE
+from trader.strategy.htf import TF_MINUTES, HTFAggregator, label
+from trader.indicators import ADX, ATR, EMA, MACD, ROC, RSI, SMA, BollingerBands, Pivots, RollingExtreme, candle_patterns
 from trader.strategy.base import Direction, MarketState, NoTrade, Signal, Strategy
 from trader.strategy.spec import (
     All,
@@ -33,17 +40,74 @@ FEATURE_OPERANDS = {  # operand -> Features key (computed by the shared FeatureE
     "prev_day_high": "prev_day_high", "prev_day_low": "prev_day_low", "prev_day_close": "prev_day_close",
 }
 PRICE_OPERANDS = ("open", "high", "low", "close")
+PATTERNS = {"cs_" + k: k for k in ("bull_engulfing", "bear_engulfing", "doji", "hammer", "shooting_star",
+                                    "morning_star", "evening_star")}
+DAILY = {"daily_ema": EMA, "daily_sma": SMA, "daily_rsi": RSI}
+DIV_PIVOT_BARS = 3  # swing width used for RSI divergence
+
+
+FACTORIES = {  # kind -> indicator object, from the operand's period and mult
+    "wma": lambda p, m: X.WMA(p), "hma": lambda p, m: X.HMA(p), "vwma": lambda p, m: X.VWMA(p), "dema": lambda p, m: X.DEMA(p),
+    "tema": lambda p, m: X.TEMA(p), "rma": lambda p, m: X.RMA(p), "linreg": lambda p, m: X.LinReg(p),
+    "supertrend": lambda p, m: X.Supertrend(p, m), "psar": lambda p, m: X.ParabolicSAR(), "aroon": lambda p, m: X.Aroon(p),
+    "vortex": lambda p, m: X.Vortex(p), "ichimoku": lambda p, m: X.Ichimoku(), "stoch": lambda p, m: X.Stochastic(p),
+    "stoch_rsi": lambda p, m: X.StochRSI(p), "cci": lambda p, m: X.CCI(p), "williams_r": lambda p, m: X.WilliamsR(p),
+    "mfi": lambda p, m: X.MFI(p), "mom": lambda p, m: X.Momentum(p), "cmo": lambda p, m: X.CMO(p),
+    "ao": lambda p, m: X.AwesomeOscillator(), "trix": lambda p, m: X.TRIX(p), "ult_osc": lambda p, m: X.UltimateOscillator(),
+    "obv": lambda p, m: X.OBV(), "ad_line": lambda p, m: X.ADLine(), "cmf": lambda p, m: X.CMF(p),
+    "keltner": lambda p, m: X.Keltner(p, m), "donchian": lambda p, m: X.Donchian(p), "bb_extra": lambda p, m: X.BollingerExtra(p, m),
+    "stddev": lambda p, m: X.StdDev(p), "prices": lambda p, m: X.PriceTransforms(),
+}
+
+
+def _within(c) -> int:  # noqa: ANN001
+    """The furthest back any `cross ... within N` in this condition looks (0 if none)."""
+    if isinstance(c, Cross):
+        return c.within or 0
+    if isinstance(c, All):
+        return max((_within(x) for x in c.all), default=0)
+    if isinstance(c, Any_):
+        return max((_within(x) for x in c.any), default=0)
+    if isinstance(c, Not):
+        return _within(c.not_)
+    return 0
 
 
 class _Bank:
     """Indicators requested by a spec, keyed by (name, period); updated once per bar."""
 
-    def __init__(self, keys: set[tuple[str, int | None]]) -> None:
+    def __init__(self, keys: set[tuple], base_minutes: int = 1) -> None:
+        # Operands on a higher timeframe are served by their own bank, fed with candles built from these bars.
+        self.htf_keys = [k for k in keys if k[3]]
+        by_tf: dict[str, set] = {}
+        for k in self.htf_keys:
+            by_tf.setdefault(k[3], set()).add((*k[:3], None))
+        self.htf: dict[str, tuple[HTFAggregator, "_Bank", deque]] = {
+            tf: (HTFAggregator(TF_MINUTES[tf], base_minutes), _Bank(ks), deque(maxlen=21)) for tf, ks in by_tf.items()}
+        keys = {k[:3] for k in keys if not k[3]}
         self.keys = keys
         self.objs: dict[tuple[str, int | None], object] = {}
-        for name, p in keys:
+        self.extras: dict[tuple, object] = {}  # indicator objects shared by every operand that reads them
+        self.recent: deque[tuple[float, float, float, float]] = deque(maxlen=3)  # (o, h, l, c) for candle patterns
+        self.volumes: dict[int, deque[float]] = {}  # rel_volume: previous volumes per period
+        self.daily: dict[tuple[str, int | None], object] = {}  # indicators fed once a day with the previous close
+        self._day = None
+        self._pats: dict[str, float] = {}
+        for name, p, m in keys:
             k = (name, p)
-            if name == "ema":
+            if name in SOURCE:
+                kind = SOURCE[name][0]
+                self.extras.setdefault((kind, p, m), FACTORIES[kind](p, m))
+            elif name in DAILY:
+                self.daily[k] = DAILY[name](p)
+            elif name == "rel_volume":
+                self.volumes[p] = deque(maxlen=p)
+            elif name in ("swing_high", "swing_low"):
+                self.objs[("pivots", p)] = self.objs.get(("pivots", p)) or Pivots(p)
+            elif name in ("rsi_bull_div", "rsi_bear_div"):
+                self.objs[("divrsi", 14)] = self.objs.get(("divrsi", 14)) or RSI(14)
+                self.objs[("pivots", DIV_PIVOT_BARS)] = self.objs.get(("pivots", DIV_PIVOT_BARS)) or Pivots(DIV_PIVOT_BARS)
+            elif name == "ema":
                 self.objs[k] = EMA(p)
             elif name == "sma":
                 self.objs[k] = SMA(p)
@@ -62,18 +126,63 @@ class _Bank:
             elif name in ("macd", "macd_signal", "macd_hist"):
                 self.objs[("macd", None)] = self.objs.get(("macd", None)) or MACD()
 
-    def update(self, f) -> dict[tuple[str, int | None], float | None]:  # noqa: ANN001
+    def update(self, f) -> dict[tuple, Any]:  # noqa: ANN001
+        for agg, bank, hist in self.htf.values():  # a candle completed by this bar becomes visible now, not before
+            for candle in agg.update(f):
+                hist.appendleft(bank.update(candle))
+        if self.daily and f.day != self._day:  # a new day began: yesterday's close is now final
+            self._day = f.day
+            if f["prev_day_close"] is not None:
+                for o in self.daily.values():
+                    o.update(f["prev_day_close"])  # type: ignore[attr-defined]
+        self.recent.append((f.open, f.high, f.low, f.close))
+        if any(n in PATTERNS for n, _, _ in self.keys):
+            self._pats = candle_patterns(list(self.recent))
+        if ("divrsi", 14) in self.objs:  # first, so the pivots below see this bar's RSI
+            self.objs[("divrsi", 14)].update(f.close)  # type: ignore[attr-defined]
         for (kind, p), o in self.objs.items():
+            if kind == "divrsi":
+                continue
             if kind in ("atr", "adx"):
                 o.update(f.high, f.low, f.close)  # type: ignore[attr-defined]
             elif kind == "extreme":
                 o.update(f.high, f.low)  # type: ignore[attr-defined]
+            elif kind == "pivots":
+                rsi = self.objs[("divrsi", 14)].value if ("divrsi", 14) in self.objs else None  # type: ignore[attr-defined]
+                o.update(f.high, f.low, rsi if p == DIV_PIVOT_BARS else None)  # type: ignore[attr-defined]
             else:
                 o.update(f.close)  # type: ignore[attr-defined]
-        snap: dict[tuple[str, int | None], float | None] = {}
-        for name, p in self.keys:
-            if name in PRICE_OPERANDS:
+        vol = f["fut_volume"]
+        for ex in self.extras.values():
+            ex.update(f.open, f.high, f.low, f.close, vol)  # type: ignore[attr-defined]
+        rel = {}
+        for per, dq in self.volumes.items():
+            rel[per] = vol / (sum(dq) / per) if vol and len(dq) == per and sum(dq) > 0 else None
+            if vol:
+                dq.append(vol)
+        snap: dict[tuple, Any] = {}
+        for name, p, m in self.keys:
+            if name in SOURCE:
+                v = self.extras[(SOURCE[name][0], p, m)].values.get(SOURCE[name][1])  # type: ignore[attr-defined]
+            elif name in PIVOTS:
+                ph, pl, pc = f["prev_day_high"], f["prev_day_low"], f["prev_day_close"]
+                v = pivot_levels(ph, pl, pc)[PIVOTS[name]] if None not in (ph, pl, pc) else None
+            elif name in PRICE_OPERANDS:
                 v = getattr(f, name)
+            elif name in PATTERNS:
+                v = self._pats.get(PATTERNS[name])
+            elif name in DAILY:
+                v = self.daily[(name, p)].value  # type: ignore[attr-defined]
+            elif name == "volume":
+                v = f["fut_volume"]
+            elif name == "rel_volume":
+                v = rel[p]
+            elif name in ("swing_high", "swing_low"):
+                o = self.objs[("pivots", p)]
+                v = o.last_high if name == "swing_high" else o.last_low  # type: ignore[attr-defined]
+            elif name in ("rsi_bull_div", "rsi_bear_div"):
+                bull, bear = self.objs[("pivots", DIV_PIVOT_BARS)].divergence(p)  # type: ignore[attr-defined]
+                v = float(bull if name == "rsi_bull_div" else bear)
             elif name in FEATURE_OPERANDS:
                 v = f[FEATURE_OPERANDS[name]]
             elif name in ("ema", "sma", "rsi", "roc"):
@@ -97,7 +206,9 @@ class _Bank:
                 v = {"macd": o.macd, "macd_signal": o.signal, "macd_hist": o.histogram}[name]  # type: ignore[attr-defined]
             else:  # pragma: no cover - schema whitelist makes this unreachable
                 raise KeyError(name)
-            snap[(name, p)] = v
+            snap[(name, p, m, None)] = v
+        for k in self.htf_keys:  # higher-timeframe operands: the latest completed candles, newest first (shift indexes into this)
+            snap[k] = [h.get((*k[:3], None)) for h in self.htf[k[3]][2]]
         return snap
 
 
@@ -111,8 +222,8 @@ class RuleStrategy(Strategy):
         if spec.exits.conditions is not None:
             conds.append(spec.exits.conditions)
         refs = [o for c in conds for o in walk_operands(c) if isinstance(o, Ind)]
-        self.bank = _Bank({o.key for o in refs})
-        depth = max([o.shift for o in refs] + [0]) + 2  # +1 for crosses
+        self.bank = _Bank({o.key for o in refs}, minutes(spec.timeframe) if spec.timeframe != "1d" else 375)
+        depth = max([o.shift for o in refs] + [0]) + max(_within(c) for c in conds) + 2  # +1 for crosses, + how far back they look
         self.hist: deque[dict] = deque(maxlen=depth)
         self.window = tuple(time.fromisoformat(x) for x in spec.filters.time_window)
         self.event_days = {date.fromisoformat(d) for d in spec.filters.event_days}
@@ -130,6 +241,11 @@ class RuleStrategy(Strategy):
     def _val(self, o, extra_shift: int = 0) -> float | None:  # noqa: ANN001
         if isinstance(o, Const):
             return o.const
+        if o.tf:  # higher timeframe: `shift` counts that timeframe's candles; extra_shift steps back one BASE bar (for crosses)
+            if extra_shift >= len(self.hist):
+                return None
+            vals = self.hist[extra_shift].get(o.key)
+            return vals[o.shift] if vals and o.shift < len(vals) else None
         i = o.shift + extra_shift
         if i >= len(self.hist):
             return None
@@ -146,8 +262,11 @@ class RuleStrategy(Strategy):
             a, d, b = c.cross
             now = Cmp(cmp=(a, ">" if d == "above" else "<", b))
             before = Cmp(cmp=(a, "<=" if d == "above" else ">=", b))
-            n, p = self.eval(now, shift), self.eval(before, shift + 1)
-            return None if n is None or p is None else (n and p)
+            seen: list[bool | None] = []
+            for k in range(c.within or 1):  # "within N": did it cross on any of the last N bars
+                n, p = self.eval(now, shift + k), self.eval(before, shift + k + 1)
+                seen.append(None if n is None or p is None else (n and p))
+            return True if True in seen else (None if None in seen else False)
         if isinstance(c, Between):
             v, lo, hi = (self._val(o, shift) for o in c.between)
             return None if None in (v, lo, hi) else lo <= v <= hi  # type: ignore[operator]
@@ -194,8 +313,10 @@ class RuleStrategy(Strategy):
                 return Signal(d, 0.5, state.underlying, "ATM", f.close, self.spec.exits.stop_loss_pct,
                               self.spec.exits.target_pct, f"{self.spec.name}: {d.value.lower()} rules met",
                               f.ts, f"spec:{self.spec.hash}",
-                              {f"{k[0]}{'' if k[1] is None else k[1]}": (round(v, 4) if isinstance(v, float) else v)
-                               for k, v in (self.hist[0] if self.hist else {}).items()})
+                              {label(k): (round(v, 4) if isinstance(v, float) else v)
+                               for k, v in ((k, v[0] if isinstance(v, list) else v)
+                                            for k, v in (self.hist[0] if self.hist else {}).items())},
+                              risk_pct=self.spec.risk.risk_per_trade_pct)
         return None
 
     def exit_signal(self, state: MarketState, direction: Direction) -> str | None:

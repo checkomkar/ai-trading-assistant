@@ -19,7 +19,7 @@ from trader.execution.store import load_trades
 from trader.execution.summary import summarize, trade_to_dict
 
 
-def build_tools(request: Request, user: Principal, meter: Meter) -> dict[str, Tool]:
+def build_tools(request: Request, user: Principal, meter: Meter, focus_doc_ids: list[str] | None = None) -> dict[str, Tool]:
     """The caller's own data only: every query below is filtered by `user.id`."""
     sm = request.app.state.sessionmaker
     settings = request.app.state.settings
@@ -99,8 +99,9 @@ def build_tools(request: Request, user: Principal, meter: Meter) -> dict[str, To
         async with sm() as s:
             if not query:  # models sometimes send no query: give an overview of what was uploaded
                 return [{"file": d.filename, "kind": d.kind, "summary": d.summary, "start": d.text[:1500]}
-                        for d in (await chat_repo.list_docs(s, uid))[:6]] or [{"note": "no files uploaded yet"}]
-            hits = await chat_repo.search_knowledge(s, query, min(int(a.get("k", 4)), 8), uid)
+                        for d in (await chat_repo.list_docs(s, uid))
+                        if not focus_doc_ids or d.id in focus_doc_ids][:6] or [{"note": "no files uploaded yet"}]
+            hits = await chat_repo.search_knowledge(s, query, min(int(a.get("k", 4)), 8), uid, doc_ids=focus_doc_ids or None)
         return hits or [{"note": "no matching text in the uploaded files; try different words or ask for an overview with an empty query"}]
 
     async def draft_strategy(a: dict) -> dict:
@@ -108,7 +109,7 @@ def build_tools(request: Request, user: Principal, meter: Meter) -> dict[str, To
         if len(text) < 5:
             return {"error": "description is too short"}
         try:
-            async with meter.metered(user, "generations", build_provider(settings)) as mp:  # a draft is one generation
+            async with meter.metered(user, "generations", build_provider(settings, user.is_admin)) as mp:  # a draft is one generation
                 out = await asyncio.to_thread(StrategyTranslator(mp).translate, text, a.get("base_spec"))
         except QuotaExceeded as exc:
             return {"error": exc.message + " Tell the trader this; do not try again."}

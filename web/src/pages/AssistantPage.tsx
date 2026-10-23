@@ -52,6 +52,7 @@ const I = {
   plus: "M12 5v14M5 12h14",
   clip: "M21.4 11.1l-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8",
   up: "M12 19V5M5 12l7-7 7 7",
+  stop: "M7 7h10v10H7z",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
   copy: "M9 9h11v11H9zM5 15H4V4h11v1",
   sidebar: "M3 4h18v16H3zM9 4v16",
@@ -66,7 +67,7 @@ function groupLabel(iso: string): string {
   return days < 1 ? "Today" : days < 2 ? "Yesterday" : days < 8 ? "Previous 7 days" : "Older";
 }
 
-const md = {
+export const md = {
   p: ({ children }: { children?: ReactNode }) => <p className="mb-3 last:mb-0">{children}</p>,
   ul: ({ children }: { children?: ReactNode }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
   ol: ({ children }: { children?: ReactNode }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
@@ -125,17 +126,34 @@ export function AssistantPage() {
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [text, setText] = useState("");
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null); // an "@" being typed
+  const [mentionIdx, setMentionIdx] = useState(0);
   const [pending, setPending] = useState<KnowledgeDoc[]>([]); // files attached to the message being written
   const [busy, setBusy] = useState<"send" | "upload" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [reading, setReading] = useState<string | null>(null); // name of the file being uploaded and read
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Record<string, string>>({}); // card key -> confirmation
   const [newNote, setNewNote] = useState("");
   const [dragging, setDragging] = useState(false);
   const [sidebar, setSidebar] = useState(() => window.innerWidth >= 900);
+  useEffect(() => {
+    // The Strategies page can hand over a question ("build this with the Assistant"): it only pre-fills the box.
+    try {
+      const pre = sessionStorage.getItem("assistant-prefill");
+      if (pre) {
+        sessionStorage.removeItem("assistant-prefill");
+        setText(pre);
+      }
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
   const [drawer, setDrawer] = useState<"memory" | "files" | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  const abort = useRef<AbortController | null>(null); // the reply being waited for, so Stop can cancel it
 
   const loadSide = useCallback(async () => {
     const [c, d, m] = await Promise.all([
@@ -151,6 +169,19 @@ export function AssistantPage() {
   useEffect(() => {
     loadSide().catch((e) => setError((e as Error).message));
   }, [loadSide]);
+
+  // Scanned PDFs are read in the background: while any file is still being read, refresh the list every few seconds.
+  const anyReading = docs.some((d) => d.status === "ocr");
+  useEffect(() => {
+    if (!anyReading) return;
+    const t = setInterval(() => {
+      getJSON<{ docs: KnowledgeDoc[] }>("/knowledge/docs").then((d) => {
+        setDocs(d.docs);
+        setPending((p) => p.map((x) => d.docs.find((y) => y.id === x.id) ?? x));
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [anyReading]);
 
   useEffect(() => {
     // Scroll only the message list; scrollIntoView would also scroll the whole page.
@@ -182,15 +213,19 @@ export function AssistantPage() {
     if (!files?.length) return;
     setBusy("upload");
     setError(null);
+    setNotice(null);
     for (const f of Array.from(files)) {
+      setReading(f.name);
       try {
         const d = await uploadFile(f);
-        setPending((p) => [...p, d]);
-        setDocs((all) => [d, ...all]);
+        setPending((p) => (p.some((x) => x.id === d.id) ? p : [...p, d]));
+        if (d.duplicate) setNotice(`${f.name} was already uploaded, so I used the existing copy.`);
+        else setDocs((all) => [d, ...all]);
       } catch (e) {
         setError(`${f.name}: ${(e as Error).message}`);
       }
     }
+    setReading(null);
     setBusy(null);
     if (fileInput.current) fileInput.current.value = "";
   };
@@ -210,28 +245,64 @@ export function AssistantPage() {
     attach(fromTransfer(e.dataTransfer));
   };
 
+  const suggestions = mention
+    ? docs.filter((d) => d.filename.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 6)
+    : [];
+
+  const pickMention = (d: KnowledgeDoc) => {
+    if (!mention) return;
+    const caret = box.current?.selectionStart ?? text.length;
+    const next = `${text.slice(0, mention.start)}@${d.filename} ${text.slice(caret)}`;
+    setText(next);
+    setMention(null);
+    const pos = mention.start + d.filename.length + 2;
+    requestAnimationFrame(() => {
+      box.current?.focus();
+      box.current?.setSelectionRange(pos, pos);
+    });
+  };
+
+  const onTextChange = (value: string, caret: number) => {
+    setText(value);
+    const m = /(^|\s)@([^\n@]{0,40})$/.exec(value.slice(0, caret));
+    setMention(m ? { start: caret - m[2].length - 1, query: m[2] } : null);
+    setMentionIdx(0);
+  };
+
   const send = async (override?: string) => {
     const body = (override ?? text).trim();
     if (!body || busy) return;
     setBusy("send");
     setError(null);
     let id = active;
+    let tmpId = "";
     try {
       if (!id) {
         id = (await postJSON<{ id: string }>("/chat/conversations", {})).id;
         setActive(id);
       }
       const docIds = pending.map((d) => d.id);
-      setMsgs((m) => [...m, { id: `tmp${Date.now()}`, role: "user", content: body, cards: [], doc_ids: docIds }]);
+      const lower = body.toLowerCase();
+      const focusIds = docs.filter((d) => lower.includes(`@${d.filename.toLowerCase()}`)).map((d) => d.id); // files named with @
+      tmpId = `tmp${Date.now()}`;
+      setMsgs((m) => [...m, { id: tmpId, role: "user", content: body, cards: [], doc_ids: docIds }]);
       setText("");
+      setMention(null);
       setPending([]);
-      const reply = await postJSON<Msg>(`/chat/conversations/${id}/messages`, { text: body, doc_ids: docIds });
+      abort.current = new AbortController();
+      const reply = await postJSON<Msg>(`/chat/conversations/${id}/messages`, { text: body, doc_ids: docIds, focus_doc_ids: focusIds }, abort.current.signal);
       setMsgs((m) => [...m, reply]);
       await loadSide();
     } catch (e) {
-      setError((e as Error).message);
-      if (id) open(id); // drop the optimistic message if the server stored nothing
+      if ((e as Error).name === "AbortError") {
+        setText(body); // stopped: the server drops the turn, so the question goes back into the box
+        setMsgs((m) => m.filter((x) => x.id !== tmpId));
+      } else {
+        setError((e as Error).message);
+        if (id) open(id); // drop the optimistic message if the server stored nothing
+      }
     } finally {
+      abort.current = null;
       setBusy(null);
     }
   };
@@ -263,15 +334,41 @@ export function AssistantPage() {
   // ---- composer (centred on an empty chat, docked at the bottom otherwise) ----
   const composer = (
     <div className="mx-auto w-full max-w-3xl px-4">
+      {notice && <p className="mb-2 rounded-lg border border-ink-700 bg-ink-900 px-3 py-2 text-xs text-ink-300" role="status">{notice}</p>}
       {error && <p className="mb-2 rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-xs text-down" role="alert">{error}</p>}
-      <div className="rounded-2xl border border-ink-700 bg-ink-850 p-2 shadow-lg shadow-black/20 focus-within:border-ink-600">
+      <div className="relative rounded-2xl border border-ink-700 bg-ink-850 p-2 shadow-lg shadow-black/20 focus-within:border-ink-600">
+        {suggestions.length > 0 && (
+          <ul role="listbox" aria-label="Files" className="absolute bottom-full left-0 z-20 mb-2 max-h-64 w-full max-w-md overflow-auto rounded-xl border border-ink-700 bg-ink-900 p-1 shadow-xl shadow-black/40">
+            {suggestions.map((d, i) => (
+              <li key={d.id} role="option" aria-selected={i === mentionIdx}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); pickMention(d); }}
+                  onMouseEnter={() => setMentionIdx(i)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] ${i === mentionIdx ? "bg-ink-800 text-ink-100" : "text-ink-300"}`}
+                >
+                  <Icon d={I.file} size={13} />
+                  <span className="truncate">{d.filename}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {reading && (
+          <div className="flex items-center gap-2 px-2 pb-2 pt-1 text-[12px] text-ink-300" role="status">
+            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
+            <span className="max-w-[260px] truncate">Reading {reading}…</span>
+            <span className="text-ink-400">large PDFs can take a minute</span>
+          </div>
+        )}
         {pending.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-1 pb-2 pt-1">
             {pending.map((d) => (
               <span key={d.id} className="flex items-center gap-1.5 rounded-lg border border-ink-700 bg-ink-900 py-1 pl-2 pr-1 text-[12px] text-ink-300">
                 <Icon d={I.file} size={13} />
                 <span className="max-w-[180px] truncate">{d.filename}</span>
-                {d.status !== "ready" && <span className="text-down">{d.status === "no_vision" ? "can't read image yet" : "no text found"}</span>}
+                {d.status === "ocr" && <span className="text-accent">reading scanned pages…</span>}
+                {d.status !== "ready" && d.status !== "ocr" && <span className="text-down">{d.status === "no_vision" ? "can't read image yet" : "no text found"}</span>}
                 <button onClick={() => setPending((p) => p.filter((x) => x.id !== d.id))} aria-label="Remove attachment" className="rounded p-0.5 text-ink-400 hover:bg-ink-800 hover:text-down">
                   <Icon d={I.x} size={12} />
                 </button>
@@ -282,8 +379,24 @@ export function AssistantPage() {
         <textarea
           ref={box}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => onTextChange(e.target.value, e.target.selectionStart)}
           onKeyDown={(e) => {
+            if (suggestions.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                setMentionIdx((i) => (i + (e.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                pickMention(suggestions[mentionIdx] ?? suggestions[0]);
+                return;
+              }
+              if (e.key === "Escape") {
+                setMention(null);
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               send();
@@ -297,7 +410,7 @@ export function AssistantPage() {
             attach(files);
           }}
           rows={1}
-          placeholder="Message your assistant…"
+          placeholder="Message your assistant… (type @ to refer to a file)"
           className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 text-[15px] leading-relaxed text-ink-100 outline-none placeholder:text-ink-400"
         />
         <div className="flex items-center gap-1 pt-1">
@@ -309,19 +422,30 @@ export function AssistantPage() {
             aria-label="Attach files"
             className="grid h-9 w-9 place-items-center rounded-full text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-50"
           >
-            {busy === "upload" ? <span className="text-[10px]">…</span> : <Icon d={I.clip} size={18} />}
+            {busy === "upload" ? <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-ink-600 border-t-accent" /> : <Icon d={I.clip} size={18} />}
           </button>
           <div className="ml-auto flex items-center gap-1">
             <MicButton compact disabled={!!busy} onError={setError} onText={(t) => setText((cur) => (cur.trim() ? `${cur.trim()} ${t}` : t))} />
-            <button
-              onClick={() => send()}
-              disabled={!!busy || !text.trim()}
-              aria-label="Send message"
-              title="Send (Enter)"
-              className="grid h-9 w-9 place-items-center rounded-full bg-accent text-ink-950 transition hover:brightness-110 disabled:bg-ink-700 disabled:text-ink-400"
-            >
-              <Icon d={I.up} size={18} />
-            </button>
+            {busy === "send" ? (
+              <button
+                onClick={() => abort.current?.abort()}
+                aria-label="Stop"
+                title="Stop"
+                className="grid h-9 w-9 place-items-center rounded-full bg-ink-100 text-ink-950 transition hover:brightness-90"
+              >
+                <Icon d={I.stop} size={16} />
+              </button>
+            ) : (
+              <button
+                onClick={() => send()}
+                disabled={!!busy || !text.trim()}
+                aria-label="Send message"
+                title="Send (Enter)"
+                className="grid h-9 w-9 place-items-center rounded-full bg-accent text-ink-950 transition hover:brightness-110 disabled:bg-ink-700 disabled:text-ink-400"
+              >
+                <Icon d={I.up} size={18} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -553,7 +677,7 @@ export function AssistantPage() {
                         </button>
                       </div>
                       <div className="mt-1 text-[11px] text-ink-400">
-                        {d.kind} · {d.status === "ready" ? d.summary || `${d.chars} characters` : d.status === "no_vision" ? "no image model available to read this" : "no text found (scanned document?)"}
+                        {d.kind} · {d.status === "ready" ? d.summary || `${d.chars} characters` : d.status === "ocr" ? "reading scanned pages in the background…" : d.status === "no_vision" ? "no image model available to read this" : "no text found (scanned document?)"}
                       </div>
                     </li>
                   ))}

@@ -14,9 +14,11 @@ from trader.indicators.core import (
     SMA,
     BollingerBands,
     HistoricalVolatility,
+    Pivots,
     RollingExtreme,
     SessionVWAP,
+    candle_patterns,
 )
 
 __all__ = ["ADX", "ATR", "EMA", "MACD", "ROC", "RSI", "SMA", "BollingerBands", "HistoricalVolatility",
-           "RollingExtreme", "SessionVWAP"]
+           "RollingExtreme", "SessionVWAP", "Pivots", "candle_patterns"]

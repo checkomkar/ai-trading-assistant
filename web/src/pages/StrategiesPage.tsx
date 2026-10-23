@@ -10,6 +10,8 @@ import {
   type Validation,
 } from "../api";
 import { Results } from "../components/backtest/Results";
+import { QuestionDialog } from "../components/QuestionDialog";
+import { StrategyChat } from "../components/StrategyChat";
 import { MicButton } from "../components/MicButton";
 import { StrategyLibrary } from "../components/StrategyLibrary";
 import { ReadyMade } from "../components/ReadyMade";
@@ -35,8 +37,10 @@ export function StrategiesPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
-  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "synthetic", lots: 1, max_daily_loss: 5000 });
+  const [bt, setBt] = useState({ underlying: "NIFTY", start: iso(new Date(Date.now() - 365 * 864e5)), end: iso(new Date()), source: "auto", pricing: "hybrid", lots: 1, max_daily_loss: 5000, capital: 100000, quantity: "" });
   const timer = useRef<ReturnType<typeof setTimeout>>();
+  // The AI asked questions instead of building: shown as a dialog with tappable answers.
+  const [ask, setAsk] = useState<{ input: string; base: Record<string, unknown> | null; t: Translation } | null>(null);
 
   const refreshSaved = () => getJSON<SavedStrategy[]>("/strategies").then(setSaved).catch(() => {});
   useEffect(() => {
@@ -90,12 +94,53 @@ export function StrategiesPage() {
     run("translate", async () => {
       const t = await postJSON<Translation>("/strategies/translate", { text: input, base_spec: base ?? null });
       setTranslation(t);
+      if (!t.spec && t.questions.length > 0) setAsk({ input, base: base ?? null, t });
       if (t.spec) {
         setSpec(t.spec);
         setCurrent(null);
         setRefine("");
       }
     });
+
+  const answerQuestions = (answers: (string | null)[]) => {
+    if (!ask) return;
+    const NL = String.fromCharCode(10);
+    const lines = ask.t.questions.flatMap((q, i) => (answers[i] ? [`- ${q} -> ${answers[i]}`] : []));
+    const skipped = answers.some((a) => !a);
+    const next = [
+      ask.input,
+      "",
+      "My answers to your questions:",
+      lines.length ? lines.join(NL) : "(none)",
+      ...(skipped ? ["For anything I did not answer, choose sensible defaults and list them under assumptions."] : []),
+    ].join(NL);
+    const base = ask.base;
+    setAsk(null);
+    translate(next, base);
+  };
+
+  const askAssistant = () => {
+    if (!ask) return;
+    const NL = String.fromCharCode(10);
+    const qs = ask.t.questions.map((q, i) => `${i + 1}. ${q}`).join(NL);
+    try {
+      sessionStorage.setItem(
+        "assistant-prefill",
+        [
+          `I am building a strategy and the strategy builder needs more detail. My description: "${ask.input}"`,
+          "",
+          "It asked:",
+          qs,
+          "",
+          "Please go through these with me one at a time, suggest sensible answers, then draft the strategy.",
+        ].join(NL),
+      );
+    } catch {
+      /* storage unavailable: the Assistant just opens empty */
+    }
+    setAsk(null);
+    location.hash = "#/assistant";
+  };
 
   const loadTemplate = () =>
     run("template", async () => {
@@ -147,16 +192,28 @@ export function StrategiesPage() {
         source: bt.source,
         pricing: bt.pricing,
         strategy_id: s.id,
-        engine_params: { lots: bt.lots, max_daily_loss: bt.max_daily_loss },
+        engine_params: isEquity ? { capital: bt.capital } : { lots: bt.lots, max_daily_loss: bt.max_daily_loss },
+        ...(isEquity && Number(bt.quantity) >= 1 ? { quantity: Math.floor(Number(bt.quantity)) } : {}),
       });
       setResult(r);
     });
 
+  const isEquity = (parsed as Record<string, unknown> | null | undefined)?.market === "equity";
   const dirty = current && validation?.spec_hash && validation.spec_hash !== current.spec_hash;
   const underlyings = ((parsed as Record<string, unknown> | null | undefined)?.underlyings as string[] | undefined) ?? ["NIFTY", "BANKNIFTY"];
 
   return (
     <main className="mx-auto grid w-full max-w-[1600px] flex-1 grid-cols-1 gap-4 p-4 sm:p-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+      {ask && (
+        <QuestionDialog
+          questions={ask.t.questions}
+          choices={ask.t.choices ?? []}
+          busy={busy === "translate"}
+          onSubmit={answerQuestions}
+          onAssistant={askAssistant}
+          onClose={() => setAsk(null)}
+        />
+      )}
       <aside className="flex flex-col gap-4">
         <section className="rounded-lg border border-ink-800 bg-ink-900 p-4 text-xs">
           <h1 className="mb-1 text-sm font-semibold">Describe a strategy</h1>
@@ -323,35 +380,60 @@ ${r.text.trim()}` : r.text.trim()));
               </div>
 
               <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-ink-800 pt-3">
-                <Field label="Underlying">
-                  <select value={bt.underlying} onChange={(e) => setBt({ ...bt, underlying: e.target.value })} className={inp}>
-                    {underlyings.map((u) => (
-                      <option key={u}>{u}</option>
-                    ))}
-                  </select>
-                </Field>
+                {!isEquity && (
+                  <Field label="Underlying">
+                    <select value={bt.underlying} onChange={(e) => setBt({ ...bt, underlying: e.target.value })} className={inp}>
+                      {underlyings.map((u) => (
+                        <option key={u}>{u}</option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
                 <Field label="From">
                   <input type="date" value={bt.start} onChange={(e) => setBt({ ...bt, start: e.target.value })} className={inp} />
                 </Field>
                 <Field label="To">
                   <input type="date" value={bt.end} onChange={(e) => setBt({ ...bt, end: e.target.value })} className={inp} />
                 </Field>
-                <Field label="Data">
-                  <select value={bt.source} onChange={(e) => setBt({ ...bt, source: e.target.value })} className={inp}>
-                    <option value="auto">Auto</option>
-                    <option value="real">Real</option>
-                    <option value="simulated">Simulated</option>
-                  </select>
-                </Field>
-                <Field label="Option prices">
-                  <select value={bt.pricing} onChange={(e) => setBt({ ...bt, pricing: e.target.value })} className={inp}>
-                    <option value="synthetic">Synthetic</option>
-                    <option value="real">Real candles</option>
-                  </select>
-                </Field>
-                <Field label="Lots">
-                  <input type="number" min={1} max={50} value={bt.lots} onChange={(e) => setBt({ ...bt, lots: Number(e.target.value) || 1 })} className={`${inp} w-16`} />
-                </Field>
+                {isEquity ? (
+                  <Field label="Capital ₹">
+                    <input type="number" min={10000} step={10000} value={bt.capital} onChange={(e) => setBt({ ...bt, capital: Number(e.target.value) || 100000 })} className={`${inp} w-28`} />
+                  </Field>
+                ) : null}
+                {isEquity ? (
+                  <Field label="Shares per trade">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={bt.quantity}
+                      placeholder="auto"
+                      title="Leave empty to size each trade from capital and the strategy's risk settings"
+                      onChange={(e) => setBt({ ...bt, quantity: e.target.value })}
+                      className={`${inp} w-24`}
+                    />
+                  </Field>
+                ) : (
+                  <>
+                    <Field label="Data">
+                      <select value={bt.source} onChange={(e) => setBt({ ...bt, source: e.target.value })} className={inp}>
+                        <option value="auto">Auto</option>
+                        <option value="real">Real</option>
+                        <option value="simulated">Simulated</option>
+                      </select>
+                    </Field>
+                    <Field label="Option prices">
+                      <select value={bt.pricing} onChange={(e) => setBt({ ...bt, pricing: e.target.value })} className={inp}>
+                        <option value="synthetic">Modelled (Black-Scholes)</option>
+                        <option value="hybrid">Real where stored, else modelled</option>
+                        <option value="real">Real candles only (skips the rest)</option>
+                      </select>
+                    </Field>
+                    <Field label="Lots">
+                      <input type="number" min={1} max={50} value={bt.lots} onChange={(e) => setBt({ ...bt, lots: Number(e.target.value) || 1 })} className={`${inp} w-16`} />
+                    </Field>
+                  </>
+                )}
                 <button
                   onClick={backtest}
                   disabled={!!busy || !validation?.valid}
@@ -375,6 +457,15 @@ ${r.text.trim()}` : r.text.trim()));
               )}
             </section>
           </>
+        )}
+
+        {parsed && validation?.valid && (
+          <StrategyChat
+            key={String(parsed.name ?? "draft")}
+            spec={parsed}
+            backtestId={result?.id ?? null}
+            onLoadSpec={setSpec}
+          />
         )}
 
         {result && <Results r={result} />}

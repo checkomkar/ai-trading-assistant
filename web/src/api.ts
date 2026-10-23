@@ -221,6 +221,10 @@ export interface BacktestMetrics {
   daily_pnl: { date: string; pnl: number }[];
   monthly_pnl: { month: string; pnl: number }[];
   equity_curve: { ts: string | null; equity: number; drawdown?: number }[];
+  // stock (daily) runs
+  by_symbol?: { symbol: string; trades: number; net_pnl: number; win_rate: number }[];
+  average_holding_days?: number | null;
+  exposure_pct?: number | null;
 }
 
 export interface BacktestResult {
@@ -232,7 +236,7 @@ export interface BacktestResult {
   strategy: string;
   data_source: "real" | "simulated";
   built_from?: string | null;
-  pricing_mode: "synthetic" | "real";
+  pricing_mode: "synthetic" | "real" | "hybrid" | "equity delivery";
   bars: number;
   days: number;
   signals: number;
@@ -264,11 +268,12 @@ export interface Coverage {
   simulated: { candles: number; from: string | null; to: string | null; stored_timeframes: string[]; built_from: string | null };
 }
 
-export async function postJSON<T>(path: string, body: unknown): Promise<T> {
+export async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw failure(res, data);
@@ -298,9 +303,11 @@ export interface KnowledgeDoc {
   filename: string;
   kind: string;
   size_bytes: number;
-  status: "ready" | "no_text" | "no_vision";
+  status: "ready" | "no_text" | "no_vision" | "ocr";
   summary: string;
   chars: number;
+  /** The server already had this file, so nothing new was stored. */
+  duplicate?: boolean;
 }
 
 /** Send one file's bytes; the server extracts its text (PDF, Word, Excel, text, or an image via a vision model). */
@@ -311,7 +318,11 @@ export async function uploadFile(file: File, save = true): Promise<KnowledgeDoc>
     body: file,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw failure(res, data);
+  if (!res.ok) {
+    if (res.status >= 502 && res.status <= 504)
+      throw new ApiError("The server could not finish reading this file (it may be too large or too complex). Try a smaller file, or split the PDF.", res.status);
+    throw failure(res, data);
+  }
   usageChanged();
   return data as KnowledgeDoc;
 }
@@ -362,6 +373,7 @@ export interface Translation {
   english: string | null;
   assumptions: string[];
   questions: string[];
+  choices: string[][];
   unsupported: string[];
   errors: string[];
   model: string;

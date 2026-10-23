@@ -20,6 +20,8 @@ from trader.api.deps import CurrentUser
 from trader.brokers.catalog import CATALOG
 from trader.brokers.fyers import auth as fyers_auth
 from trader.brokers.fyers.check import fetch_profile
+from trader.brokers.flattrade import auth as flattrade_auth
+from trader.brokers.shoonya import auth as shoonya_auth
 from trader.db.models import BrokerConnectionRow
 from trader.logging import get_logger
 
@@ -39,10 +41,17 @@ def _session(r: BrokerConnectionRow, key: str) -> dict | None:
     if spec is None or not spec.daily_login:
         return None
     try:
-        tok = vault.unseal(r.secret_blob, key).get("access_token")
+        blob = vault.unseal(r.secret_blob, key)
+        tok = blob.get("access_token")
     except Exception:  # noqa: BLE001 - a key that no longer decrypts reads as "not signed in"
-        tok = None
-    exp = fyers_auth.jwt_expiry(tok) if tok else None
+        blob, tok = {}, None
+    if spec.id in ("shoonya", "flattrade"):  # opaque session tokens: the expiry was stored with them
+        try:
+            exp = datetime.fromisoformat(blob["expires_at"]) if tok else None
+        except (KeyError, ValueError):
+            exp = None
+    else:
+        exp = fyers_auth.jwt_expiry(tok) if tok else None
     live = bool(tok) and (exp is None or exp > datetime.now(timezone.utc))
     return {"state": "signed_in" if live else ("expired" if tok else "none"), "expires_at": exp.isoformat() if exp else None}
 
@@ -57,8 +66,9 @@ def _view(r: BrokerConnectionRow, key: str = "") -> dict:
 @router.get("/catalog")
 async def catalog(request: Request, user: CurrentUser) -> dict:
     return {"vault_ready": bool(request.app.state.settings.credential_key), "fyers_redirect_uri": _redirect_uri(request),
+            "flattrade_redirect_uri": _flattrade_redirect_uri(request),
             "brokers": [{"id": b.id, "name": b.name, "status": b.status, "data_note": b.data_note, "docs_url": b.docs_url,
-                         "daily_login": b.daily_login,
+                         "daily_login": b.daily_login, "login_kind": b.login_kind,
                          "fields": [{"key": f.key, "label": f.label, "secret": f.secret} for f in b.fields]}
                         for b in CATALOG.values()]}
 
@@ -113,6 +123,143 @@ async def disconnect(request: Request, user: CurrentUser, conn_id: str) -> dict:
         await s.delete(row)
     await request.app.state.feeds.drop(user.id)
     return {"deleted": conn_id}
+
+
+# ---- Flattrade: the customer signs in on Flattrade's page; we exchange the code it sends back --------------------------
+def _flattrade_redirect_uri(request: Request) -> str:
+    st = request.app.state.settings
+    base = st.public_url.rstrip("/") if st.public_url else str(request.base_url).rstrip("/")
+    return f"{base}/api/brokers/flattrade/callback"
+
+
+async def _flattrade_row(request: Request, user, s) -> BrokerConnectionRow:
+    row = (await s.execute(select(BrokerConnectionRow).where(BrokerConnectionRow.owner == user.id,
+                                                              BrokerConnectionRow.broker == "flattrade"))).scalars().first()
+    if row is None:
+        raise HTTPException(404, "Save your Flattrade keys first.")
+    return row
+
+
+@router.post("/flattrade/login-url")
+async def flattrade_login_url(request: Request, user: CurrentUser) -> dict:
+    """The Flattrade sign-in address for this customer's API key. They sign in on Flattrade's own site."""
+    async with request.app.state.sessionmaker() as s:
+        row = await _flattrade_row(request, user, s)
+    keys = _unseal(request, row)
+    return {"url": flattrade_auth.login_url(keys["api_key"]), "redirect_uri": _flattrade_redirect_uri(request)}
+
+
+@router.get("/flattrade/callback")
+async def flattrade_callback(request: Request, user: CurrentUser, code: str = "", client: str = ""):
+    """Flattrade sends the browser here after sign-in, with `code`. Only the signed-in customer's own saved key can use it."""
+    if not code:
+        return _page("Flattrade did not send a sign-in code. Start again from the Brokers page.", False)
+    async with request.app.state.sessionmaker() as s:
+        row = await _flattrade_row(request, user, s)
+    keys = _unseal(request, row)
+    try:
+        sess = await asyncio.to_thread(flattrade_auth.exchange_code, keys["api_key"], keys["api_secret"], code)
+    except flattrade_auth.FlattradeAuthError as exc:
+        return _page(str(exc), False)
+    except ConnectionError:
+        return _page("Flattrade could not be reached. Try again in a minute.", False)
+    async with request.app.state.sessionmaker() as s, s.begin():
+        row = await s.get(BrokerConnectionRow, row.id)
+        keys = {**_unseal(request, row), "access_token": sess["token"], "client_id": sess["client_id"] or client,
+                "expires_at": sess["expires_at"]}
+        row.secret_blob = vault.seal(keys, request.app.state.settings.credential_key)
+    _refresh_feed(request, user, sess["token"], datetime.fromisoformat(sess["expires_at"]))
+    return RedirectResponse("/#/brokers", status_code=303)
+
+
+@router.post("/flattrade/test")
+async def flattrade_test(request: Request, user: CurrentUser) -> dict:
+    """Read-only: one NIFTY quote through the saved session. Places no orders."""
+    from trader.market_data.flattrade import post as flattrade_post
+
+    async with request.app.state.sessionmaker() as s:
+        row = await _flattrade_row(request, user, s)
+    keys = _unseal(request, row)
+    token = keys.get("access_token")
+    if not token or not keys.get("client_id"):
+        return {"ok": False, "needs_login": True, "message": "Not signed in to Flattrade today. Use \"Sign in to Flattrade\"."}
+    try:
+        q = await asyncio.to_thread(shoonya_auth.quote, keys["client_id"], token, "NSE", "26000", flattrade_post)
+    except shoonya_auth.ShoonyaAuthError as exc:
+        return {"ok": False, "needs_login": True, "message": str(exc)}
+    except ConnectionError as exc:
+        return {"ok": False, "message": str(exc)}
+    return {"ok": True, "nifty": shoonya_auth.num(q.get("lp")), "name": keys["client_id"], "fy_id": keys["client_id"]}
+
+
+# ---- Shoonya: password + 2FA code typed here, used once for the sign-in and never stored ------------------------------
+class ShoonyaLoginIn(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+    totp: str = Field(min_length=4, max_length=12)
+
+
+LOGIN_WINDOW_S, LOGIN_MAX = 600, 5  # Shoonya can lock an account after repeated bad attempts: stop at five
+
+
+def _login_budget(request: Request, owner: str) -> None:
+    attempts = getattr(request.app.state, "shoonya_attempts", None)
+    if attempts is None:
+        attempts = request.app.state.shoonya_attempts = {}
+    now = time.time()
+    recent = [t for t in attempts.get(owner, []) if now - t < LOGIN_WINDOW_S]
+    if len(recent) >= LOGIN_MAX:
+        raise HTTPException(429, "Too many sign-in attempts. Wait ten minutes before trying again, so Shoonya does not lock your account.")
+    attempts[owner] = [*recent, now]
+
+
+async def _shoonya_row(request: Request, user, s) -> BrokerConnectionRow:
+    row = (await s.execute(select(BrokerConnectionRow).where(BrokerConnectionRow.owner == user.id,
+                                                              BrokerConnectionRow.broker == "shoonya"))).scalars().first()
+    if row is None:
+        raise HTTPException(404, "Save your Shoonya keys first.")
+    return row
+
+
+@router.post("/shoonya/login")
+async def shoonya_login(request: Request, user: CurrentUser, body: ShoonyaLoginIn) -> dict:
+    """Sign in to the customer's Shoonya account for today. The password and code go to Shoonya in this one request and
+    are discarded; only the session token is kept (encrypted) so the live feed can run."""
+    _login_budget(request, user.id)
+    async with request.app.state.sessionmaker() as s:
+        row = await _shoonya_row(request, user, s)
+    keys = _unseal(request, row)
+    try:
+        sess = await asyncio.to_thread(shoonya_auth.sign_in, keys["user_id"], body.password, body.totp, keys["vendor_code"],
+                                       keys["api_key"], keys.get("imei") or "striktek")
+    except shoonya_auth.ShoonyaAuthError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except ConnectionError as exc:
+        raise HTTPException(502, "Shoonya could not be reached. Try again in a minute.") from exc
+    async with request.app.state.sessionmaker() as s, s.begin():
+        row = await s.get(BrokerConnectionRow, row.id)
+        keys = {**_unseal(request, row), "access_token": sess["token"], "expires_at": sess["expires_at"]}
+        row.secret_blob = vault.seal(keys, request.app.state.settings.credential_key)
+    request.app.state.shoonya_attempts.pop(user.id, None)  # a good sign-in clears the counter
+    _refresh_feed(request, user, sess["token"], datetime.fromisoformat(sess["expires_at"]))
+    return {"ok": True, "name": sess["name"], "user_id": sess["user_id"], "expires_at": sess["expires_at"]}
+
+
+@router.post("/shoonya/test")
+async def shoonya_test(request: Request, user: CurrentUser) -> dict:
+    """Read-only: one NIFTY quote through the saved session. Places no orders."""
+    async with request.app.state.sessionmaker() as s:
+        row = await _shoonya_row(request, user, s)
+    keys = _unseal(request, row)
+    token = keys.get("access_token")
+    if not token:
+        return {"ok": False, "needs_login": True, "message": "Not signed in to Shoonya today. Use \"Sign in to Shoonya\"."}
+    try:
+        q = await asyncio.to_thread(shoonya_auth.quote, keys["user_id"], token, "NSE", "26000")
+    except shoonya_auth.ShoonyaAuthError as exc:
+        return {"ok": False, "needs_login": True, "message": str(exc)}
+    except ConnectionError as exc:
+        return {"ok": False, "message": str(exc)}
+    return {"ok": True, "nifty": shoonya_auth.num(q.get("lp")), "name": keys["user_id"], "fy_id": keys["user_id"]}
 
 
 # ---- Fyers: the customer signs in to THEIR Fyers app; we keep the day's token (encrypted) and can test it -----------------
@@ -196,12 +343,12 @@ async def fyers_callback(request: Request, user: CurrentUser, auth_code: str = "
     return RedirectResponse("/#/brokers", status_code=303)
 
 
-def _refresh_feed(request: Request, user, token: str) -> None:
+def _refresh_feed(request: Request, user, token: str, expires_at: datetime | None = None) -> None:
     """A new sign-in: reconnect this customer's running feed with the new token (a feed that is not running just starts
     on their next visit)."""
     async def go() -> None:
         try:
-            await request.app.state.feeds.refresh(user.id, token)
+            await request.app.state.feeds.refresh(user.id, token, expires_at)
         except Exception as exc:  # noqa: BLE001 - the sign-in itself succeeded; the feed status shows any problem
             log.warning("feed refresh failed", event="feed.refresh_failed", owner=user.id, error=str(exc))
 

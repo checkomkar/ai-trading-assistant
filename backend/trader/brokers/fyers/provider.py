@@ -26,7 +26,8 @@ log = get_logger("fyers")
 
 # Fyers intraday resolutions (minutes). Daily ("1D"), weekly and monthly also exist; seconds need Prime.
 RESOLUTION = {"1m": "1", "2m": "2", "3m": "3", "5m": "5", "10m": "10", "15m": "15", "20m": "20",
-              "30m": "30", "60m": "60"}
+              "30m": "30", "60m": "60", "1d": "1D"}
+DAILY_CHUNK = timedelta(days=360)  # daily requests allow up to a year
 HISTORY_CHUNK = timedelta(days=90)  # API allows up to 100 days per intraday request
 HISTORY_PAUSE_S = 0.35  # stay well under the per-second rate limit
 QUOTES_BATCH = 50
@@ -287,19 +288,20 @@ class FyersMarketDataProvider(MarketDataProvider):
             raise ValueError(f"Unsupported timeframe {timeframe}")
         # Requests older than the plan's depth fail with a bare "Invalid input": clamp instead.
         earliest = self._now() - timedelta(days=self.settings.fyers_intraday_history_days)
-        if start < earliest:
+        daily = timeframe == "1d"  # daily history is not limited to the intraday depth
+        if start < earliest and not daily:
             log.info("history start clamped to plan depth", event="fyers.history_clamped",
                      symbol=instrument.symbol, requested=start.isoformat(), clamped=earliest.isoformat())
             start = earliest
         if start >= end:
             return []
         out: list[Candle] = []
-        for frm, to in history_windows(start, end):
+        for frm, to in history_windows(start, end, DAILY_CHUNK if daily else HISTORY_CHUNK):
             req = {"symbol": instrument.token, "resolution": RESOLUTION[timeframe], "date_format": "0",
                    "range_from": str(frm), "range_to": str(to),
                    # Futures: continuous series across rollovers.
                    "cont_flag": "1" if instrument.instrument_type == InstrumentType.FUT else "0",
-                   "oi_flag": "1" if instrument.instrument_type != InstrumentType.INDEX else "0"}
+                   "oi_flag": "1" if instrument.instrument_type in (InstrumentType.FUT, InstrumentType.OPT) else "0"}
             resp = await asyncio.to_thread(self.rest().history, req)
             out += parse_history(resp, instrument.token, timeframe)
             await asyncio.sleep(HISTORY_PAUSE_S)

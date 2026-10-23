@@ -197,3 +197,36 @@ def test_folder_rename_delete_and_unknowns(client):
     assert bad.status_code == 404
     # "folders" is a real route, not mistaken for a strategy id
     assert client.get("/strategies/folders").status_code == 200
+
+
+def test_translate_returns_tappable_choices_aligned_with_questions():
+    fake = FakeClaude({**env(questions=["Shares or options?", "Stop loss?"]),
+                       "choices": [["Shares", "Options", " "], "not a list"]})
+    out = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=fake)).translate("momentum on reliance")
+    assert out.questions == ["Shares or options?", "Stop loss?"] and out.choices[0] == ["Shares", "Options"] and "5%" in out.choices[1]  # bad entry -> common answers
+    legacy = StrategyTranslator(AnthropicProvider("claude-opus-5-5", client=FakeClaude(env(questions=["Which?"])))).translate("x y z w q")
+    assert legacy.choices == [[]]  # no choices and no known topic: free-text answer
+
+
+def test_common_answers_fill_in_when_the_model_sends_no_choices():
+    from trader.ai.strategy_translator import _choices
+
+    out = _choices({"questions": ["What stop-loss percentage?", "Do you want a trailing stop?", "Something unusual?",
+                                  "Risk per trade % of capital?"], "choices": []})
+    assert "5%" in out[0] and out[1][0] == "No trailing stop" and out[2] == [] and "1% of capital" in out[3]
+    assert _choices({"questions": ["Stop loss?"], "choices": [["2%", "4%"]]}) == [["2%", "4%"]]  # the model's own win
+
+
+def test_customers_see_a_plain_message_when_every_model_fails_but_the_operator_sees_why():
+    from trader.ai.providers import BUSY_MESSAGE, TranslatorUnavailable, public_message
+
+    exc = TranslatorUnavailable("anthropic: rejected the API key; groq: 413 request too large")
+    assert public_message(exc, is_admin=False) == BUSY_MESSAGE and "groq" in public_message(exc, is_admin=True)
+
+
+def test_the_translator_prompt_stays_small_enough_for_free_model_tiers():
+    from trader.ai.providers import MAX_REPLY_TOKENS
+    from trader.ai.strategy_translator import SYSTEM_PROMPT
+
+    assert len(SYSTEM_PROMPT) < 18_500 and MAX_REPLY_TOKENS <= 2500  # Groq's free tier allows 8,000 tokens per request in all
+    assert '"enum":["open"' not in SYSTEM_PROMPT  # the operand names are listed once, not twice

@@ -37,6 +37,7 @@ class Signal:
     timestamp: datetime
     strategy: str
     features: dict = field(default_factory=dict)  # snapshot for the audit trail (PRD §2.3)
+    risk_pct: float | None = None  # size the trade so the stop loses this % of capital (None = the fixed lots)
 
 
 @dataclass(frozen=True)
