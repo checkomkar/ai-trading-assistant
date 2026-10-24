@@ -12,6 +12,7 @@ import { PaperPage } from "./pages/PaperPage";
 import { StocksPage } from "./pages/StocksPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { PricingPage } from "./pages/PricingPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import { BrokersPage } from "./pages/BrokersPage";
 import { RISK_WARNING } from "./pages/LegalPage";
 import { UpgradePrompt } from "./components/UpgradePrompt";
@@ -20,9 +21,9 @@ import { useAuth } from "./auth";
 import { brand } from "./brand";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
-type View = "market" | "paper" | "stocks" | "strategies" | "research" | "assistant" | "pricing" | "brokers";
+type View = "market" | "paper" | "stocks" | "strategies" | "research" | "assistant" | "pricing" | "brokers" | "profile";
 const viewFromHash = (): View =>
-  location.hash === "#/pricing" ? "pricing" : location.hash === "#/research" ? "research" : location.hash === "#/brokers" ? "brokers" : location.hash === "#/assistant" ? "assistant" : location.hash === "#/backtest" || location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : location.hash === "#/stocks" ? "stocks" : "market";
+  location.hash === "#/profile" ? "profile" : location.hash === "#/pricing" ? "pricing" : location.hash === "#/research" ? "research" : location.hash === "#/brokers" ? "brokers" : location.hash === "#/assistant" ? "assistant" : location.hash === "#/backtest" || location.hash === "#/strategies" ? "strategies" : location.hash === "#/paper" ? "paper" : location.hash === "#/stocks" ? "stocks" : "market";
 
 export default function App() {
   const [market, setMarket] = useState<MarketMessage | null>(null);
@@ -72,7 +73,11 @@ export default function App() {
         </div>
       )}
 
-      {view === "brokers" ? (
+      {view === "profile" ? (
+        <ErrorBoundary label="Profile page">
+          <ProfilePage />
+        </ErrorBoundary>
+      ) : view === "brokers" ? (
         <ErrorBoundary label="Brokers page">
           <BrokersPage />
         </ErrorBoundary>

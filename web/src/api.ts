@@ -618,6 +618,24 @@ export interface Me {
   phone_login?: boolean;
 }
 
+export interface Profile {
+  local: boolean;
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  is_admin: boolean;
+  created_at: string | null;
+  sign_in: ("password" | "google" | "phone")[];
+  can_set_password: boolean;
+  plan: { id: string; name: string; price_inr: number };
+  status: "trial" | "active" | "ending" | "lapsed" | "owner" | "local";
+  period_start: string | null;
+  period_end: string | null;
+  sessions: number;
+  this_session_expires: string | null;
+}
+
 export interface UsageLine {
   used: number;
   limit: number | null;

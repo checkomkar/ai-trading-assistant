@@ -202,3 +202,70 @@ async def otp_verify(request: Request, response: Response, body: OtpVerifyIn) ->
         p = accounts.principal_from_row(row)
     _set_cookie(request, response, token)
     return _me(p, True)
+
+
+# ---- profile (the signed-in account's own details) ----------------------------------------------------------------------
+class ProfileIn(BaseModel):
+    name: str = Field(max_length=80)
+
+
+class PasswordIn(BaseModel):
+    current: str = Field("", max_length=256)
+    new: str = Field(max_length=256)
+
+
+def _local_profile() -> dict:
+    return {"local": True, "id": accounts.LOCAL_ID, "name": "Local", "email": None, "phone": None, "is_admin": True,
+            "created_at": None, "sign_in": [], "can_set_password": False,
+            "plan": {"id": "owner", "name": "Local · no limits", "price_inr": 0}, "status": "local",
+            "period_start": None, "period_end": None, "sessions": 0, "this_session_expires": None}
+
+
+@router.get("/profile")
+async def get_profile(request: Request, user: CurrentUser) -> dict:
+    if user.local:
+        return _local_profile()
+    async with request.app.state.sessionmaker() as s:
+        out = await accounts.profile(s, user.id, request.cookies.get(COOKIE))
+    if out is None:
+        raise HTTPException(404, "Account not found.")
+    return {"local": False, **out}
+
+
+@router.patch("/profile")
+async def update_profile(request: Request, user: CurrentUser, body: ProfileIn) -> dict:
+    if user.local:
+        raise HTTPException(404, "Accounts are not enabled on this server.")
+    try:
+        async with request.app.state.sessionmaker() as s, s.begin():
+            await accounts.rename(s, user.id, body.name)
+    except accounts.AccountError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return await get_profile(request, user)
+
+
+@router.post("/password")
+async def change_password(request: Request, user: CurrentUser, body: PasswordIn) -> dict:
+    """Changing the password signs out every other device; this one stays signed in."""
+    if user.local:
+        raise HTTPException(404, "Accounts are not enabled on this server.")
+    key = f"pw|{user.id}"
+    if _throttled(key):
+        raise HTTPException(429, "Too many attempts. Try again in a few minutes.")
+    try:
+        async with request.app.state.sessionmaker() as s, s.begin():
+            await accounts.change_password(s, user.id, body.current, body.new)
+            await accounts.end_other_sessions(s, user.id, request.cookies.get(COOKIE))
+    except accounts.AccountError as exc:
+        _FAILS.setdefault(key, []).append(time.monotonic())
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True}
+
+
+@router.post("/sessions/end-others")
+async def end_other_sessions(request: Request, user: CurrentUser) -> dict:
+    if user.local:
+        raise HTTPException(404, "Accounts are not enabled on this server.")
+    async with request.app.state.sessionmaker() as s, s.begin():
+        n = await accounts.end_other_sessions(s, user.id, request.cookies.get(COOKIE))
+    return {"ended": n}

@@ -22,10 +22,12 @@ export function OptionChain({ underlying, onUnderlying }: Props) {
   useEffect(() => {
     setChain(null);
     setExpiry(null);
-    getJSON<Expiries>(`/options/${underlying}/expiries`).then((e) => {
-      setExpiries(e);
-      setExpiry(e.listed[0] ?? null);
-    });
+    getJSON<Expiries>(`/options/${underlying}/expiries`)
+      .then((e) => {
+        setExpiries(e);
+        setExpiry(e.listed[0] ?? null);
+      })
+      .catch(() => setExpiries(null)); // no broker connected yet: the page shows the connect card
   }, [underlying]);
 
   const sub = useMemo(() => ({ underlying, expiry, strikes: width }), [underlying, expiry, width]);

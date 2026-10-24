@@ -29,7 +29,7 @@ interface Props {
   socket: SocketStatus;
   feed: FeedStatus | null;
   mode: string | null;
-  view: "market" | "paper" | "stocks" | "strategies" | "research" | "assistant" | "pricing" | "brokers";
+  view: "market" | "paper" | "stocks" | "strategies" | "research" | "assistant" | "pricing" | "brokers" | "profile";
   showPaper?: boolean;
 }
 
@@ -109,7 +109,7 @@ export function Header({ session, simulated, provider, socket, feed, mode, view,
         <span className="num text-ink-300" title="India Standard Time">
           {istTime(now)} <span className="text-ink-400">IST</span>
         </span>
-        <UserMenu pricingActive={view === "pricing"} />
+        <UserMenu active={view === "pricing" || view === "profile" ? view : null} />
       </div>
     </header>
   );

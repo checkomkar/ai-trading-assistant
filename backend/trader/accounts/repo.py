@@ -153,3 +153,72 @@ async def account_for_phone(s: AsyncSession, phone: str, name: str, *, may_creat
         s.add(row)
         await s.flush()
     return None if row.disabled else row
+
+
+# ---- profile ---------------------------------------------------------------------------------------------------------
+def subscription_status(row: AccountRow, now: datetime | None = None) -> str:
+    """'owner', 'trial', 'active' (paid, renewing), 'ending' (paid, renewal cancelled or never set up) or 'lapsed'."""
+    now = now or datetime.now(timezone.utc)
+    if row.is_admin:
+        return "owner"
+    end = _utc(row.period_end)
+    if row.plan in PAID:
+        if end is None or end < now:
+            return "lapsed"
+        return "active" if row.billing_subscription else "ending"
+    return "trial"
+
+
+async def profile(s: AsyncSession, account_id: str, current_token: str | None) -> dict | None:
+    row = await s.get(AccountRow, account_id)
+    if row is None:
+        return None
+    p = principal_from_row(row)
+    now = datetime.now(timezone.utc)
+    sessions = (await s.execute(select(AuthSessionRow).where(AuthSessionRow.account_id == account_id,
+                                                             AuthSessionRow.expires_at > now))).scalars().all()
+    plan = PLANS.get(p.plan) if p.plan in PLANS else None
+    return {
+        "id": row.id, "name": row.name, "email": row.email, "phone": row.phone, "is_admin": row.is_admin,
+        "created_at": _utc(row.created_at).isoformat(),
+        "sign_in": [m for m, on in (("password", row.password_hash), ("google", row.google_sub), ("phone", row.phone)) if on],
+        "can_set_password": row.email is not None,
+        "plan": {"id": p.plan, "name": plan.name if plan else ("Owner" if p.plan == "owner" else p.plan),
+                 "price_inr": plan.price_inr if plan else 0},
+        "status": subscription_status(row, now),
+        "period_start": p.period_start.isoformat() if p.period_start else None,
+        "period_end": p.period_end.isoformat() if p.period_end else None,
+        "sessions": len(sessions),
+        "this_session_expires": next((_utc(x.expires_at).isoformat() for x in sessions
+                                      if current_token and x.token_hash == security.token_hash(current_token)), None),
+    }
+
+
+async def rename(s: AsyncSession, account_id: str, name: str) -> None:
+    row = await s.get(AccountRow, account_id)
+    if row is None:
+        raise AccountError("Account not found.")
+    name = " ".join(name.split())[:80]
+    if not name:
+        raise AccountError("Enter a name.")
+    row.name = name
+
+
+async def change_password(s: AsyncSession, account_id: str, current: str, new: str) -> None:
+    """Change (or, for a Google / phone account with an email, set) the password."""
+    row = await s.get(AccountRow, account_id)
+    if row is None:
+        raise AccountError("Account not found.")
+    if row.password_hash is not None and not security.verify_password(current, row.password_hash):
+        raise AccountError("The current password is not right.")
+    if row.password_hash is None and row.email is None:
+        raise AccountError("This account signs in by phone and has no email to use a password with.")
+    if (problem := security.password_problem(new)):
+        raise AccountError(problem)
+    row.password_hash = security.hash_password(new)
+
+
+async def end_other_sessions(s: AsyncSession, account_id: str, keep_token: str | None) -> int:
+    keep = security.token_hash(keep_token) if keep_token else ""
+    res = await s.execute(delete(AuthSessionRow).where(AuthSessionRow.account_id == account_id, AuthSessionRow.token_hash != keep))
+    return res.rowcount or 0
