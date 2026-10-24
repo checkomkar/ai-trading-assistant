@@ -1123,16 +1123,18 @@ body.lp {
 .lp-card-full {
   grid-column: 1 / -1 !important;
 }
-/* the chart stays a texture behind the copy and comes forward on the empty right */
-.lp-canvas {
-  -webkit-mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.45) 40%, #000 70%);
-  mask-image: linear-gradient(to right, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.45) 40%, #000 70%);
+/* the chart stays a texture behind the copy and comes forward on the empty right (a plain overlay: a CSS mask on a
+   WebGL canvas makes some browsers flicker) */
+.lp-hero-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(to right, rgba(10, 13, 18, 0.72) 0%, rgba(10, 13, 18, 0.55) 40%, rgba(10, 13, 18, 0) 72%);
 }
 @media (max-width: 760px) {
-  .lp-canvas {
-    -webkit-mask-image: none;
-    mask-image: none;
-    opacity: 0.45 !important;
+  .lp-hero-shade {
+    background: rgba(10, 13, 18, 0.55);
   }
 }
 .lp-ico {

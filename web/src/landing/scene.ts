@@ -11,7 +11,7 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(0x0a0d12, 10, 30);
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  camera.position.set(0, 2.2, 12);
+  camera.position.set(0, 0.6, 12); // level with the chart, so candles face the viewer
 
   const BG = new THREE.Color(0x0a0d12);
   const UP = new THREE.Color(0x22c55e);
@@ -19,12 +19,15 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
 
   // ---- candles ----
   const COUNT = 46; // visible candles
-  const SPACING = 0.46;
-  const BODY_W = 0.28;
-  const SCALE = 2.4; // price units -> world units
-  const LEFT = -((COUNT - 1) * SPACING) / 2;
   const Z = -2;
-  const BASE_Y = -0.55; // below the headline: bright on the empty right, dim behind the copy on the left
+  const LOOK_Y = 0.6;
+  // Laid out from the visible frustum in resize(): the chart spans the width and sits in the lower part of the hero,
+  // below the headline, whatever the screen's shape.
+  let SPACING = 0.46;
+  let BODY_W = 0.28;
+  let SCALE = 2.4; // price units -> world units
+  let LEFT = -((COUNT - 1) * SPACING) / 2;
+  let BASE_Y = -0.55;
 
   let seed = 11;
   const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -36,7 +39,7 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
     const c = o + drift + (rand() - 0.5) * 0.3;
     const h = Math.max(o, c) + rand() * 0.14;
     const l = Math.min(o, c) - rand() * 0.14;
-    last = c * 0.93; // pulled back to the middle of the frame
+    last = THREE.MathUtils.clamp(c * 0.9, -0.5, 0.5); // pulled back to the middle of the band
     return { o, h, l, c };
   };
   type C = { o: number; h: number; l: number; c: number };
@@ -48,7 +51,8 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
   forming.l = forming.o;
 
   const box = new THREE.BoxGeometry(1, 1, 1);
-  const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.92 });
+  // Opaque on purpose: transparent instances are re-sorted every frame and flicker where bodies and wicks overlap.
+  const mat = new THREE.MeshBasicMaterial();
   const bodies = new THREE.InstancedMesh(box, mat, COUNT + 2);
   const wicks = new THREE.InstancedMesh(box, mat, COUNT + 2);
   bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -57,7 +61,7 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
 
   const ma = new THREE.Line(
     new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array((COUNT + 2) * 3), 3)),
-    new THREE.LineBasicMaterial({ color: 0xf5b301, transparent: true, opacity: 0.85 }),
+    new THREE.LineBasicMaterial({ color: 0xc99504 }),
   );
   scene.add(ma);
   const pulse = new THREE.Mesh(new THREE.SphereGeometry(0.06, 16, 16), new THREE.MeshBasicMaterial({ color: 0xffffff }));
@@ -75,9 +79,9 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
       const up = k.c >= k.o;
       const bodyH = Math.max(Math.abs(k.c - k.o) * SCALE, 0.015);
       const mid = BASE_Y + ((k.o + k.c) / 2) * SCALE;
-      m4.makeScale(BODY_W, bodyH, BODY_W).setPosition(x, mid, Z);
+      m4.makeScale(BODY_W, bodyH, 0.02).setPosition(x, mid, Z); // flat: a chart, not blocks
       bodies.setMatrixAt(i, m4);
-      m4.makeScale(0.03, Math.max((k.h - k.l) * SCALE, 0.02), 0.03).setPosition(x, BASE_Y + ((k.h + k.l) / 2) * SCALE, Z);
+      m4.makeScale(BODY_W * 0.14, Math.max((k.h - k.l) * SCALE, 0.02), 0.02).setPosition(x, BASE_Y + ((k.h + k.l) / 2) * SCALE, Z - 0.01);
       wicks.setMatrixAt(i, m4);
       // brighter to the right: behind the headline the chart stays a texture, not a distraction
       const fade = THREE.MathUtils.smoothstep(x, LEFT + COUNT * SPACING * 0.35, LEFT + COUNT * SPACING * 0.85);
@@ -156,6 +160,15 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
     camera.aspect = w / h;
     camera.position.z = w / h < 0.8 ? 19 : 12;
     camera.updateProjectionMatrix();
+    // visible size of the plane the candles live on
+    const dist = camera.position.z - Z;
+    const halfH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * dist;
+    const halfW = halfH * camera.aspect;
+    SPACING = (2 * halfW * 1.04) / COUNT;
+    BODY_W = SPACING * 0.6;
+    LEFT = -((COUNT - 1) * SPACING) / 2;
+    SCALE = halfH * 0.4; // a move of 1 price unit = 20% of the screen height (prices stay within about ±0.6)
+    BASE_Y = LOOK_Y - halfH * 0.36; // about two thirds of the way down, under the headline
   };
   resize();
   window.addEventListener("resize", resize);
@@ -203,15 +216,15 @@ export function mountScene(canvas: HTMLCanvasElement, { reduced }: { reduced: bo
       candles.push({ o: forming.o, h: forming.h, l: forming.l, c: forming.target });
       const n = next();
       const o = forming.target;
-      forming = { o, h: o, l: o, c: o, target: o * 0.93 + (n.c - n.o) }; // pulled back toward the middle of the frame
+      forming = { o, h: o, l: o, c: o, target: THREE.MathUtils.clamp(o * 0.9 + (n.c - n.o), -0.6, 0.6) }; // stays in its band
     }
     draw(p);
     dust.rotation.y = t * 0.012;
     look.x += (target.x - look.x) * 0.04;
     look.y += (target.y - look.y) * 0.04;
-    camera.position.x = look.x * 0.9;
-    camera.position.y = 2.2 - look.y * 0.5;
-    camera.lookAt(0, 0.6, -2);
+    camera.position.x = look.x * 0.5;
+    camera.position.y = LOOK_Y - look.y * 0.25;
+    camera.lookAt(0, LOOK_Y, Z);
     renderer.render(scene, camera);
   };
   function loop() {
