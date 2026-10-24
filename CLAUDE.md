@@ -74,7 +74,7 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
 - `backend/alembic/`: migrations, run automatically at API start-up
 - `backend/config/`: `nse_holidays.yaml`, `costs.yaml`
 - `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Two entries:
-  - `index.html` + `src/landing/`: the public landing page at `/` (static, crawlable HTML; GSAP motion, a lazy three.js hero scene; JSON-LD, FAQ, `public/robots.txt`, `sitemap.xml`, `llms.txt`, `og.png`). Old `/#/...` links redirect to `/app/`.
+  - `index.html` + `src/landing/`: the public landing page at `/` (static, crawlable HTML; GSAP motion, a looping candlestick SVG behind the hero (`public/hero-candles.svg`, regenerate with `node scripts/hero-candles.mjs`); JSON-LD, FAQ, `public/robots.txt`, `sitemap.xml`, `llms.txt`, `og.png`). Old `/#/...` links redirect to `/app/`.
   - `app/index.html` + `src/main.tsx`: the app at `/app/` (hash routes). Pages: Market, Paper, Stocks, Strategies (one screen: library, strategy + settings, tabbed results; modals and drawers instead of scrolling), Research (sweeps, walk-forward, holdout, AI research), Assistant, Brokers (backtests are run from Strategies).
   - `src/analytics.ts`: Google Analytics 4 for both pages, only when `VITE_GA_ID` is set in `web/.env` (build time) and only after the visitor accepts the cookie banner; page paths and a few named events, never strategy or account data.
   - `src/ui/`: `feedback.tsx` (loader + toasts; `api.ts` tracks every POST/PATCH/PUT/DELETE and toasts its failure, `{ quiet: true }` opts out), `overlay.tsx` (Modal, Drawer), `maximize.tsx` (full-screen charts), `PromptBox.tsx` (growing text area with voice input; the mic falls back to the browser's speech recognition without a Deepgram key).
