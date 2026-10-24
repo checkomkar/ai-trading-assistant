@@ -83,7 +83,7 @@ def build_strategy(req: BacktestRequest) -> tuple[Strategy, EngineConfig, bool, 
         eng.update(trail_activate_pct=e.trail.activate_pct if e.trail else None,
                    trail_pct=e.trail.trail_pct if e.trail else None,
                    max_hold_bars=e.time_exit_bars, eod_exit=e.eod,
-                   max_trades_per_day=spec.risk.max_trades_per_day)
+                   max_trades_per_day=spec.risk.max_trades_per_day or None)
         uses_vwap = any(o.ind in ("vwap", "fut_close") for c in _all_conditions(spec)
                         for o in walk_operands(c) if hasattr(o, "ind"))
         params = {"spec": spec.model_dump(mode="json", by_alias=True, exclude_none=True), "spec_hash": spec.hash,
@@ -185,7 +185,7 @@ async def load_for(sessionmaker: async_sessionmaker, req: BacktestRequest) -> bt
     return data
 
 
-async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest, owner: str = "local") -> dict:
+async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest, owner: str = "local", cache_key: str | None = None) -> dict:
     t0 = time_mod.perf_counter()
     data = await load_for(sessionmaker, req)
     t_load = time_mod.perf_counter() - t0
@@ -199,7 +199,7 @@ async def run_and_store(sessionmaker: async_sessionmaker, req: BacktestRequest, 
         strategy=(f"spec:{out['params']['strategy']['spec']['name']}"[:32] if req.strategy == "spec" else req.strategy),
         data_source=out["data_source"],
         pricing_mode=out["pricing_mode"], summary=out["metrics"] | {"equity_curve": None, "daily_pnl": None},
-        result=out,
+        result=out, cache_key=cache_key,
     )
     async with sessionmaker() as s, s.begin():
         s.add(row)

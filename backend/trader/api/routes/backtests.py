@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from trader.api.deps import CurrentUser, MeterDep
+from trader.backtest import cache as bt_cache
 from trader.backtest import chart_series
 from trader.backtest import data as bt_data
 from trader.backtest.runner import WARMUP_DAYS, BacktestRequest, run_and_store
@@ -28,7 +29,7 @@ class StrategyParamsIn(BaseModel):
     atr_pct_min: float = Field(0.04, ge=0, le=2)
     entry_start: str = "09:30"
     entry_end: str = "14:45"
-    max_trades_per_day: int = Field(3, ge=1, le=20)
+    max_trades_per_day: int = Field(3, ge=1, le=400)
     stop_loss_pct: float = Field(25, gt=0, lt=100)
     target_pct: float = Field(50, gt=0, le=500)
 
@@ -66,6 +67,7 @@ class BacktestIn(BaseModel):
     calibrate: bool = True  # synthetic prices use the calibration fitted on real options, when one exists
     slippage_pct: float = Field(0.05, ge=0, le=5)  # stock strategies: per side
     quantity: int | None = Field(None, ge=1, le=1_000_000)  # stock strategies: fixed shares per trade (None = size from capital)
+    force: bool = False  # run again even when an identical run on unchanged data is stored (backtest/cache.py)
 
     @model_validator(mode="after")
     def _range(self) -> "BacktestIn":
@@ -116,25 +118,58 @@ async def run(request: Request, body: BacktestIn, user: CurrentUser, meter: Mete
     if spec and spec.get("market") == "equity":
         return await _run_equity(request, body, spec, version_id, user, meter)
     req = option_request(request, body, spec, version_id, strategy)
+    async with request.app.state.sessionmaker() as s:
+        stamp = await bt_cache.data_stamp(s, req.underlying, req.source, req.start - timedelta(days=WARMUP_DAYS), req.end,
+                                          options=req.pricing in ("real", "hybrid"))
+    key = await _cached(request, body, spec, version_id, user, stamp + bt_cache.files_stamp(_data_dir(request), req.underlying))
+    if isinstance(key, dict):
+        return key
     try:
         async with meter.counted(user, "backtests"):  # no model involved: only a count, refunded if the run fails
-            return await run_and_store(request.app.state.sessionmaker, req, owner=user.id)
+            return await run_and_store(request.app.state.sessionmaker, req, owner=user.id, cache_key=key)
     except LookupError as exc:
         raise HTTPException(404, str(exc) if user.is_admin else "Market history for this period is not available yet. Please try again later.") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
 
 
+def _data_dir(request: Request):  # noqa: ANN202
+    return request.app.state.md.settings.data_dir
+
+
+async def _cached(request: Request, body: BacktestIn, spec: dict | None, version_id: str | None, user, stamp: list) -> dict | str:  # noqa: ANN001
+    """The stored run for these exact inputs on unchanged data, or the key to store a fresh run under."""
+    inputs = body.model_dump(mode="json", exclude={"force", "strategy_id", "spec"}) | {
+        "spec": spec, "version_id": version_id, "risk_free_rate": request.app.state.md.settings.risk_free_rate}
+    key = bt_cache.make_key(user.id, inputs, stamp)
+    if not body.force:
+        async with request.app.state.sessionmaker() as s:
+            hit = await bt_cache.lookup(s, user.id, key)
+        if hit is not None:
+            return hit
+    return key
+
+
 async def _run_equity(request: Request, body: BacktestIn, spec: dict, version_id: str | None, user, meter) -> dict:
     from trader.backtest import equity_runner as er
+    from trader.instruments import equities as eq
 
     req = er.EquityBacktestRequest(
         spec=spec, start=body.start, end=body.end, capital=body.engine_params.capital,
         slippage_pct=body.slippage_pct, quantity=body.quantity, strategy_version_id=version_id,
         risk_free_rate=request.app.state.md.settings.risk_free_rate)
     try:
+        symbols = eq.expand(er.parse_spec(spec).underlyings)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    async with request.app.state.sessionmaker() as s:
+        stamp = await bt_cache.equity_stamp(s, symbols, eq.warmup_start(body.start), body.end)
+    key = await _cached(request, body, spec, version_id, user, stamp + bt_cache.files_stamp(_data_dir(request), "EQUITY"))
+    if isinstance(key, dict):
+        return key
+    try:
         async with meter.counted(user, "backtests"):
-            return await er.run_and_store(request.app.state.sessionmaker, req, owner=user.id)
+            return await er.run_and_store(request.app.state.sessionmaker, req, owner=user.id, cache_key=key)
     except LookupError as exc:
         raise HTTPException(404, str(exc) + (er.OPERATOR_HINT if user.is_admin else "")) from None
     except ValueError as exc:

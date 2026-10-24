@@ -261,7 +261,9 @@ class OptionSelection(_Strict):
 
 
 class Risk(_Strict):
-    max_trades_per_day: int = Field(3, ge=1, le=20)
+    # Entries allowed per day; 0 = no limit (every signal is taken, one position at a time). The paper account's own
+    # risk limit (RiskEngine) still applies on top.
+    max_trades_per_day: int = Field(3, ge=0, le=400)
     # Size each trade so that hitting the stop loses about this % of capital (lots = budget / loss per lot, rounded
     # down; a trade whose single lot would risk more than the budget is skipped). None = the fixed number of lots.
     risk_per_trade_pct: float | None = Field(None, gt=0, le=5)
@@ -628,7 +630,8 @@ def render_english(spec: StrategySpec) -> str:
     n = spec.risk.max_trades_per_day
     sizing = (f"size each trade so the stop loses about {spec.risk.risk_per_trade_pct:g}% of capital; "
               if spec.risk.risk_per_trade_pct else "")
-    lines.append(f"\nRisk: {sizing}at most {n} trade{'s' if n != 1 else ''} per day, one position at a time. "
+    cap = f"at most {n} trade{'s' if n != 1 else ''} per day" if n else "no limit on trades per day"
+    lines.append(f"\nRisk: {sizing}{cap}, one position at a time. "
                  f"Expiry: nearest{' (rolled to the next one on expiry day)' if spec.option_selection.roll_on_expiry_day else ''}.")
     return "\n".join(lines)
 

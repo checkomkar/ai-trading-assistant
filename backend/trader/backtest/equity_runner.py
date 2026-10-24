@@ -124,7 +124,7 @@ def execute(req: EquityBacktestRequest, bars: dict[str, list[Candle]]) -> dict:
     }
 
 
-async def run_and_store(sessionmaker: async_sessionmaker, req: EquityBacktestRequest, owner: str = "local") -> dict:
+async def run_and_store(sessionmaker: async_sessionmaker, req: EquityBacktestRequest, owner: str = "local", cache_key: str | None = None) -> dict:
     spec = parse_spec(req.spec)
     symbols = eq.expand(spec.underlyings)
     async with sessionmaker() as s:
@@ -139,7 +139,7 @@ async def run_and_store(sessionmaker: async_sessionmaker, req: EquityBacktestReq
         underlying=(spec.underlyings[0] if len(symbols) > 1 or len(spec.underlyings) > 1 else symbols[0])[:32],
         start=req.start, end=req.end, timeframe="1d", strategy=f"spec:{spec.name}"[:32], data_source="real",
         pricing_mode=out["pricing_mode"], summary=out["metrics"] | {"equity_curve": None, "daily_pnl": None},
-        result=out)
+        result=out, cache_key=cache_key)
     async with sessionmaker() as s, s.begin():
         s.add(row)
     return {"id": run_id, "underlying": row.underlying, "start": req.start.isoformat(), "end": req.end.isoformat(),

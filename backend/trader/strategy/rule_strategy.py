@@ -303,7 +303,7 @@ class RuleStrategy(Strategy):
             return NoTrade("daily loss reached")
         if state.has_position:
             return NoTrade("existing position")
-        if state.trades_today >= self.spec.risk.max_trades_per_day:
+        if self.spec.risk.max_trades_per_day and state.trades_today >= self.spec.risk.max_trades_per_day:
             return NoTrade("max trades per day reached")
         for c in self.spec.filters.all:
             r = self.eval(c)

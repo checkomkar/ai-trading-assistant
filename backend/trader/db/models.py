@@ -135,6 +135,8 @@ class BacktestRunRow(Base):
     pricing_mode: Mapped[str] = mapped_column(String(16), nullable=False)  # synthetic | real
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Inputs + data fingerprint + engine code (backtest/cache.py): a repeat request returns this run instead of rerunning.
+    cache_key: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
 class StrategyRow(Base):

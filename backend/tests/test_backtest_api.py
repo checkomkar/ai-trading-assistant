@@ -129,3 +129,60 @@ def test_prefers_timeframe_with_more_coverage(tmp_path):
 
     d = asyncio.run(go())
     assert d.built_from == "5m" and len(d.bars) == 15 * 25
+
+
+def test_an_identical_request_on_unchanged_data_returns_the_stored_run(client):
+    body = {"underlying": "NIFTY", "start": (END - timedelta(days=20)).isoformat(), "end": END.isoformat(),
+            "strategy_params": {"adx_min": 12}}
+    first = client.post("/backtests", json=body).json()
+    assert not first.get("cached")
+    again = client.post("/backtests", json=body).json()
+    assert again["cached"] and again["id"] == first["id"] and again["metrics"] == first["metrics"]
+    changed = client.post("/backtests", json=body | {"strategy_params": {"adx_min": 13}}).json()
+    assert not changed.get("cached") and changed["id"] != first["id"]
+    forced = client.post("/backtests", json=body | {"force": True}).json()
+    assert not forced.get("cached") and forced["id"] != first["id"]
+    assert client.post("/backtests", json=body).json()["id"] == forced["id"]  # the newest run is the one reused
+
+
+def test_new_candles_in_the_range_invalidate_the_stored_run(client, tmp_path):
+    from trader.backtest import cache
+    from trader.db.models import CandleRow, InstrumentRow
+    from sqlalchemy import select
+
+    body = {"underlying": "NIFTY", "start": (END - timedelta(days=10)).isoformat(), "end": END.isoformat()}
+    first = client.post("/backtests", json=body).json()
+    sm = client.app.state.sessionmaker
+
+    async def add_bar():
+        async with sm() as s, s.begin():
+            inst = (await s.execute(select(InstrumentRow).where(InstrumentRow.symbol == "NIFTY",
+                                                                InstrumentRow.instrument_type == "INDEX"))).scalars().first()
+            last = (await s.execute(select(CandleRow).where(CandleRow.instrument_id == inst.id)
+                                    .order_by(CandleRow.ts.desc()).limit(1))).scalars().first()
+            s.add(CandleRow(instrument_id=inst.id, timeframe="1m", ts=last.ts, open=1, high=1, low=1, close=1, volume=0))
+
+    asyncio.run(add_bar())
+    assert client.post("/backtests", json=body).json()["id"] != first["id"]
+    assert cache.code_version() == cache.code_version()
+
+
+def test_trades_per_day_is_user_defined_and_zero_means_no_limit(client):
+    from trader.strategy.spec import MOMENTUM_V1, StrategySpec, render_english
+
+    def run(n):
+        spec = MOMENTUM_V1 | {"risk": {"max_trades_per_day": n},
+                              "exits": MOMENTUM_V1["exits"] | {"time_exit_bars": 2}}
+        r = client.post("/backtests", json={"underlying": "NIFTY", "start": (END - timedelta(days=30)).isoformat(),
+                                            "end": END.isoformat(), "strategy": "spec", "spec": spec})
+        assert r.status_code == 200, r.text
+        return r.json()["trades"]
+
+    one, unlimited = run(1), run(0)
+    per_day: dict = {}
+    for t in one:
+        per_day[t["signal_time"][:10]] = per_day.get(t["signal_time"][:10], 0) + 1
+    assert max(per_day.values(), default=0) <= 1
+    assert len(unlimited) >= len(one)
+    assert "no limit on trades per day" in render_english(StrategySpec.model_validate(MOMENTUM_V1 | {"risk": {"max_trades_per_day": 0}}))
+    StrategySpec.model_validate(MOMENTUM_V1 | {"risk": {"max_trades_per_day": 60}})  # above the old cap of 20
