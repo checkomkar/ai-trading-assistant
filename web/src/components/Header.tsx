@@ -42,7 +42,7 @@ export function Header({ session, simulated, provider, socket, feed, mode, view,
 
   const live = socket === "open" && feed?.connected;
   return (
-    <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-ink-800 bg-ink-900/80 px-4 py-2.5 backdrop-blur sm:px-6">
+    <header className="relative z-40 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-ink-800 bg-ink-900/80 px-4 py-2.5 backdrop-blur sm:px-6">
       <a href="#/" aria-label={`${brand.name} home`} className="flex items-center">
         <Logo size={30} />
       </a>

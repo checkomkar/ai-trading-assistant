@@ -51,7 +51,7 @@ export function UserMenu({ active }: { active: "pricing" | "profile" | null }) {
           <span className={`h-1.5 w-1.5 rounded-full ${profile?.status === "lapsed" ? "bg-down" : profile?.status === "ending" || profile?.status === "trial" ? "bg-accent" : "bg-up"}`} title={st.label} />
         </button>
         {open && (
-          <div role="menu" className="ov-pop absolute right-0 z-30 mt-2 w-64 rounded-lg border border-ink-700 bg-ink-900 p-1 text-xs shadow-xl">
+          <div role="menu" className="ov-pop absolute right-0 z-50 mt-2 w-64 rounded-lg border border-ink-700 bg-ink-900 p-1 text-xs shadow-xl">
             <div className="px-3 py-2.5">
               <p className="truncate font-medium text-ink-100">{local ? "Local user" : name}</p>
               {!local && <p className="truncate text-ink-400">{me.email}</p>}
