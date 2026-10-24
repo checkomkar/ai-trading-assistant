@@ -89,7 +89,7 @@ export function ResearchPage() {
   }, []);
 
   useEffect(() => {
-    postJSON<Tunable[]>("/research/tunables", strategyId ? { strategy_id: strategyId } : {})
+    postJSON<Tunable[]>("/research/tunables", strategyId ? { strategy_id: strategyId } : {}, undefined, { quiet: true })
       .then((t) => {
         setTunables(t);
         setRanges(Object.fromEntries(t.map((x) => [x.path, suggestRange(x.value)])));

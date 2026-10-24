@@ -1,3 +1,4 @@
+import { toast, track } from "./ui/feedback";
 export interface Quote {
   symbol: string;
   token: string;
@@ -156,6 +157,42 @@ function failure(res: Response, data: unknown, path = ""): ApiError {
   return new ApiError(msg, res.status, quota);
 }
 
+
+// ---- feedback for operations that change something: loader while running, toast on failure (ui/feedback.tsx) ----
+export interface CallOpts {
+  /** No loader and no error toast: background calls (live validation, preferences) and pages with their own errors. */
+  quiet?: boolean;
+  /** What the loader says; defaults from the path. */
+  label?: string;
+}
+
+const LABELS: [RegExp, string][] = [
+  [/^\/backtests/, "Running backtest…"],
+  [/^\/strategies\/translate/, "Translating with AI…"],
+  [/^\/strategies(\?|$)/, "Saving strategy…"],
+  [/^\/chat\/conversations\/[^/]+\/messages/, "Thinking…"],
+  [/^\/research\//, "Starting research job…"],
+  [/^\/knowledge\/upload/, "Reading file…"],
+  [/^\/speech\//, "Transcribing…"],
+  [/^\/equity\/refresh/, "Fetching daily candles…"],
+  [/^\/brokers\//, "Talking to the broker…"],
+];
+const labelFor = (path: string) => LABELS.find(([re]) => re.test(path))?.[1] ?? "Working…";
+
+async function mutate<T>(path: string, opts: CallOpts | undefined, fn: () => Promise<T>): Promise<T> {
+  const p = fn();
+  if (opts?.quiet) return p;
+  track(p, opts?.label ?? labelFor(path));
+  try {
+    return await p;
+  } catch (e) {
+    const err = e as Error & { status?: number; name?: string };
+    // sign-in and quota problems have their own screens; a cancelled request is not a failure
+    if (err.name !== "AbortError" && err.status !== 401 && err.status !== 402) toast.error(err.message || "Something went wrong");
+    throw e;
+  }
+}
+
 /** Something that may have used allowance finished: the header's usage meter re-reads. */
 const usageChanged = () => window.dispatchEvent(new Event("striktek:usage"));
 
@@ -285,6 +322,9 @@ export interface BacktestResult {
   metrics: BacktestMetrics;
   trades: BacktestTrade[];
   params: Record<string, Record<string, unknown>>;
+  /** Returned from the stored run with identical inputs on unchanged data, not run again. */
+  cached?: boolean;
+  cached_at?: string;
 }
 
 export interface BacktestRunSummary {
@@ -307,25 +347,29 @@ export interface Coverage {
   simulated: { candles: number; from: string | null; to: string | null; stored_timeframes: string[]; built_from: string | null };
 }
 
-export async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
+export async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal, opts?: CallOpts): Promise<T> {
+  return mutate(path, opts, async () => {
+    const res = await fetch(`/api${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw failure(res, data);
+    usageChanged();
+    return data as T;
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw failure(res, data);
-  usageChanged();
-  return data as T;
 }
 
-export async function postAudio<T>(path: string, audio: Blob): Promise<T> {
-  const res = await fetch(`/api${path}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/webm" }, body: audio });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw failure(res, data);
-  usageChanged();
-  return data as T;
+export async function postAudio<T>(path: string, audio: Blob, opts?: CallOpts): Promise<T> {
+  return mutate(path, opts, async () => {
+    const res = await fetch(`/api${path}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/webm" }, body: audio });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw failure(res, data);
+    usageChanged();
+    return data as T;
+  });
 }
 
 export interface TranslatorInfo {
@@ -350,25 +394,29 @@ export interface KnowledgeDoc {
 }
 
 /** Send one file's bytes; the server extracts its text (PDF, Word, Excel, text, or an image via a vision model). */
-export async function uploadFile(file: File, save = true): Promise<KnowledgeDoc> {
-  const res = await fetch(`/api/knowledge/upload?filename=${encodeURIComponent(file.name)}&save=${save}`, {
-    method: "POST",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
-    body: file,
+export async function uploadFile(file: File, save = true, opts?: CallOpts): Promise<KnowledgeDoc> {
+  return mutate("/knowledge/upload", opts, async () => {
+    const res = await fetch(`/api/knowledge/upload?filename=${encodeURIComponent(file.name)}&save=${save}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status >= 502 && res.status <= 504)
+        throw new ApiError("The server could not finish reading this file (it may be too large or too complex). Try a smaller file, or split the PDF.", res.status);
+      throw failure(res, data);
+    }
+    usageChanged();
+    return data as KnowledgeDoc;
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    if (res.status >= 502 && res.status <= 504)
-      throw new ApiError("The server could not finish reading this file (it may be too large or too complex). Try a smaller file, or split the PDF.", res.status);
-    throw failure(res, data);
-  }
-  usageChanged();
-  return data as KnowledgeDoc;
 }
 
-export async function del(path: string): Promise<void> {
-  const res = await fetch(`/api${path}`, { method: "DELETE" });
-  if (!res.ok) throw failure(res, await res.json().catch(() => ({})));
+export async function del(path: string, opts?: CallOpts): Promise<void> {
+  return mutate(path, opts ?? { label: "Deleting…" }, async () => {
+    const res = await fetch(`/api${path}`, { method: "DELETE" });
+    if (!res.ok) throw failure(res, await res.json().catch(() => ({})));
+  });
 }
 
 // ---- custom strategies (M3b) -------------------------------------------------------
@@ -379,11 +427,13 @@ export interface StrategyFolder {
   count: number;
 }
 
-export async function sendJSON<T>(method: "PATCH" | "PUT", path: string, body: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw failure(res, data);
-  return data as T;
+export async function sendJSON<T>(method: "PATCH" | "PUT", path: string, body: unknown, opts?: CallOpts): Promise<T> {
+  return mutate(path, opts ?? { label: "Saving…" }, async () => {
+    const res = await fetch(`/api${path}`, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw failure(res, data);
+    return data as T;
+  });
 }
 
 export interface SavedStrategy {

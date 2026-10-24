@@ -47,7 +47,7 @@ export function Header({ session, simulated, provider, socket, feed, mode, view,
         <Logo size={30} />
       </a>
 
-      <nav className="flex gap-1 rounded-md bg-ink-850 p-0.5 text-xs" aria-label="Sections">
+      <nav className="flex max-w-full gap-1 overflow-x-auto rounded-md bg-ink-850 p-0.5 text-xs [scrollbar-width:none]" aria-label="Sections">
         {([["market", "Market", "#/"], ["paper", "Paper", "#/paper"], ["stocks", "Stocks", "#/stocks"], ["strategies", "Strategies", "#/strategies"], ["research", "Research", "#/research"], ["assistant", "Assistant", "#/assistant"], ["brokers", "Brokers", "#/brokers"]] as const).filter(([id]) => showPaper || id !== "paper").map(([id, label, href]) => (
           <a
             key={id}

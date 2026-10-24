@@ -11,6 +11,7 @@ import {
 } from "lightweight-charts";
 import { getJSON, type CandleData, type PaperPosition, type PaperTrade } from "../api";
 import { fmtPrice } from "../format";
+import { MaximizeButton, useMaximize } from "../ui/maximize";
 
 // Lightweight Charts renders in UTC; shifting by +5:30 makes the axis read IST.
 const IST_OFFSET = 19_800;
@@ -112,8 +113,9 @@ export function PaperChart({ trades, positions, day, onDay }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, timeframe, JSON.stringify(mine.map((t) => t.id)), JSON.stringify(open.map((p) => [p.correlation_id, p.entry_time]))]);
 
+  const mx = useMaximize();
   return (
-    <section className="rounded-lg border border-ink-800 bg-ink-900">
+    <section className={mx.max ? mx.frame : "rounded-lg border border-ink-800 bg-ink-900"}>
       <div className="flex flex-wrap items-center gap-3 border-b border-ink-800 px-3 py-2">
         <h2 className="mr-1 text-sm font-semibold">Chart</h2>
         <div className="flex gap-1">
@@ -133,9 +135,10 @@ export function PaperChart({ trades, positions, day, onDay }: Props) {
         <span className="num ml-auto text-[11px] text-ink-400">
           {mine.length} trade{mine.length === 1 ? "" : "s"}{open.length ? ` · ${open.length} open` : ""} · {underlying} index, option prices in labels
         </span>
+        <MaximizeButton max={mx.max} onClick={mx.toggle} />
       </div>
       {error && <p className="px-3 py-2 text-xs text-down" role="alert">{error}</p>}
-      <div className="relative h-[360px]">
+      <div className={`relative ${mx.max ? "min-h-0 flex-1" : "h-[360px]"}`}>
         <div ref={box} className="absolute inset-0" />
         {!error && candles.length === 0 && (
           <div className="absolute inset-0 grid place-items-center text-xs text-ink-400">No stored candles for {shownDay}.</div>

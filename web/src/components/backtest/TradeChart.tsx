@@ -12,6 +12,7 @@ import {
 } from "lightweight-charts";
 import { getJSON, sendJSON, type BacktestTrade, type ChartSeries, type IndicatorInfo } from "../../api";
 import { fmtPrice } from "../../format";
+import { MaximizeButton, useMaximize } from "../../ui/maximize";
 import { IndicatorPicker, PALETTE, type AddedIndicator } from "./IndicatorPicker";
 
 // Lightweight Charts renders UTC; shift by +5:30 so the axis reads IST.
@@ -86,13 +87,16 @@ export function TradeChart({
   selected,
   onSelect,
   daily = false,
+  fill = false,
 }: {
   runId: string;
   trades: BacktestTrade[];
   selected: BacktestTrade | null;
   onSelect: (t: BacktestTrade | null) => void;
   daily?: boolean; // a stock run: daily candles of one stock at a time
+  fill?: boolean; // grow to the parent's height instead of a fixed one
 }) {
+  const mx = useMaximize();
   const [symbol, setSymbol] = useState<string | null>(null);
   const trades = useMemo(
     () => (daily ? allTrades.filter((t) => t.contract === (symbol ?? allTrades[0]?.contract)) : allTrades),
@@ -130,7 +134,7 @@ export function TradeChart({
     } catch {
       /* storage unavailable: settings just won't persist in this browser */
     }
-    if (prefsLoaded.current) sendJSON("PUT", `/prefs/${PREF_KEY}`, { value: added }).catch(() => undefined);
+    if (prefsLoaded.current) sendJSON("PUT", `/prefs/${PREF_KEY}`, { value: added }, { quiet: true }).catch(() => undefined);
   }, [added]);
 
   const openPicker = () => {
@@ -369,7 +373,7 @@ export function TradeChart({
   const removeAdded = (s: ChartSeries) => setAdded((xs) => xs.filter((x) => !sameIndicator(s, x)));
 
   return (
-    <section className="rounded-lg border border-ink-800 bg-ink-900">
+    <section className={mx.max ? mx.frame : `flex flex-col rounded-lg border border-ink-800 bg-ink-900 ${fill ? "h-full min-h-[420px]" : ""}`}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 pt-2.5">
         <div>
           <h3 className="text-sm font-semibold">
@@ -412,6 +416,7 @@ export function TradeChart({
           >
             ƒ Indicators{added.length ? ` (${added.length})` : ""}
           </button>
+          <MaximizeButton max={mx.max} onClick={mx.toggle} />
         </div>
         <ul className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-300" aria-label="Legend">
           <li className="flex items-center gap-1"><span style={{ color: COLORS.up }}>▲</span>{daily ? "Buy shares" : "Buy CE"}</li>
@@ -467,7 +472,7 @@ export function TradeChart({
         ) : null}
       </div>
 
-      <div className="relative h-[520px]">
+      <div className={`relative ${mx.max ? "min-h-0 flex-1" : fill ? "min-h-[320px] flex-1" : "h-[520px]"}`}>
         <div ref={box} className="absolute inset-0" />
         {!data && !error && <div className="absolute inset-0 grid place-items-center text-xs text-ink-400">Loading candles…</div>}
         {error && <div className="absolute inset-0 grid place-items-center text-xs text-down">{error}</div>}

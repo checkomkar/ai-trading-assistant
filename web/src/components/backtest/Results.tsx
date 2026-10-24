@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { BacktestResult, BacktestTrade } from "../../api";
 import { fmtInt, fmtPrice, trendClass } from "../../format";
 import { DailyPnlChart, EquityChart } from "./charts";
@@ -8,21 +8,26 @@ const rupee = (v: number | null | undefined) =>
   v == null ? "—" : `${v < 0 ? "−" : ""}₹${fmtPrice(Math.abs(v))}`;
 const num = (v: number | null | undefined, d = 2) => (v == null ? "—" : v.toFixed(d));
 
-export function Results({ r }: { r: BacktestResult }) {
+type Tab = "overview" | "chart" | "trades" | "breakdown";
+const TABS: [Tab, string][] = [["overview", "Overview"], ["chart", "Chart"], ["trades", "Trades"], ["breakdown", "Breakdown"]];
+
+/** One backtest, in tabs so it fits the screen: headline numbers, the trade chart, the trade list and the breakdowns.
+ *  `onRerun` is offered when the result came from the cache. */
+export function Results({ r, onRerun }: { r: BacktestResult; onRerun?: () => void }) {
   const m = r.metrics;
   const [selected, setSelected] = useState<BacktestTrade | null>(null);
-  const chartRef = useRef<HTMLDivElement>(null);
+  const [tab, setTab] = useState<Tab>("overview");
   useEffect(() => setSelected(null), [r.id]);
   const select = (t: BacktestTrade | null) => {
     setSelected(t);
-    if (t) chartRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (t) setTab("chart");
   };
   const capital = Number((r.params.engine as { capital?: number })?.capital ?? 100000);
   const daily = r.timeframe === "1d"; // a stock run
   return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-semibold">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-ink-800 px-4 py-2.5">
+        <h2 className="text-sm font-semibold">
           {r.underlying} · {r.start} → {r.end}
         </h2>
         <Badge tone={r.data_source === "real" ? "up" : "sim"}>{r.data_source === "real" ? "REAL DATA" : "SIMULATED DATA"}</Badge>
@@ -33,102 +38,143 @@ export function Results({ r }: { r: BacktestResult }) {
             {r.pricing_mode === "real" ? "REAL OPTION PRICES" : r.pricing_mode === "hybrid" ? "REAL + MODELLED OPTION PRICES" : "SYNTHETIC OPTION PRICES"}
           </Badge>
         )}
+        {r.cached && (
+          <span className="flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold tracking-widest text-ink-300 ring-1 ring-ink-600" title={r.cached_at ? `Stored ${new Date(r.cached_at).toLocaleString("en-IN")}` : undefined}>
+            FROM CACHE
+            {onRerun && (
+              <button onClick={onRerun} className="font-sans tracking-normal text-accent hover:underline">run again</button>
+            )}
+          </span>
+        )}
         <span className="num ml-auto text-[11px] text-ink-400">
           run {r.id} · {r.timeframe}{r.built_from && r.built_from !== r.timeframe ? ` (from ${r.built_from})` : ""} · {fmtInt(r.bars)} bars · {r.days} days · {r.signals} signals
         </span>
       </div>
 
-      {r.warnings.length > 0 && (
-        <ul className="flex flex-col gap-1 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-ink-100" role="note">
-          {r.warnings.map((w) => (
-            <li key={w} className="flex gap-2">
-              <span aria-hidden className="text-accent">!</span>
-              {w}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-ink-800 bg-ink-800 sm:grid-cols-4">
-        <Tile label="Net P&L" value={rupee(m.total_net_pnl)} tone={trendClass(m.total_net_pnl)} sub={`${num(m.return_pct)}% of capital`} />
-        <Tile label="Trades" value={fmtInt(m.trades)} sub={`${m.days_traded} of ${m.trading_days} days traded`} />
-        <Tile label="Win rate" value={m.win_rate == null ? "—" : `${num(m.win_rate, 1)}%`} sub={`avg win ${rupee(m.average_win)} · avg loss ${rupee(m.average_loss)}`} />
-        <Tile label="Profit factor" value={num(m.profit_factor)} sub={`expectancy ${rupee(m.expectancy)} / trade`} />
-        <Tile label="Max drawdown" value={rupee(m.max_drawdown)} sub={`${num(m.max_drawdown_pct)}% from peak`} />
-        <Tile label="Sharpe · Sortino" value={`${num(m.sharpe)} · ${num(m.sortino)}`} sub="daily, annualised" />
-        <Tile label="Charges" value={rupee(m.total_charges)} sub={`gross ${rupee(m.total_gross_pnl)}`} />
-        <Tile
-          label="Avg hold · MAE / MFE"
-          value={daily ? `${num(m.average_holding_days ?? null, 1)} days` : `${num(m.average_holding_minutes, 0)} min`}
-          sub={`${num(m.average_mae_pct, 1)}% / +${num(m.average_mfe_pct, 1)}%${daily && m.exposure_pct != null ? ` · invested ${num(m.exposure_pct, 0)}%` : ""}`}
-        />
+      <div role="tablist" aria-label="Backtest result" className="flex gap-1 border-b border-ink-800 px-3 pt-2">
+        {TABS.map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            className={`-mb-px rounded-t-md border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
+              tab === id ? "border-accent text-ink-100" : "border-transparent text-ink-400 hover:text-ink-100"
+            }`}
+          >
+            {label}
+            {id === "trades" && <span className="num ml-1.5 text-[10px] text-ink-400">{fmtInt(m.trades)}</span>}
+            {id === "overview" && r.warnings.length > 0 && <span className="ml-1.5 text-[10px] text-accent" title={`${r.warnings.length} warnings`}>!</span>}
+          </button>
+        ))}
       </div>
 
-      <div ref={chartRef} className="scroll-mt-4">
-        <TradeChart runId={r.id} trades={r.trades} selected={selected} onSelect={setSelected} daily={daily} />
-      </div>
+      <div key={tab} className="fade-in min-h-0 flex-1 overflow-y-auto p-4">
+        {tab === "overview" && (
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-ink-800 bg-ink-800 sm:grid-cols-4">
+              <Tile label="Net P&L" value={rupee(m.total_net_pnl)} tone={trendClass(m.total_net_pnl)} sub={`${num(m.return_pct)}% of capital`} />
+              <Tile label="Trades" value={fmtInt(m.trades)} sub={`${m.days_traded} of ${m.trading_days} days traded`} />
+              <Tile label="Win rate" value={m.win_rate == null ? "—" : `${num(m.win_rate, 1)}%`} sub={`avg win ${rupee(m.average_win)} · avg loss ${rupee(m.average_loss)}`} />
+              <Tile label="Profit factor" value={num(m.profit_factor)} sub={`expectancy ${rupee(m.expectancy)} / trade`} />
+              <Tile label="Max drawdown" value={rupee(m.max_drawdown)} sub={`${num(m.max_drawdown_pct)}% from peak`} />
+              <Tile label="Sharpe · Sortino" value={`${num(m.sharpe)} · ${num(m.sortino)}`} sub="daily, annualised" />
+              <Tile label="Charges" value={rupee(m.total_charges)} sub={`gross ${rupee(m.total_gross_pnl)}`} />
+              <Tile
+                label="Avg hold · MAE / MFE"
+                value={daily ? `${num(m.average_holding_days ?? null, 1)} days` : `${num(m.average_holding_minutes, 0)} min`}
+                sub={`${num(m.average_mae_pct, 1)}% / +${num(m.average_mfe_pct, 1)}%${daily && m.exposure_pct != null ? ` · invested ${num(m.exposure_pct, 0)}%` : ""}`}
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
+              <EquityChart metrics={m} capital={capital} />
+              <DailyPnlChart metrics={m} />
+            </div>
+            {r.warnings.length > 0 && (
+              <ul className="flex flex-col gap-1 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-ink-100" role="note">
+                {r.warnings.map((w) => (
+                  <li key={w} className="flex gap-2">
+                    <span aria-hidden className="text-accent">!</span>
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
-      <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
-        <EquityChart metrics={m} capital={capital} />
-        <DailyPnlChart metrics={m} />
-      </div>
+        {tab === "chart" && (
+          <div className="h-full">
+            <TradeChart runId={r.id} trades={r.trades} selected={selected} onSelect={setSelected} daily={daily} fill />
+          </div>
+        )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Breakdown title="Exit reasons" data={m.exit_reasons} />
-        <Breakdown title="No-trade reasons (bars)" data={r.no_trade_reasons} />
-        <section className="rounded-lg border border-ink-800 bg-ink-900 p-3 text-xs">
-          <h3 className="mb-2 text-sm font-semibold">{daily ? "By stock" : "By direction"}</h3>
+        {tab === "trades" && <TradesTable trades={r.trades} selectedId={selected?.trade_id ?? null} onSelect={select} daily={daily} />}
+
+        {tab === "breakdown" && (
+          <div className="flex flex-col gap-4">
+            {!daily && m.by_regime && Object.keys(m.by_regime).length > 0 && <RegimeBreakdown m={m} />}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <Breakdown title="Exit reasons" data={m.exit_reasons} />
+              <Breakdown title="No-trade reasons (bars)" data={r.no_trade_reasons} />
+              <SideAndMonth m={m} daily={daily} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SideAndMonth({ m, daily }: { m: BacktestResult["metrics"]; daily: boolean }) {
+  return (
+    <section className="rounded-lg border border-ink-800 bg-ink-900 p-3 text-xs">
+      <h3 className="mb-2 text-sm font-semibold">{daily ? "By stock" : "By direction"}</h3>
+      <table className="num w-full">
+        <thead className="text-[10px] uppercase tracking-wider text-ink-400">
+          <tr>
+            <th className="text-left font-medium">{daily ? "Stock" : "Side"}</th>
+            <th className="text-right font-medium">Trades</th>
+            <th className="text-right font-medium">Win %</th>
+            <th className="text-right font-medium">Net P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {daily
+            ? (m.by_symbol ?? []).map((v) => (
+                <tr key={v.symbol} className="border-t border-ink-800">
+                  <td className="py-1">{v.symbol}</td>
+                  <td className="text-right">{v.trades}</td>
+                  <td className="text-right">{num(v.win_rate, 1)}</td>
+                  <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
+                </tr>
+              ))
+            : Object.entries(m.by_direction).map(([k, v]) => (
+                <tr key={k} className="border-t border-ink-800">
+                  <td className="py-1">{k === "LONG" ? "Long (CE)" : "Short (PE)"}</td>
+                  <td className="text-right">{v.trades}</td>
+                  <td className="text-right">{num(v.win_rate, 1)}</td>
+                  <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
+                </tr>
+              ))}
+        </tbody>
+      </table>
+      {m.monthly_pnl.length > 0 && (
+        <>
+          <h3 className="mb-1 mt-3 text-sm font-semibold">By month</h3>
           <table className="num w-full">
-            <thead className="text-[10px] uppercase tracking-wider text-ink-400">
-              <tr>
-                <th className="text-left font-medium">{daily ? "Stock" : "Side"}</th>
-                <th className="text-right font-medium">Trades</th>
-                <th className="text-right font-medium">Win %</th>
-                <th className="text-right font-medium">Net P&L</th>
-              </tr>
-            </thead>
             <tbody>
-              {daily
-                ? (m.by_symbol ?? []).map((v) => (
-                    <tr key={v.symbol} className="border-t border-ink-800">
-                      <td className="py-1">{v.symbol}</td>
-                      <td className="text-right">{v.trades}</td>
-                      <td className="text-right">{num(v.win_rate, 1)}</td>
-                      <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
-                    </tr>
-                  ))
-                : Object.entries(m.by_direction).map(([k, v]) => (
-                    <tr key={k} className="border-t border-ink-800">
-                      <td className="py-1">{k === "LONG" ? "Long (CE)" : "Short (PE)"}</td>
-                      <td className="text-right">{v.trades}</td>
-                      <td className="text-right">{num(v.win_rate, 1)}</td>
-                      <td className={`text-right ${trendClass(v.net_pnl)}`}>{rupee(v.net_pnl)}</td>
-                    </tr>
-                  ))}
+              {m.monthly_pnl.map((x) => (
+                <tr key={x.month} className="border-t border-ink-800">
+                  <td className="py-1">{x.month}</td>
+                  <td className={`text-right ${trendClass(x.pnl)}`}>{rupee(x.pnl)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
-          {m.monthly_pnl.length > 0 && (
-            <>
-              <h3 className="mb-1 mt-3 text-sm font-semibold">By month</h3>
-              <table className="num w-full">
-                <tbody>
-                  {m.monthly_pnl.map((x) => (
-                    <tr key={x.month} className="border-t border-ink-800">
-                      <td className="py-1">{x.month}</td>
-                      <td className={`text-right ${trendClass(x.pnl)}`}>{rupee(x.pnl)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
-        </section>
-      </div>
-
-      {!daily && m.by_regime && Object.keys(m.by_regime).length > 0 && <RegimeBreakdown m={m} />}
-
-      <TradesTable trades={r.trades} selectedId={selected?.trade_id ?? null} onSelect={select} daily={daily} />
-    </div>
+        </>
+      )}
+    </section>
   );
 }
 

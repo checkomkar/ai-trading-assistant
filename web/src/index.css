@@ -57,3 +57,75 @@ body {
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--color-ink-700); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- feedback: loader bar, toasts, candle loader (ui/feedback.tsx) ---- */
+.fb-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 90;
+  opacity: 0;
+  transition: opacity 0.25s;
+  background: linear-gradient(90deg, transparent, var(--color-accent), #ffd76a, var(--color-accent), transparent);
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+.fb-bar-on {
+  opacity: 1;
+  animation: fbBar 1.1s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@keyframes fbBar {
+  from { background-position: -50% 0; }
+  to { background-position: 150% 0; }
+}
+.fb-toast {
+  animation: fbToast 0.32s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+@keyframes fbToast {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+}
+.fb-candle {
+  width: 7px;
+  border-radius: 2px;
+  height: 30%;
+  animation: fbCandle 1s ease-in-out infinite alternate;
+}
+@keyframes fbCandle {
+  from { height: 18%; opacity: 0.5; }
+  to { height: 100%; opacity: 1; }
+}
+.fade-in {
+  animation: fadeIn 0.25s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fb-bar-on, .fb-toast, .fb-candle, .fade-in { animation: none; }
+  .fb-candle { height: 60%; }
+}
+
+/* ---- overlays (ui/overlay.tsx) ---- */
+.ov-backdrop { animation: ovFade 0.2s ease-out; }
+.ov-pop { animation: ovPop 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.1); }
+.ov-slide { animation: ovSlide 0.28s cubic-bezier(0.2, 0.9, 0.3, 1); }
+@keyframes ovFade { from { opacity: 0; } }
+@keyframes ovPop { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@keyframes ovSlide { from { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .ov-backdrop, .ov-pop, .ov-slide { animation: none; }
+}
+.chat-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  animation: chatDot 0.9s ease-in-out infinite;
+}
+@keyframes chatDot {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-3px); }
+}

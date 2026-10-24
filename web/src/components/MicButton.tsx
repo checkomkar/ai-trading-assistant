@@ -1,18 +1,54 @@
 import { useEffect, useRef, useState } from "react";
 import { getJSON, postAudio } from "../api";
 
-/** Push-to-talk: record with the browser mic, send to /speech/transcribe (Deepgram), hand the text back. */
+// The browser's own speech recognition (Chrome, Edge, Safari): used when the server has no Deepgram key.
+type Recognition = { lang: string; interimResults: boolean; continuous: boolean; start(): void; stop(): void;
+  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onerror: ((e: { error: string }) => void) | null; onend: (() => void) | null };
+const BrowserSR: (new () => Recognition) | undefined =
+  typeof window !== "undefined" ? ((window as unknown as Record<string, unknown>).SpeechRecognition ?? (window as unknown as Record<string, unknown>).webkitSpeechRecognition) as never : undefined;
+
+/** Push-to-talk: record with the browser mic, send to /speech/transcribe (Deepgram), hand the text back. Without a
+ *  Deepgram key on the server, the browser's built-in speech recognition is used where it exists. */
 export function MicButton({ onText, onError, disabled, compact }: { onText: (t: string) => void; onError: (m: string) => void; disabled?: boolean; compact?: boolean }) {
   const [state, setState] = useState<"idle" | "recording" | "transcribing">("idle");
   const [configured, setConfigured] = useState<boolean | null>(null);
   const rec = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
+  const sr = useRef<Recognition | null>(null);
   const supported = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
 
   useEffect(() => {
     getJSON<{ configured: boolean }>("/speech/status").then((s) => setConfigured(s.configured)).catch(() => setConfigured(false));
-    return () => rec.current?.stream.getTracks().forEach((t) => t.stop());
+    return () => {
+      rec.current?.stream.getTracks().forEach((t) => t.stop());
+      sr.current?.stop();
+    };
   }, []);
+
+  const startBrowser = () => {
+    if (!BrowserSR) return;
+    const r = new BrowserSR();
+    r.lang = "en-IN";
+    r.interimResults = false;
+    r.continuous = true;
+    let heard = "";
+    r.onresult = (e) => {
+      heard = Array.from(e.results).map((x) => x[0].transcript).join(" ").trim();
+    };
+    r.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted") onError(e.error === "not-allowed" ? "Microphone unavailable. Allow mic access for this page in the browser." : `Voice input failed (${e.error}).`);
+    };
+    r.onend = () => {
+      setState("idle");
+      sr.current = null;
+      if (heard) onText(heard);
+    };
+    sr.current = r;
+    r.start();
+    setState("recording");
+  };
+  const browserMode = configured === false && !!BrowserSR;
 
   const start = async () => {
     try {
@@ -42,15 +78,18 @@ export function MicButton({ onText, onError, disabled, compact }: { onText: (t: 
     }
   };
 
-  const stop = () => rec.current?.state === "recording" && rec.current.stop();
+  const stop = () => {
+    if (sr.current) return sr.current.stop();
+    if (rec.current?.state === "recording") rec.current.stop();
+  };
 
-  if (!supported) return null;
-  const title = configured === false ? "Voice input needs DEEPGRAM_API_KEY in .env" : state === "recording" ? "Stop and transcribe" : "Describe by voice";
+  if (!supported && !BrowserSR) return null;
+  const title = configured === false && !browserMode ? "Voice input is not available in this browser" : state === "recording" ? "Stop and transcribe" : "Speak instead of typing";
   return (
     <button
       type="button"
-      onClick={state === "recording" ? stop : start}
-      disabled={disabled || state === "transcribing" || configured === false}
+      onClick={state === "recording" ? stop : browserMode ? startBrowser : start}
+      disabled={disabled || state === "transcribing" || (configured === false && !browserMode)}
       title={title}
       aria-label={title}
       className={

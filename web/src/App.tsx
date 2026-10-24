@@ -63,7 +63,7 @@ export default function App() {
   };
 
   return (
-    <div className={view === "assistant" ? "flex h-dvh flex-col overflow-hidden" : "flex min-h-full flex-col"}>
+    <div className={view === "assistant" ? "flex h-dvh flex-col overflow-hidden" : view === "strategies" ? "flex min-h-dvh flex-col lg:h-dvh lg:overflow-hidden" : "flex min-h-full flex-col"}>
       <Header session={market?.session ?? null} simulated={market?.simulated ?? null} provider={market?.provider ?? null} socket={socket} feed={market?.feed ?? null} mode={mode} view={view} showPaper={showPaper} />
 
       {market?.feed.error && !market.feed.connected && !market.feed.action && (
@@ -125,9 +125,9 @@ export default function App() {
       </main>
       )}
 
-      <footer className="border-t border-ink-800 px-6 py-3 text-[11px] text-ink-400">
-        <p className="font-medium text-down/90">Risk warning: {RISK_WARNING}</p>
-        <p className="mt-1">
+      <footer className={`border-t border-ink-800 px-6 text-ink-400 ${view === "strategies" ? "py-1.5 text-[10px]" : "py-3 text-[11px]"}`}>
+        <p className={`font-medium text-down/90`}>Risk warning: {RISK_WARNING}</p>
+        <p className={view === "strategies" ? "hidden" : "mt-1"}>
           {brand.name} · {brand.tagline}. Data → Analysis → Paper, no real orders. <a className="underline hover:text-ink-100" href="#/terms">Terms</a> · <a className="underline hover:text-ink-100" href="#/privacy">Privacy</a>
         </p>
       </footer>

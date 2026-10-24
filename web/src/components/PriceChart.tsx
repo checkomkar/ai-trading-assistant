@@ -8,6 +8,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { getJSON, type CandleData, type CandleMessage } from "../api";
+import { MaximizeButton, useMaximize } from "../ui/maximize";
 
 // Lightweight Charts renders in UTC; shifting by +5:30 makes the axis read IST.
 const IST_OFFSET = 19_800;
@@ -113,8 +114,9 @@ export function PriceChart({ symbol, timeframe, onSymbol, onTimeframe, liveCandl
     });
   }, [liveCandle, symbol, timeframe]);
 
+  const mx = useMaximize();
   return (
-    <section className="flex min-h-[380px] flex-col rounded-lg border border-ink-800 bg-ink-900">
+    <section className={mx.max ? mx.frame : "flex min-h-[380px] flex-col rounded-lg border border-ink-800 bg-ink-900"}>
       <div className="flex flex-wrap items-center gap-2 border-b border-ink-800 px-3 py-2">
         <div className="flex flex-wrap gap-1">
           {SYMBOLS.map((s) => (
@@ -140,6 +142,7 @@ export function PriceChart({ symbol, timeframe, onSymbol, onTimeframe, liveCandl
             </button>
           ))}
         </div>
+        <MaximizeButton max={mx.max} onClick={mx.toggle} />
       </div>
       <div className="relative flex-1">
         <div ref={box} className="absolute inset-0" />

@@ -67,24 +67,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     usage,
     refreshUsage,
     signIn: async (email, password) => {
-      await postJSON("/auth/login", { email, password });
+      await postJSON("/auth/login", { email, password }, undefined, { quiet: true });
       await loadMe();
     },
     signUp: async (email, password, name, invite_code) => {
-      await postJSON("/auth/signup", { email, password, name, invite_code });
+      await postJSON("/auth/signup", { email, password, name, invite_code }, undefined, { quiet: true });
       await loadMe();
     },
     signInWithGoogle: async (credential, invite_code) => {
-      await postJSON("/auth/google", { credential, invite_code });
+      await postJSON("/auth/google", { credential, invite_code }, undefined, { quiet: true });
       await loadMe();
     },
-    sendOtp: async (phone) => (await postJSON<{ phone: string }>("/auth/otp/send", { phone })).phone,
+    sendOtp: async (phone) => (await postJSON<{ phone: string }>("/auth/otp/send", { phone }, undefined, { quiet: true })).phone,
     verifyOtp: async (phone, code, name, invite_code) => {
-      await postJSON("/auth/otp/verify", { phone, code, name, invite_code });
+      await postJSON("/auth/otp/verify", { phone, code, name, invite_code }, undefined, { quiet: true });
       await loadMe();
     },
     signOut: async () => {
-      await postJSON("/auth/logout", {});
+      await postJSON("/auth/logout", {}, undefined, { quiet: true });
       setUsage(null);
       await loadMe();
     },

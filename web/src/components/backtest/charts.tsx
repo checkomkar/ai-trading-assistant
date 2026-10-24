@@ -8,6 +8,7 @@ import {
   type MouseEventParams,
   type UTCTimestamp,
 } from "lightweight-charts";
+import { MaximizeButton, useMaximize } from "../../ui/maximize";
 import type { BacktestMetrics } from "../../api";
 import { fmtPrice } from "../../format";
 
@@ -139,13 +140,17 @@ export function DailyPnlChart({ metrics }: { metrics: BacktestMetrics }) {
 }
 
 function ChartFrame({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  const mx = useMaximize();
   return (
-    <section className="rounded-lg border border-ink-800 bg-ink-900">
-      <div className="px-3 pt-2.5">
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="text-[11px] text-ink-400">{subtitle}</p>
+    <section className={mx.max ? mx.frame : "rounded-lg border border-ink-800 bg-ink-900"}>
+      <div className="flex items-start gap-2 px-3 pt-2.5">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">{title}</h3>
+          <p className="text-[11px] text-ink-400">{subtitle}</p>
+        </div>
+        <MaximizeButton max={mx.max} onClick={mx.toggle} />
       </div>
-      <div className="relative h-56">{children}</div>
+      <div className={`relative ${mx.max ? "min-h-0 flex-1" : "h-56"}`}>{children}</div>
     </section>
   );
 }
