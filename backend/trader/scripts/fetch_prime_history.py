@@ -195,8 +195,9 @@ async def run(a: argparse.Namespace) -> None:
     finally:
         await engine.dispose()
     if not a.dry_run and "options" in a.steps:
-        print("\nNote: contracts from years before today's symbol master are stored with today's lot size; "
-              "PRD §24.2 B1.5 adds the historical lot sizes. Check lot sizes before trusting rupee P&L for old years.")
+        print("\nNote: backtests take the lot size of old contracts from config/lot_sizes.yaml, not from the download. "
+              "Its rows are marked unverified until checked against the NSE circulars; until then, rupee P&L for "
+              "old years carries a warning.")
 
 
 def main() -> None:
