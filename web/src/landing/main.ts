@@ -1,6 +1,7 @@
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { initAnalytics, pageView, track } from "../analytics";
+import { showAccount } from "./account";
 import "./landing.css";
 
 /** Motion for the landing page. The HTML is complete without this file (crawlers and no-JS readers see everything);
@@ -12,6 +13,7 @@ const finePointer = window.matchMedia("(pointer: fine)").matches;
 document.body.classList.add("lp-js");
 
 initAnalytics();
+showAccount();
 pageView("/");
 // which call to action people use
 document.querySelectorAll<HTMLAnchorElement>("a[href^='/app/']").forEach((a) =>
