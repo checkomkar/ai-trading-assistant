@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getJSON, postJSON, sendJSON, type Profile } from "../api";
+import { ApiError, getJSON, postJSON, sendJSON, type Me, type Profile } from "../api";
 import { useAuth } from "../auth";
 import { Spinner, toast } from "../ui/feedback";
 
@@ -26,19 +26,28 @@ const USAGE_LABEL: Record<string, string> = {
 
 /** The signed-in account: who you are, your plan and its status, usage, and account security. */
 export function ProfilePage() {
-  const { usage, signOut, refreshUsage } = useAuth();
+  const { me, usage, signOut, refreshUsage } = useAuth();
   const [p, setP] = useState<Profile | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [pw, setPw] = useState({ current: "", next: "", again: "" });
   const [busy, setBusy] = useState<string | null>(null);
 
-  const load = () =>
-    getJSON<Profile>("/auth/profile")
+  const load = () => {
+    setFailed(null);
+    return getJSON<Profile>("/auth/profile")
       .then((x) => {
         setP(x);
         setName(x.name);
       })
-      .catch((e) => toast.error((e as Error).message));
+      .catch((e) => {
+        // Accounts off: the profile is known without asking (an API from before this page answers 404 here).
+        if (me && !me.auth_enabled) return setP(localProfile(me));
+        setFailed(e instanceof ApiError && e.status === 404
+          ? "This server does not know the profile page yet. Restart the API after updating, then try again."
+          : (e as Error).message || "Could not load your profile.");
+      });
+  };
   useEffect(() => {
     load();
     refreshUsage();
@@ -55,6 +64,21 @@ export function ProfilePage() {
       setBusy(null);
     }
   };
+
+  if (!p && failed) {
+    return (
+      <main className="grid flex-1 place-items-center p-10">
+        <div className="max-w-sm rounded-xl border border-ink-800 bg-ink-900 p-6 text-center">
+          <p className="text-sm font-medium text-ink-100">Profile unavailable</p>
+          <p className="mt-1 text-xs text-ink-400">{failed}</p>
+          <div className="mt-4 flex justify-center gap-2">
+            <button onClick={() => load()} className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-ink-950 hover:brightness-110">Try again</button>
+            <a href="#/" className="rounded-md border border-ink-700 px-3 py-1.5 text-xs text-ink-200 hover:bg-ink-800">Back to the app</a>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (!p) {
     return (
@@ -280,4 +304,12 @@ function Pw({ label, value, onChange, auto }: { label: string; value: string; on
       />
     </label>
   );
+}
+
+function localProfile(me: Me): Profile {
+  return {
+    local: true, id: me.id ?? "local", name: "Local", email: null, phone: null, is_admin: true, created_at: null, sign_in: [],
+    can_set_password: false, plan: { id: "owner", name: "Local · no limits", price_inr: 0 }, status: "local",
+    period_start: null, period_end: null, sessions: 0, this_session_expires: null,
+  };
 }
