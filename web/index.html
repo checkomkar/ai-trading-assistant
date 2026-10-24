@@ -1,19 +1,314 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-IN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>STRIKTEK · Focus and succeed</title>
+    <script>
+      // Old links went to /#/strategies etc.: the app now lives at /app/.
+      if (location.hash.indexOf("#/") === 0) location.replace("/app/" + location.hash);
+    </script>
+    <title>STRIKTEK · Backtest and paper-trade NIFTY &amp; BANKNIFTY option strategies</title>
+    <meta
+      name="description"
+      content="STRIKTEK turns a trading idea written in plain English into exact rules, backtests it on years of real one-minute NIFTY and BANKNIFTY option data, and paper-trades it live. Research and paper trading only: no real orders."
+    />
+    <link rel="canonical" href="https://striktek.si/" />
+    <meta name="theme-color" content="#0a0d12" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-readable summary" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="STRIKTEK" />
+    <meta property="og:url" content="https://striktek.si/" />
+    <meta property="og:title" content="STRIKTEK · Test every option idea before the market does" />
+    <meta
+      property="og:description"
+      content="Describe a NIFTY or BANKNIFTY option strategy in plain English. Backtest it on real one-minute option prices, validate it out of sample, then paper-trade it. No real orders."
+    />
+    <meta property="og:image" content="https://striktek.si/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="en_IN" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="STRIKTEK · Test every option idea before the market does" />
+    <meta name="twitter:description" content="Plain-English strategies, honest backtests on real 1-minute option data, and paper trading for NIFTY and BANKNIFTY." />
+    <meta name="twitter:image" content="https://striktek.si/og.png" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://striktek.si/#org",
+            "name": "STRIKTEK",
+            "url": "https://striktek.si/",
+            "logo": "https://striktek.si/logo-mark.svg",
+            "slogan": "Focus and succeed"
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://striktek.si/#site",
+            "url": "https://striktek.si/",
+            "name": "STRIKTEK",
+            "inLanguage": "en-IN",
+            "publisher": { "@id": "https://striktek.si/#org" }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "STRIKTEK",
+            "url": "https://striktek.si/app/",
+            "applicationCategory": "FinanceApplication",
+            "operatingSystem": "Web browser",
+            "description": "Research and paper-trading platform for intraday NIFTY and BANKNIFTY option buying strategies: plain-English strategy builder, backtests on real one-minute option data, walk-forward validation and paper trading. It never places real orders.",
+            "featureList": [
+              "Plain-English (and voice) strategy builder that produces exact, checkable rules",
+              "Backtests on up to 7 years of 1-minute NIFTY, BANKNIFTY, INDIA VIX and futures data",
+              "Real expired option prices where stored, modelled prices calibrated on them elsewhere",
+              "No look-ahead: signals on a closed candle, fills at the next open, the stop wins a tie",
+              "Parameter sweeps, walk-forward validation, a held-back holdout period and Deflated Sharpe",
+              "Results broken down by VIX, trend, opening gap, days to expiry, time of day and weekday",
+              "More than 90 indicators and candlestick patterns with TradingView names and defaults",
+              "Paper trading with a deterministic risk engine and a kill switch"
+            ],
+            "publisher": { "@id": "https://striktek.si/#org" }
+          },
+          {
+            "@type": "FAQPage",
+            "mainEntity": [
+              { "@type": "Question", "name": "What is STRIKTEK?", "acceptedAnswer": { "@type": "Answer", "text": "STRIKTEK is a research and paper-trading platform for intraday NIFTY and BANKNIFTY option buying. You describe a strategy in plain English, it becomes exact rules, and a deterministic engine backtests them on real one-minute market data and paper-trades them live." } },
+              { "@type": "Question", "name": "Does STRIKTEK place real trades?", "acceptedAnswer": { "@type": "Answer", "text": "No. STRIKTEK is research and paper trading only. There is no order endpoint, AI output can never place an order, and paper orders pass a deterministic risk engine with a kill switch." } },
+              { "@type": "Question", "name": "Which markets does it cover?", "acceptedAnswer": { "@type": "Answer", "text": "Intraday option buying on NIFTY and BANKNIFTY (calls and puts), and daily long-only delivery strategies on NIFTY 50 stocks." } },
+              { "@type": "Question", "name": "Where does the data come from?", "acceptedAnswer": { "@type": "Answer", "text": "From the broker (Fyers): one-minute index, INDIA VIX and futures candles and expired option contracts going back up to seven years. Real and simulated data are never mixed, and every report states its data source and option-pricing mode." } },
+              { "@type": "Question", "name": "How does the AI work?", "acceptedAnswer": { "@type": "Answer", "text": "The AI only translates your description into a strategy specification and can propose variants to test. Code decides everything else: the rules are validated, the engine runs them, and whether a variant is accepted is decided by walk-forward results, Deflated Sharpe and a minimum number of trades." } },
+              { "@type": "Question", "name": "How are backtests kept honest?", "acceptedAnswer": { "@type": "Answer", "text": "Signals form on a closed candle and fill at the next candle's open, a candle that touches both stop and target counts as a stop, costs and slippage are charged on every trade, lot sizes and expiries follow the exchange's history, and a held-back period is never read by sweeps or the AI." } },
+              { "@type": "Question", "name": "Is STRIKTEK investment advice?", "acceptedAnswer": { "@type": "Answer", "text": "No. It is a research and paper-trading tool. Past or simulated results do not predict future results, and most people who buy options lose money." } }
+            ]
+          }
+        ]
+      }
+    </script>
   </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+  <body class="lp">
+    <a class="lp-skip" href="#main">Skip to content</a>
+
+    <header class="lp-nav" data-nav>
+      <a href="/" class="lp-brand" aria-label="STRIKTEK home">
+        <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true">
+          <g fill="none" stroke="#f5b301" stroke-width="4" stroke-linecap="round"><circle cx="32" cy="32" r="20" /><path d="M32 4v14M32 46v14M4 32h14M46 32h14" /></g>
+          <path d="M21 38l8-8 5 5 11-12" fill="none" stroke="#e3e8ef" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="45" cy="23" r="3.6" fill="#e3e8ef" />
+        </svg>
+        <span>STRIK<em>TEK</em></span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#how">How it works</a>
+        <a href="#platform">Platform</a>
+        <a href="#honest">Honest testing</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="lp-btn lp-btn-sm" href="/app/" data-magnetic>Open the app</a>
+    </header>
+
+    <main id="main">
+      <!-- ============ hero ============ -->
+      <section class="lp-hero" aria-labelledby="hero-title">
+        <canvas class="lp-canvas" data-scene aria-hidden="true"></canvas>
+        <div class="lp-hero-glow" aria-hidden="true"></div>
+        <div class="lp-hero-inner">
+          <p class="lp-kicker" data-hero-kicker><span class="lp-dot"></span>NIFTY &amp; BANKNIFTY option research · paper trading</p>
+          <h1 id="hero-title" class="lp-display" data-split>
+            Test every idea<br />before the <span class="lp-amber">market</span> does.
+          </h1>
+          <p class="lp-lede" data-hero-fade>
+            Describe a strategy in plain English. STRIKTEK turns it into exact rules, backtests it on years of real
+            one-minute option data, and paper-trades it live. No real orders, ever.
+          </p>
+          <div class="lp-cta" data-hero-fade>
+            <a class="lp-btn" href="/app/#/strategies" data-magnetic>Start building <span aria-hidden="true">→</span></a>
+            <a class="lp-btn lp-btn-ghost" href="#how">See how it works</a>
+          </div>
+          <dl class="lp-hero-stats" data-hero-fade>
+            <div><dt>History</dt><dd><span data-count="7">7</span> years of 1-minute data</dd></div>
+            <div><dt>Indicators</dt><dd><span data-count="90">90</span>+ with TradingView names</dd></div>
+            <div><dt>Real orders</dt><dd><span>0</span>, by design</dd></div>
+          </dl>
+        </div>
+        <a class="lp-scroll" href="#how" aria-label="Scroll to how it works"><span></span></a>
+      </section>
+
+      <div class="lp-marquee" aria-hidden="true">
+        <div class="lp-marquee-track" data-marquee>
+          <span>1-minute candles</span><i>✦</i><span>Real option prices</span><i>✦</i><span>No look-ahead</span><i>✦</i>
+          <span>Walk-forward</span><i>✦</i><span>Deflated Sharpe</span><i>✦</i><span>Holdout period</span><i>✦</i>
+          <span>Regime breakdowns</span><i>✦</i><span>Paper trading</span><i>✦</i><span>Kill switch</span><i>✦</i>
+          <span>1-minute candles</span><i>✦</i><span>Real option prices</span><i>✦</i><span>No look-ahead</span><i>✦</i>
+          <span>Walk-forward</span><i>✦</i><span>Deflated Sharpe</span><i>✦</i><span>Holdout period</span><i>✦</i>
+          <span>Regime breakdowns</span><i>✦</i><span>Paper trading</span><i>✦</i><span>Kill switch</span><i>✦</i>
+        </div>
+      </div>
+
+      <!-- ============ how it works ============ -->
+      <section id="how" class="lp-section" aria-labelledby="how-title">
+        <p class="lp-eyebrow" data-reveal>How it works</p>
+        <h2 id="how-title" class="lp-h2" data-reveal>Data, then analysis, then paper.<br /><span class="lp-muted">Always in that order.</span></h2>
+        <ol class="lp-steps">
+          <svg class="lp-steps-line" viewBox="0 0 1000 8" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 4 H1000" data-draw />
+          </svg>
+          <li class="lp-step" data-reveal>
+            <span class="lp-step-n">01</span>
+            <h3>Describe it</h3>
+            <p>Type or say your idea: “buy the ATM call when EMA 9 crosses EMA 21 above VWAP, stop 20%”. The AI drafts the rules and lists every assumption it made.</p>
+          </li>
+          <li class="lp-step" data-reveal>
+            <span class="lp-step-n">02</span>
+            <h3>Read the exact rules</h3>
+            <p>Code writes back what will run, in plain English. Change a word, a number or the JSON itself. What you read is exactly what the engine executes.</p>
+          </li>
+          <li class="lp-step" data-reveal>
+            <span class="lp-step-n">03</span>
+            <h3>Backtest on real data</h3>
+            <p>Years of 1-minute index, VIX and futures candles, with real expired option prices where stored. Costs, slippage and lot sizes included.</p>
+          </li>
+          <li class="lp-step" data-reveal>
+            <span class="lp-step-n">04</span>
+            <h3>Validate, then paper-trade</h3>
+            <p>Walk-forward and a held-back period decide whether it survives. Then run it live on paper, behind a risk engine and a kill switch.</p>
+          </li>
+        </ol>
+      </section>
+
+      <!-- ============ platform ============ -->
+      <section id="platform" class="lp-section" aria-labelledby="platform-title">
+        <p class="lp-eyebrow" data-reveal>Platform</p>
+        <h2 id="platform-title" class="lp-h2" data-reveal>Everything an option buyer<br />needs to say <span class="lp-amber">no</span> to a bad idea.</h2>
+        <div class="lp-bento">
+          <article class="lp-card lp-card-wide" data-reveal data-tilt>
+            <div class="lp-card-copy">
+              <h3>Plain English in, exact rules out</h3>
+              <p>Write it, paste a PDF or just speak. The translator asks when something is ambiguous instead of guessing, and every assumption is listed for you to check.</p>
+            </div>
+            <div class="lp-chat" aria-hidden="true">
+              <p class="lp-chat-q">BANKNIFTY 15 min: buy calls when the close breaks the opening-range high and RSI is above 55. Stop 25%, target 60%.</p>
+              <p class="lp-chat-a"><b>Rules ready</b> · ATM CE · 15m · or_high break · RSI(14) &gt; 55 · stop 25% · target 60% · 1 trade a day <em>(assumed)</em></p>
+            </div>
+          </article>
+          <article class="lp-card" data-reveal data-tilt>
+            <h3>Real option prices</h3>
+            <p>Expired contracts from the broker, with lot sizes and expiry days as they were. Modelled prices fill the gaps, calibrated on the real ones.</p>
+            <svg class="lp-spark" viewBox="0 0 200 60" aria-hidden="true"><path d="M0 50 L20 44 L36 47 L52 30 L70 34 L88 18 L104 24 L124 10 L144 16 L164 6 L200 12" data-draw /></svg>
+          </article>
+          <article class="lp-card" data-reveal data-tilt>
+            <h3>Research that can say no</h3>
+            <p>Sweeps, walk-forward folds, Deflated Sharpe and a holdout period that sweeps and the AI never see. Overfitting gets caught, not celebrated.</p>
+          </article>
+          <article class="lp-card" data-reveal data-tilt>
+            <h3>Know where it works</h3>
+            <p>Every trade is tagged with VIX, trend, opening gap, days to expiry, time of day and weekday, so you see which conditions carried the result.</p>
+          </article>
+          <article class="lp-card" data-reveal data-tilt>
+            <h3>Charts that show the strategy</h3>
+            <p>The indicators your rules use are drawn on the trade chart, computed by the engine's own code. Add any of 90+ more by their TradingView names.</p>
+          </article>
+          <article class="lp-card lp-card-wide" data-reveal data-tilt>
+            <div class="lp-card-copy">
+              <h3>Paper trading with guard rails</h3>
+              <p>Orders come only from the runner, through a deterministic risk engine: daily loss limit, trade caps, entries blocked when the market is closed, and a kill switch that survives a restart.</p>
+            </div>
+            <ul class="lp-checks" aria-label="Risk checks">
+              <li>Market open</li><li>Daily loss limit</li><li>Trades per day</li><li>One position per lane</li><li>Kill switch off</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <!-- ============ honest ============ -->
+      <section id="honest" class="lp-section lp-honest" aria-labelledby="honest-title">
+        <div class="lp-honest-copy">
+          <p class="lp-eyebrow" data-reveal>Honest testing</p>
+          <h2 id="honest-title" class="lp-h2" data-reveal>Backtests that would rather disappoint you than flatter you.</h2>
+          <p class="lp-lede" data-reveal>Most backtests look great because they peek at the future or skip the costs. These are the rules STRIKTEK's engine never breaks.</p>
+        </div>
+        <ul class="lp-rules">
+          <li data-reveal><b>No look-ahead.</b> A signal forms on a closed candle and fills at the next candle's open.</li>
+          <li data-reveal><b>The stop wins a tie.</b> If one candle touches both the stop and the target, it counts as a stop.</li>
+          <li data-reveal><b>Every cost, every trade.</b> Brokerage, STT, exchange charges, GST, stamp duty, spread and slippage.</li>
+          <li data-reveal><b>Labelled sources.</b> Real and simulated data are never mixed, and every report says which it used.</li>
+          <li data-reveal><b>AI proposes, code decides.</b> The model drafts and suggests; validation, testing and acceptance are code.</li>
+          <li data-reveal><b>Same inputs, same answer.</b> An identical run on unchanged data loads instantly from the stored result.</li>
+        </ul>
+      </section>
+
+      <!-- ============ faq ============ -->
+      <section id="faq" class="lp-section" aria-labelledby="faq-title">
+        <p class="lp-eyebrow" data-reveal>FAQ</p>
+        <h2 id="faq-title" class="lp-h2" data-reveal>Questions, answered plainly.</h2>
+        <div class="lp-faq">
+          <details data-reveal open>
+            <summary>What is STRIKTEK?</summary>
+            <p>STRIKTEK is a research and paper-trading platform for intraday NIFTY and BANKNIFTY option buying. You describe a strategy in plain English, it becomes exact rules, and a deterministic engine backtests them on real one-minute market data and paper-trades them live.</p>
+          </details>
+          <details data-reveal>
+            <summary>Does STRIKTEK place real trades?</summary>
+            <p>No. It is research and paper trading only. There is no order endpoint, AI output can never place an order, and paper orders pass a deterministic risk engine with a kill switch.</p>
+          </details>
+          <details data-reveal>
+            <summary>Which markets does it cover?</summary>
+            <p>Intraday option buying on NIFTY and BANKNIFTY (calls and puts), and daily long-only delivery strategies on NIFTY 50 stocks.</p>
+          </details>
+          <details data-reveal>
+            <summary>Where does the data come from?</summary>
+            <p>From the broker (Fyers): one-minute index, INDIA VIX and futures candles and expired option contracts going back up to seven years. Real and simulated data are never mixed, and every report states its data source and option-pricing mode.</p>
+          </details>
+          <details data-reveal>
+            <summary>How does the AI work?</summary>
+            <p>The AI only translates your description into a strategy specification and can propose variants to test. Code decides everything else: the rules are validated, the engine runs them, and whether a variant is accepted is decided by walk-forward results, Deflated Sharpe and a minimum number of trades.</p>
+          </details>
+          <details data-reveal>
+            <summary>How are backtests kept honest?</summary>
+            <p>Signals form on a closed candle and fill at the next candle's open, a candle that touches both stop and target counts as a stop, costs and slippage are charged on every trade, lot sizes and expiries follow the exchange's history, and a held-back period is never read by sweeps or the AI.</p>
+          </details>
+          <details data-reveal>
+            <summary>Is STRIKTEK investment advice?</summary>
+            <p>No. It is a research and paper-trading tool. Past or simulated results do not predict future results, and most people who buy options lose money.</p>
+          </details>
+        </div>
+      </section>
+
+      <!-- ============ final cta ============ -->
+      <section class="lp-final" aria-labelledby="final-title">
+        <h2 id="final-title" class="lp-display lp-display-sm" data-reveal>Focus and succeed.</h2>
+        <p class="lp-lede" data-reveal>Your next idea deserves a fair test before it gets your money.</p>
+        <div class="lp-cta lp-cta-center" data-reveal>
+          <a class="lp-btn" href="/app/#/strategies" data-magnetic>Build a strategy <span aria-hidden="true">→</span></a>
+          <a class="lp-btn lp-btn-ghost" href="/app/#/pricing">See plans</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="lp-footer">
+      <p class="lp-risk">
+        <b>Risk warning:</b> Trading in futures and options carries a high risk of loss, and most people who buy options lose
+        money. STRIKTEK is a research and paper-trading tool. It does not place real orders, it is not investment advice, and it
+        is not responsible for any trade you make anywhere. Past or simulated results do not predict future results.
+      </p>
+      <p class="lp-foot-links">
+        <span>© STRIKTEK · Focus and succeed</span>
+        <a href="/app/#/terms">Terms</a>
+        <a href="/app/#/privacy">Privacy</a>
+        <a href="/app/">Sign in</a>
+      </p>
+    </footer>
+
+    <script type="module" src="/src/landing/main.ts"></script>
   </body>
 </html>

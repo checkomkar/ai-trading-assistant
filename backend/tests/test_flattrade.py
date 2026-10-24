@@ -143,7 +143,7 @@ def test_flattrade_sign_in_flow_stores_only_the_session(client):
     assert bad.status_code == 400 and "refused" in bad.text
     assert client.get("/brokers/flattrade/callback", follow_redirects=False).status_code == 400  # no code
     ok = client.get("/brokers/flattrade/callback", params={"code": "good"}, follow_redirects=False)
-    assert ok.status_code == 303 and ok.headers["location"] == "/#/brokers"
+    assert ok.status_code == 303 and ok.headers["location"] == "/app/#/brokers"
     c = client.get("/brokers/connections").json()[0]
     assert c["session"]["state"] == "signed_in" and "SEC" not in json.dumps(c) and "SESSION" not in json.dumps(c)
 

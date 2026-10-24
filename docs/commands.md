@@ -29,7 +29,7 @@ backend/.venv/Scripts/uvicorn trader.api.main:app --app-dir backend --port 8000
 npm --prefix web run dev
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173 (landing page) or http://localhost:5173/app/ (the app).
 
 ## Market data (local)
 

@@ -169,7 +169,7 @@ async def flattrade_callback(request: Request, user: CurrentUser, code: str = ""
                 "expires_at": sess["expires_at"]}
         row.secret_blob = vault.seal(keys, request.app.state.settings.credential_key)
     _refresh_feed(request, user, sess["token"], datetime.fromisoformat(sess["expires_at"]))
-    return RedirectResponse("/#/brokers", status_code=303)
+    return RedirectResponse("/app/#/brokers", status_code=303)
 
 
 @router.post("/flattrade/test")
@@ -310,7 +310,7 @@ async def fyers_login_url(request: Request, user: CurrentUser) -> dict:
 def _page(msg: str, ok: bool) -> HTMLResponse:
     colour = "#22c55e" if ok else "#f43f5e"
     return HTMLResponse(f"<html><body style='font-family:sans-serif;background:#0b0f14;color:#e5e7eb;padding:2rem'>"
-                        f"<h3 style='color:{colour}'>{msg}</h3><p><a style='color:#f5b301' href='/#/brokers'>Back to Brokers</a></p></body></html>",
+                        f"<h3 style='color:{colour}'>{msg}</h3><p><a style='color:#f5b301' href='/app/#/brokers'>Back to Brokers</a></p></body></html>",
                         status_code=200 if ok else 400)
 
 
@@ -340,7 +340,7 @@ async def fyers_callback(request: Request, user: CurrentUser, auth_code: str = "
         keys["access_token"] = token
         row.secret_blob = vault.seal(keys, request.app.state.settings.credential_key)
     _refresh_feed(request, user, token)
-    return RedirectResponse("/#/brokers", status_code=303)
+    return RedirectResponse("/app/#/brokers", status_code=303)
 
 
 def _refresh_feed(request: Request, user, token: str, expires_at: datetime | None = None) -> None:

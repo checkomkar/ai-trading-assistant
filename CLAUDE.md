@@ -58,10 +58,11 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
     - Spec operands beyond the basics: candlestick flags `cs_*` and RSI divergence (0/1, use `> 0`), `swing_high`/`swing_low` (dynamic support/resistance), `volume`/`rel_volume` (futures volume; no futures data = unknown = no trade), `daily_ema`/`daily_sma`/`daily_rsi` (completed days only; context, the trading timeframe stays 1m-60m, no overnight holds).
     - Extra indicators (`indicators/extra.py`, operands in `strategy/extra_operands.py`) follow TradingView's names and defaults; `mult` is the optional second setting (Supertrend factor, Keltner/Bollinger multiplier).
     - Multiple timeframes: any price/indicator operand takes `tf` (3m, 9m, 15m ...), read on candles built from the strategy's own bars (`strategy/htf.py`), completed candles only, so no look-ahead; `shift` then counts those candles. `tf` must be a whole multiple of the base timeframe; session/daily operands (vwap, or_*, prev_day_*, daily_*, pivots) cannot take one. Intraday strategies only.
+    - `risk.max_trades_per_day`: 0-400, 0 = no limit (one position at a time still applies; the paper RiskEngine limit is separate).
     - `risk.risk_per_trade_pct` sizes lots so the stop loses that % of capital (backtest `capital`, paper `starting_cash`; a single lot over budget = trade skipped); `risk.min_reward_risk` rejects specs whose target/stop is lower. Measured-move targets are not built: use exit conditions on `swing_*`.
   - `execution/`: `Broker` interface, `PaperBroker`, `runner` (live strategy runner), `store` (audit + journal + state row), `state` (snapshot/restore policy), `service`, `summary`, `rehearsal` (in-process replay driver)
   - `risk/`: deterministic `RiskEngine` (pre-order checklist, kill switch). The only gate to the broker.
-  - `backtest/`: costs, pricing (synthetic/real/hybrid), engine, metrics (incl. `by_regime`), data loader, runner, `chart_series` (chart indicators via the interpreter's own bank), `calibration` (IV/VIX fit on real options, file in `data/calibration/`); stocks: `equity`, `equity_costs`, `equity_runner`, `equity_paper`
+  - `backtest/`: costs, pricing (synthetic/real/hybrid), engine, `cache` (POST /backtests returns the stored run when inputs, data fingerprint, config files and engine code are unchanged; `force` reruns), metrics (incl. `by_regime`), data loader, runner, `chart_series` (chart indicators via the interpreter's own bank), `calibration` (IV/VIX fit on real options, file in `data/calibration/`); stocks: `equity`, `equity_costs`, `equity_runner`, `equity_paper`
   - `research/`: `parallel` (many runs over one dataset, spawn workers), `jobs` (background JobManager, `research_jobs` table), `validation` (sweeps, walk-forward, holdout), `stats` (Deflated Sharpe, bootstrap), `ai_loop` (AI proposes, code judges)
   - `options/selection.py`: the one strike-choice function (ATM / ITMn / OTMn / Dnn) used by every pricer and the paper runner
   - `instruments/contract_history.py` + `config/lot_sizes.yaml`: dated lot sizes and expiry overrides for old contracts
@@ -72,7 +73,10 @@ Intended to become a hosted multi-user (SaaS) product, paper and research only u
   - `scripts/`: backfill_history, backfill_equities, merge_market_data, fetch_expired_options, fetch_expired_bulk, generate_sim_history, backtest, import_candles, paper_rehearsal, fetch_prime_history (multi-year download in order), fetch_equity_history (NIFTY 50 daily + 1m), archive_market_data (gzip CSV export/verify/restore)
 - `backend/alembic/`: migrations, run automatically at API start-up
 - `backend/config/`: `nse_holidays.yaml`, `costs.yaml`
-- `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Pages: Market, Paper, Stocks, Strategies, Research (sweeps, walk-forward, holdout, AI research), Assistant, Brokers (backtests are run from Strategies).
+- `web/`: Vite + React + TS + Tailwind + lightweight-charts 4.2. Two entries:
+  - `index.html` + `src/landing/`: the public landing page at `/` (static, crawlable HTML; GSAP motion, a lazy three.js hero scene; JSON-LD, FAQ, `public/robots.txt`, `sitemap.xml`, `llms.txt`, `og.png`). Old `/#/...` links redirect to `/app/`.
+  - `app/index.html` + `src/main.tsx`: the app at `/app/` (hash routes). Pages: Market, Paper, Stocks, Strategies (one screen: library, strategy + settings, tabbed results; modals and drawers instead of scrolling), Research (sweeps, walk-forward, holdout, AI research), Assistant, Brokers (backtests are run from Strategies).
+  - `src/ui/`: `feedback.tsx` (loader + toasts; `api.ts` tracks every POST/PATCH/PUT/DELETE and toasts its failure, `{ quiet: true }` opts out), `overlay.tsx` (Modal, Drawer), `maximize.tsx` (full-screen charts), `PromptBox.tsx` (growing text area with voice input; the mic falls back to the browser's speech recognition without a Deepgram key).
 
 ## Commands
 Run from `backend/` unless noted.

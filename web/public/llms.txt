@@ -1,0 +1,20 @@
+# STRIKTEK
+
+> STRIKTEK is a research and paper-trading platform for intraday NIFTY and BANKNIFTY option buying (India, NSE). You describe a strategy in plain English (or by voice), it becomes exact, checkable rules, and a deterministic engine backtests them on real one-minute market data and paper-trades them live. It never places real orders and is not investment advice.
+
+## What it does
+- Strategy builder: plain English, a pasted document or voice in; a validated strategy specification out, with every assumption listed. Code writes back what will run in plain English.
+- Backtests: up to 7 years of 1-minute NIFTY, BANKNIFTY, INDIA VIX and futures candles; real expired option prices where stored, modelled (Black-Scholes) prices calibrated on the real ones elsewhere; costs, slippage and historical lot sizes and expiry days included.
+- Honest by construction: signals on a closed candle fill at the next candle's open; a candle touching both stop and target counts as a stop; real and simulated data are never mixed and every report states its data source.
+- Research: parameter sweeps, walk-forward validation, a held-back holdout period, Deflated Sharpe and bootstrap; results broken down by VIX, trend, opening gap, days to expiry, time of day and weekday.
+- AI: translates descriptions into rules and proposes variants to test. Code decides whether anything is accepted. AI output can never place an order.
+- Paper trading: orders only from the strategy runner, through a deterministic risk engine (daily loss limit, trade caps, market-hours check, kill switch that survives restarts).
+- Stocks: daily, long-only delivery strategies on NIFTY 50 stocks (research and paper only).
+- Charts: 90+ indicators and candlestick patterns with TradingView names and defaults.
+
+## Not
+- Not a broker, not an advisory service, no real order placement, no signals or tips.
+
+## Links
+- Home: https://striktek.si/
+- App: https://striktek.si/app/

@@ -42,7 +42,7 @@ npm install
 npm run dev
 ```
 
-Then open <http://localhost:5173>.
+Then open <http://localhost:5173/app/> (the landing page is at <http://localhost:5173>).
 
 The simulator streams outside market hours too, and the dashboard shows a **SIMULATED DATA** badge. On an empty database it backfills one session of synthetic candles for the `SIM:*` instruments, so charts aren't blank.
 

@@ -8,9 +8,15 @@
 	handle /ws/* {
 		reverse_proxy {$API_UPSTREAM:api:8000}
 	}
+	# The app lives at /app/ (hash routes); everything else is the static landing page and its files.
+	handle /app* {
+		root * /srv
+		try_files {path} /app/index.html
+		file_server
+	}
 	handle {
 		root * /srv
-		try_files {path} /index.html
+		try_files {path} {path}/index.html /index.html
 		file_server
 	}
 }
