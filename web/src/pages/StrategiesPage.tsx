@@ -52,6 +52,23 @@ export function StrategiesPage() {
   const [ask, setAsk] = useState<{ input: string; base: Spec | null; t: Translation } | null>(null);
   const [overlay, setOverlay] = useState<"describe" | "rules" | "chat" | "library" | null>(null);
   const [side, setSide] = useState<"saved" | "ready">("saved");
+  // Both side panels fold to a thin rail so the results get the width; remembered in this browser.
+  const [fold, setFoldState] = useState<{ lib: boolean; mid: boolean }>(() => {
+    try {
+      return { lib: false, mid: false, ...JSON.parse(localStorage.getItem(FOLD_KEY) ?? "{}") };
+    } catch {
+      return { lib: false, mid: false };
+    }
+  });
+  const setFold = (f: { lib: boolean; mid: boolean }) => {
+    setFoldState(f);
+    try {
+      localStorage.setItem(FOLD_KEY, JSON.stringify(f));
+    } catch {
+      /* storage blocked: the layout just won't be remembered */
+    }
+  };
+  const focused = fold.lib && fold.mid;
 
   const refreshSaved = () => getJSON<SavedStrategy[]>("/strategies").then(setSaved).catch(() => {});
   useEffect(() => {
@@ -254,7 +271,10 @@ export function StrategiesPage() {
   );
 
   return (
-    <main className="mx-auto grid w-full max-w-[1920px] min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[400px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[260px_400px_minmax(0,1fr)]">
+    <main
+      style={{ "--lib": fold.lib ? "44px" : "260px", "--mid": fold.mid ? "44px" : "400px" } as React.CSSProperties}
+      className="mx-auto grid w-full max-w-[1920px] min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 transition-[grid-template-columns] duration-300 ease-out lg:grid-cols-[var(--mid)_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[var(--lib)_var(--mid)_minmax(0,1fr)]"
+    >
       {ask && (
         <QuestionDialog
           questions={ask.t.questions}
@@ -268,11 +288,40 @@ export function StrategiesPage() {
 
       {/* ---- library (its own scroll; a drawer below xl) ---- */}
       <aside className="hidden min-h-0 flex-col overflow-hidden rounded-xl border border-ink-800 bg-ink-900 xl:flex" aria-label="Strategies">
-        {library}
+        {fold.lib ? (
+          <Rail label="Strategies" onOpen={() => setFold({ ...fold, lib: false })} openTitle="Show the strategy library" />
+        ) : (
+          <>
+            <div className="flex justify-end px-2 pt-2">
+              <FoldButton onClick={() => setFold({ ...fold, lib: true })} title="Hide the library" />
+            </div>
+            {library}
+          </>
+        )}
       </aside>
 
       {/* ---- the strategy and how to test it ---- */}
       <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-ink-800 bg-ink-900" aria-label="Strategy">
+        {fold.mid && (
+          <Rail
+            className="hidden lg:flex"
+            label={current ? `${current.name} v${current.version}` : String(spec?.name ?? "Strategy")}
+            onOpen={() => setFold({ ...fold, mid: false })}
+            openTitle="Show the strategy and its settings"
+          >
+            <button onClick={() => backtest()} disabled={!canRun} title="Save & backtest" aria-label="Save & backtest"
+              className="grid h-8 w-8 place-items-center rounded-md bg-accent text-ink-950 hover:brightness-110 disabled:opacity-40">
+              {busy === "backtest" ? <Spinner size={13} /> : <Icon d="M5 3l14 9-14 9z" size={12} />}
+            </button>
+            <button onClick={() => setOverlay("rules")} disabled={json === ""} title="Rules (JSON)" aria-label="Rules" className={railBtn}>
+              <Icon d="M8 6l-6 6 6 6M16 6l6 6-6 6" />
+            </button>
+            <button onClick={() => setOverlay("chat")} disabled={!spec || !validation?.valid} title="Ask about this strategy" aria-label="Ask" className={railBtn}>
+              <Icon d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z" />
+            </button>
+          </Rail>
+        )}
+        <div className={`flex min-h-0 flex-1 flex-col ${fold.mid ? "lg:hidden" : ""}`}>
         <div className="flex flex-wrap items-center gap-2 border-b border-ink-800 px-3 py-2.5">
           <button onClick={() => setOverlay("library")} className={`${btn} xl:hidden`} title="Saved and ready-made strategies">
             <Icon d="M4 6h16M4 12h16M4 18h10" /> Library
@@ -287,6 +336,9 @@ export function StrategiesPage() {
             <button onClick={() => setOverlay("chat")} disabled={!spec || !validation?.valid} className={btn} title="Ask about this strategy and its results">
               <Icon d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z" /> Ask
             </button>
+            <span className="hidden lg:inline-flex">
+              <FoldButton onClick={() => setFold({ ...fold, mid: true })} title="Hide this panel" />
+            </span>
           </div>
         </div>
 
@@ -475,12 +527,26 @@ export function StrategiesPage() {
             </button>
           </div>
         )}
+        </div>
       </section>
 
       {/* ---- results (tabbed, its own scroll) ---- */}
       <section className="relative flex min-h-[520px] flex-col overflow-hidden rounded-xl border border-ink-800 bg-ink-900 lg:min-h-0" aria-label="Backtest results">
         {result ? (
-          <Results r={result} onRerun={() => backtest(true)} />
+          <Results
+            r={result}
+            onRerun={() => backtest(true)}
+            actions={
+              <button
+                onClick={() => setFold(focused ? { lib: false, mid: false } : { lib: true, mid: true })}
+                title={focused ? "Show the side panels again" : "Hide the side panels to give the results the full width"}
+                className="hidden items-center gap-1.5 rounded-md border border-ink-700 px-2 py-1 text-[11px] text-ink-300 hover:bg-ink-800 hover:text-ink-100 lg:flex"
+              >
+                <Icon d={focused ? "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" : "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"} size={12} />
+                {focused ? "Show panels" : "Focus results"}
+              </button>
+            }
+          />
         ) : busy === "backtest" ? (
           <div className="grid flex-1 place-items-center">
             <CandleLoader title="Running backtest…" detail={`${bt.underlying} · ${bt.start} → ${bt.end}. Long ranges on 1m data take a little while.`} />
@@ -623,6 +689,33 @@ export function StrategiesPage() {
         )}
       </Drawer>
     </main>
+  );
+}
+
+const FOLD_KEY = "strategies-fold";
+const railBtn = "grid h-8 w-8 place-items-center rounded-md border border-ink-700 text-ink-300 hover:bg-ink-800 hover:text-ink-100 disabled:opacity-40";
+
+function FoldButton({ onClick, title }: { onClick: () => void; title: string }) {
+  return (
+    <button onClick={onClick} title={title} aria-label={title}
+      className="grid h-7 w-7 place-items-center rounded-md text-ink-400 hover:bg-ink-800 hover:text-ink-100">
+      <Icon d="M15 18l-6-6 6-6" />
+    </button>
+  );
+}
+
+/** A folded panel: an expand button, its name written vertically, and optional quick actions. */
+function Rail({ label, onOpen, openTitle, children, className = "flex" }: { label: string; onOpen: () => void; openTitle: string; children?: React.ReactNode; className?: string }) {
+  return (
+    <div className={`${className} fade-in h-full min-h-0 flex-col items-center gap-2 py-2`}>
+      <button onClick={onOpen} title={openTitle} aria-label={openTitle} className={railBtn}>
+        <Icon d="M9 18l6-6-6-6" />
+      </button>
+      {children}
+      <button onClick={onOpen} className="mt-1 min-h-0 flex-1 overflow-hidden text-[11px] font-medium tracking-wide text-ink-400 hover:text-ink-100 [writing-mode:vertical-rl]" title={openTitle}>
+        {label}
+      </button>
+    </div>
   );
 }
 

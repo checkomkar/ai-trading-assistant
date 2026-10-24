@@ -143,6 +143,7 @@ export function PrivacyPage() {
           <li><strong>Broker keys:</strong> only if you add them. They are stored encrypted, are never shown back, and are used only for your account.</li>
           <li><strong>Usage and billing:</strong> counts and token usage of AI calls, plan and subscription status, and payment references from Razorpay. We never see your card number.</li>
           <li><strong>Technical:</strong> a session cookie that keeps you signed in, and server logs (IP address, time, request) for security and fixing faults.</li>
+          <li><strong>Analytics, only if you accept:</strong> which pages you open and which buttons on the home page you use, through Google Analytics. Strategies, results and account details are not sent.</li>
         </ul>
       </S>
       <S h="Why we use it">
@@ -156,13 +157,17 @@ export function PrivacyPage() {
           <li><strong>AI model providers</strong> (for example Anthropic, Groq, OpenRouter): your prompts, the strategy text and any file text you send to the assistant are processed by them to produce an answer.</li>
           <li><strong>Speech-to-text provider</strong> (Deepgram): voice audio, when you use the microphone.</li>
           <li><strong>Payment provider</strong> (Razorpay): payment details and subscription status.</li>
+          <li><strong>Google Analytics</strong> (Google): page views and a device identifier in a cookie, only after you accept analytics cookies.</li>
           <li><strong>Hosting and database providers</strong> that store the data for us.</li>
           <li>Authorities, where the law requires it.</li>
         </ul>
         <p>These providers may process data outside India. Do not put anything into the assistant that you do not want them to receive.</p>
       </S>
       <S h="Cookies">
-        <p>One essential cookie keeps you signed in. We do not use advertising or cross-site tracking cookies.</p>
+        <p>
+          One essential cookie keeps you signed in. Google Analytics cookies are set only if you accept them in the banner; declining changes nothing
+          else. To change your choice, clear this site's data in your browser and you will be asked again. We do not use advertising cookies.
+        </p>
       </S>
       <S h="How long we keep it and how we protect it">
         <p>

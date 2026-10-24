@@ -13,11 +13,19 @@ const TABS: [Tab, string][] = [["overview", "Overview"], ["chart", "Chart"], ["t
 
 /** One backtest, in tabs so it fits the screen: headline numbers, the trade chart, the trade list and the breakdowns.
  *  `onRerun` is offered when the result came from the cache. */
-export function Results({ r, onRerun }: { r: BacktestResult; onRerun?: () => void }) {
+export function Results({ r, onRerun, actions }: { r: BacktestResult; onRerun?: () => void; actions?: React.ReactNode }) {
   const m = r.metrics;
   const [selected, setSelected] = useState<BacktestTrade | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
-  useEffect(() => setSelected(null), [r.id]);
+  // The chart stays mounted once opened, so coming back to it keeps its candles, zoom and indicators.
+  const [chartOpened, setChartOpened] = useState(false);
+  useEffect(() => {
+    if (tab === "chart") setChartOpened(true);
+  }, [tab]);
+  useEffect(() => {
+    setSelected(null);
+    setChartOpened(false);
+  }, [r.id]);
   const select = (t: BacktestTrade | null) => {
     setSelected(t);
     if (t) setTab("chart");
@@ -46,6 +54,7 @@ export function Results({ r, onRerun }: { r: BacktestResult; onRerun?: () => voi
             )}
           </span>
         )}
+        {actions && <span className="order-last">{actions}</span>}
         <span className="num ml-auto text-[11px] text-ink-400">
           run {r.id} · {r.timeframe}{r.built_from && r.built_from !== r.timeframe ? ` (from ${r.built_from})` : ""} · {fmtInt(r.bars)} bars · {r.days} days · {r.signals} signals
         </span>
@@ -69,7 +78,15 @@ export function Results({ r, onRerun }: { r: BacktestResult; onRerun?: () => voi
         ))}
       </div>
 
-      <div key={tab} className="fade-in min-h-0 flex-1 overflow-y-auto p-4">
+      {chartOpened && (
+        <div className={tab === "chart" ? "min-h-0 flex-1 overflow-y-auto p-4" : "hidden"}>
+          <div className="h-full">
+            <TradeChart runId={r.id} trades={r.trades} selected={selected} onSelect={setSelected} daily={daily} fill />
+          </div>
+        </div>
+      )}
+
+      <div key={tab} className={tab === "chart" ? "hidden" : "fade-in min-h-0 flex-1 overflow-y-auto p-4"}>
         {tab === "overview" && (
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-ink-800 bg-ink-800 sm:grid-cols-4">
@@ -100,12 +117,6 @@ export function Results({ r, onRerun }: { r: BacktestResult; onRerun?: () => voi
                 ))}
               </ul>
             )}
-          </div>
-        )}
-
-        {tab === "chart" && (
-          <div className="h-full">
-            <TradeChart runId={r.id} trades={r.trades} selected={selected} onSelect={setSelected} daily={daily} fill />
           </div>
         )}
 

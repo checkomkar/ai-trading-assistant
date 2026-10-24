@@ -1,6 +1,6 @@
 # STRIKTEK
 
-> STRIKTEK is a research and paper-trading platform for intraday NIFTY and BANKNIFTY option buying (India, NSE). You describe a strategy in plain English (or by voice), it becomes exact, checkable rules, and a deterministic engine backtests them on real one-minute market data and paper-trades them live. It never places real orders and is not investment advice.
+> STRIKTEK is a research and paper-trading platform for Indian market strategies (NSE): intraday NIFTY and BANKNIFTY options and NIFTY 50 stocks today, option selling and hedged strategies planned. You describe a strategy in plain English (or by voice), it becomes exact, checkable rules, and a deterministic engine backtests them on real one-minute market data and paper-trades them live. It never places real orders and is not investment advice.
 
 ## What it does
 - Strategy builder: plain English, a pasted document or voice in; a validated strategy specification out, with every assumption listed. Code writes back what will run in plain English.
@@ -10,6 +10,7 @@
 - AI: translates descriptions into rules and proposes variants to test. Code decides whether anything is accepted. AI output can never place an order.
 - Paper trading: orders only from the strategy runner, through a deterministic risk engine (daily loss limit, trade caps, market-hours check, kill switch that survives restarts).
 - Stocks: daily, long-only delivery strategies on NIFTY 50 stocks (research and paper only).
+- Planned: option selling with margin-aware sizing, hedged multi-leg strategies (spreads, straddles), more equity strategies.
 - Charts: 90+ indicators and candlestick patterns with TradingView names and defaults.
 
 ## Not

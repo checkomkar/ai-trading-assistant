@@ -69,3 +69,22 @@ def test_indicator_search_and_saved_layout(client):
     assert client.put("/prefs/chart-indicators", json={"value": layout}).status_code == 200
     assert client.get("/prefs/chart-indicators").json()["value"] == layout
     assert client.put("/prefs/BAD KEY", json={"value": []}).status_code in (400, 404)
+
+
+def test_a_repeated_chart_is_served_from_memory_and_identical(client, monkeypatch):
+    from trader.api.routes import backtests as route
+
+    res = client.post("/backtests", json={"start": START, "end": END.isoformat(), "strategy_params": {"adx_min": 6}}).json()
+    first = client.get(f"/backtests/{res['id']}/chart").json()
+    loads = []
+    real_load = route.bt_data.load
+
+    async def counting(*a, **k):
+        loads.append(a)
+        return await real_load(*a, **k)
+
+    monkeypatch.setattr(route.bt_data, "load", counting)
+    again = client.get(f"/backtests/{res['id']}/chart").json()
+    with_extra = client.get(f"/backtests/{res['id']}/chart", params={"extra": "sma:50"}).json()
+    assert loads == [] and again == first
+    assert len(with_extra["series"]) == len(first["series"]) + 1  # only the new series was computed

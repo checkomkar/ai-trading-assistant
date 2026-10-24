@@ -1,5 +1,6 @@
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { initAnalytics, pageView, track } from "../analytics";
 import "./landing.css";
 
 /** Motion for the landing page. The HTML is complete without this file (crawlers and no-JS readers see everything);
@@ -9,6 +10,13 @@ gsap.registerPlugin(ScrollTrigger);
 const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const finePointer = window.matchMedia("(pointer: fine)").matches;
 document.body.classList.add("lp-js");
+
+initAnalytics();
+pageView("/");
+// which call to action people use
+document.querySelectorAll<HTMLAnchorElement>("a[href^='/app/']").forEach((a) =>
+  a.addEventListener("click", () => track("cta_click", { label: a.textContent?.trim().slice(0, 40), target: a.getAttribute("href") })),
+);
 
 // ---- nav: compact once the page scrolls ----
 const nav = document.querySelector<HTMLElement>("[data-nav]");
@@ -86,17 +94,132 @@ if (reduced) {
     scrollTrigger: { trigger: ".lp-hero", start: "top top", end: "bottom top", scrub: true },
   });
 
-  // marquee speeds up with scroll velocity
-  const track = document.querySelector<HTMLElement>("[data-marquee]");
-  if (track) {
-    ScrollTrigger.create({
-      onUpdate: (self) => {
-        const v = Math.min(Math.abs(self.getVelocity()) / 1200, 3);
-        track.style.animationDuration = `${38 / (1 + v)}s`;
-      },
-    });
-  }
 }
+
+// ---- infographic cards: each plays when it scrolls into view ----
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Fill the mini chart with candles from a seeded walk (same picture every visit). */
+function buildCandles(svg: SVGSVGElement) {
+  let seed = 3;
+  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const n = 22;
+  let p = 50;
+  const rows: { o: number; c: number; h: number; l: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const o = p;
+    const c = o + (rand() - 0.42) * 14;
+    rows.push({ o, c, h: Math.max(o, c) + rand() * 6, l: Math.min(o, c) - rand() * 6 });
+    p = c;
+  }
+  const lo = Math.min(...rows.map((r) => r.l));
+  const hi = Math.max(...rows.map((r) => r.h));
+  const y = (v: number) => 84 - ((v - lo) / (hi - lo)) * 78;
+  rows.forEach((r, i) => {
+    const x = 6 + i * 9.6;
+    const g = document.createElementNS(SVG_NS, "g");
+    g.setAttribute("class", "lp-cdl");
+    const up = r.c >= r.o;
+    const color = up ? "#22c55e" : "#f43f5e";
+    const wick = document.createElementNS(SVG_NS, "line");
+    wick.setAttribute("x1", String(x + 3));
+    wick.setAttribute("x2", String(x + 3));
+    wick.setAttribute("y1", String(y(r.h)));
+    wick.setAttribute("y2", String(y(r.l)));
+    wick.setAttribute("stroke", color);
+    wick.setAttribute("stroke-width", "1.2");
+    const body = document.createElementNS(SVG_NS, "rect");
+    body.setAttribute("x", String(x));
+    body.setAttribute("width", "6");
+    body.setAttribute("y", String(Math.min(y(r.o), y(r.c))));
+    body.setAttribute("height", String(Math.max(Math.abs(y(r.o) - y(r.c)), 1.2)));
+    body.setAttribute("rx", "1");
+    body.setAttribute("fill", color);
+    g.append(wick, body);
+    svg.append(g);
+  });
+  return svg.querySelectorAll<SVGGElement>(".lp-cdl");
+}
+
+function typeInto(el: HTMLElement, text: string, tl: gsap.core.Timeline) {
+  const o = { n: 0 };
+  tl.to(o, {
+    n: text.length,
+    duration: text.length * 0.028,
+    ease: "none",
+    onUpdate: () => {
+      el.textContent = text.slice(0, Math.round(o.n));
+    },
+  });
+}
+
+document.querySelectorAll<HTMLElement>("[data-anim]").forEach((card) => {
+  const kind = card.dataset.anim;
+  if (kind === "candles") {
+    const svg = card.querySelector<SVGSVGElement>("[data-candles]");
+    const cdls = svg ? buildCandles(svg) : [];
+    if (!reduced) {
+      gsap.set(cdls, { scaleY: 0, transformOrigin: "50% 50%", transformBox: "fill-box", opacity: 0 });
+      gsap.to(cdls, {
+        scaleY: 1,
+        opacity: 1,
+        duration: 0.5,
+        ease: "back.out(2)",
+        stagger: 0.05,
+        scrollTrigger: { trigger: card, start: "top 80%", once: true },
+      });
+    }
+    return;
+  }
+  if (reduced) {
+    card.classList.add("lp-reduced");
+    const t = card.querySelector<HTMLElement>("[data-type]");
+    if (t) t.textContent = t.dataset.type ?? "";
+    return;
+  }
+  const tl = gsap.timeline({ paused: true });
+  if (kind === "translate") {
+    const t = card.querySelector<HTMLElement>("[data-type]")!;
+    const chips = card.querySelectorAll(".lp-chips li");
+    gsap.set(chips, { opacity: 0.12, y: 0, scale: 1 });
+    tl.repeat(-1).repeatDelay(2.2);
+    tl.call(() => {
+      t.textContent = "";
+    });
+    tl.to(chips, { opacity: 0.12, y: 10, scale: 0.92, duration: 0.3 });
+    typeInto(t, t.dataset.type ?? "", tl);
+    tl.fromTo(card.querySelector(".lp-flow"), { x: -8, opacity: 0.3 }, { x: 0, opacity: 1, duration: 0.4 });
+    tl.to(chips, { opacity: 1, y: 0, scale: 1, duration: 0.45, ease: "back.out(2.2)", stagger: 0.14 });
+  } else if (kind === "folds") {
+    const trains = card.querySelectorAll(".lp-folds i");
+    const tests = card.querySelectorAll(".lp-folds b");
+    tl.from(trains, { scaleX: 0, duration: 0.7, ease: "power3.out", stagger: 0.18 });
+    tl.from(tests, { scaleX: 0, opacity: 0, duration: 0.5, ease: "power3.out", stagger: 0.18 }, 0.45);
+    // then the out-of-sample windows keep breathing
+    tl.call(() => {
+      gsap.to(tests, { opacity: 0.6, duration: 1.1, repeat: -1, yoyo: true, ease: "sine.inOut", stagger: 0.25 });
+    });
+  } else if (kind === "bars") {
+    tl.from(card.querySelectorAll(".lp-bars i"), { scaleX: 0, duration: 0.9, ease: "expo.out", stagger: 0.12 });
+  } else if (kind === "chips") {
+    const chips = card.querySelectorAll(".lp-cloud li");
+    tl.from(chips, { opacity: 0, scale: 0.6, duration: 0.4, ease: "back.out(2.5)", stagger: { each: 0.05, from: "random" } });
+    chips.forEach((c, i) =>
+      gsap.to(c, { y: i % 2 ? -4 : 4, duration: 2 + (i % 4) * 0.4, repeat: -1, yoyo: true, ease: "sine.inOut", delay: i * 0.1 }),
+    );
+  } else if (kind === "guards") {
+    const checks = [...card.querySelectorAll<HTMLElement>(".lp-checks li")];
+    const pass = card.querySelector(".lp-pass");
+    const dot = card.querySelector(".lp-order-dot");
+    tl.repeat(-1).repeatDelay(1.8);
+    tl.call(() => checks.forEach((c) => c.classList.remove("on")));
+    tl.set(pass, { opacity: 0, x: -10 });
+    tl.to(dot, { scale: 1.6, duration: 0.25, yoyo: true, repeat: 1 });
+    checks.forEach((c) => tl.call(() => c.classList.add("on"), undefined, "+=0.32"));
+    tl.to(pass, { opacity: 1, x: 0, duration: 0.45, ease: "back.out(2)" }, "+=0.25");
+  }
+  ScrollTrigger.create({ trigger: card, start: "top 80%", once: true, onEnter: () => tl.play() });
+});
 
 // ---- counters ----
 document.querySelectorAll<HTMLElement>("[data-count]").forEach((el) => {

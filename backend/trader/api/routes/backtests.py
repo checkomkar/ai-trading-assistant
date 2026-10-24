@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from trader.api.deps import CurrentUser, MeterDep
 from trader.backtest import cache as bt_cache
-from trader.backtest import chart_series
+from trader.backtest import chart_cache, chart_series
 from trader.backtest import data as bt_data
 from trader.backtest.runner import WARMUP_DAYS, BacktestRequest, run_and_store
 from trader.db.models import BacktestRunRow, StrategyRow
@@ -253,7 +253,12 @@ async def chart(request: Request, run_id: str, user: CurrentUser, timeframe: str
         # Indicators need the bars before the window: from the run's own warm-up start on its timeframe (identical values),
         # else a warm-up of the same length before the window.
         feed_from = (row.start if exact else lo) - timedelta(days=WARMUP_DAYS)
-        data = await bt_data.load(s, row.underlying, tf, feed_from, row.end, row.data_source)
+        cache = chart_cache.for_app(request.app.state)
+        data_key = (run_id, tf, feed_from)
+        data = cache.data.get(data_key)
+        if data is None:
+            data = await bt_data.load(s, row.underlying, tf, feed_from, row.end, row.data_source)
+            cache.data.put(data_key, data)
     sp = (row.result.get("params") or {}).get("strategy", {})
     try:
         specs = chart_series.strategy_series(sp)
@@ -267,8 +272,19 @@ async def chart(request: Request, run_id: str, user: CurrentUser, timeframe: str
         if days:
             window_from = max(window_from, datetime.combine(date.fromisoformat(days[0]), datetime.min.time(),
                                                             tzinfo=IST).astimezone(timezone.utc))
-    values = await asyncio.to_thread(chart_series.compute, data.bars, data.futures, data.vix, specs, minutes(tf), window_from)
-    bars = [[int(b.ts.timestamp()), b.open, b.high, b.low, b.close] for b in data.bars if b.ts >= window_from]
+    # Only series not computed before for this run, timeframe and window are computed (one pass over the bars).
+    base = (run_id, tf, feed_from, window_from)
+    values = {x.id: cache.series.get((*base, x.id)) for x in specs}
+    missing = [x for x in specs if values[x.id] is None]
+    if missing:
+        fresh = await asyncio.to_thread(chart_series.compute, data.bars, data.futures, data.vix, missing, minutes(tf), window_from)
+        for x in missing:
+            values[x.id] = fresh.get(x.id, [])
+            cache.series.put((*base, x.id), values[x.id])
+    bars = cache.series.get((*base, "bars"))
+    if bars is None:
+        bars = [[int(b.ts.timestamp()), b.open, b.high, b.low, b.close] for b in data.bars if b.ts >= window_from]
+        cache.series.put((*base, "bars"), bars)
     series = chart_series.describe(specs, values)
     by_name = {x["id"]: x["points"] for x in series}
     ema9, ema21 = by_name.get("ema|9||"), by_name.get("ema|21||")

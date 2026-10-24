@@ -22,9 +22,11 @@ const BASE = {
   grid: { vertLines: { visible: false }, horzLines: { color: "#1a202b" } },
   crosshair: { mode: CrosshairMode.Magnet },
   rightPriceScale: { borderVisible: false },
-  timeScale: { borderVisible: false },
-  handleScroll: false,
-  handleScale: false,
+  // a panel opening or folding keeps the same dates in view instead of leaving a blank gap
+  timeScale: { borderVisible: false, lockVisibleTimeRangeOnResize: true },
+  // drag to pan; zoom with the buttons (or the mouse wheel in full screen, where it cannot fight page scrolling)
+  handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+  handleScale: { mouseWheel: false, pinch: true, axisPressedMouseMove: { time: true, price: false }, axisDoubleClickReset: true },
 } as const;
 
 interface Tip {
@@ -37,15 +39,30 @@ function useChart(build: (c: IChartApi) => void, deps: unknown[]) {
   const box = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip | null>(null);
   const tipRef = useRef(setTip);
+  const chart = useRef<IChartApi | null>(null);
   useEffect(() => {
     if (!box.current) return;
     const c = createChart(box.current, BASE);
     build(c);
     c.timeScale().fitContent();
-    return () => c.remove();
+    chart.current = c;
+    return () => {
+      chart.current = null;
+      c.remove();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
-  return { box, tip, setTip: tipRef.current };
+  return { box, tip, setTip: tipRef.current, chart };
+}
+
+/** Zoom the time axis around the middle of what is shown: factor < 1 zooms in. */
+function zoom(c: IChartApi | null, factor: number) {
+  const r = c?.timeScale().getVisibleLogicalRange();
+  if (!c || !r) return;
+  const mid = (r.from + r.to) / 2;
+  const half = Math.max(3, ((r.to - r.from) / 2) * factor);
+  const from = Math.max(mid - half, -1); // never scroll into blank space before the first point
+  c.timeScale().setVisibleLogicalRange({ from, to: from + 2 * half });
 }
 
 function Tooltip({ tip }: { tip: Tip | null }) {
@@ -67,7 +84,7 @@ function Tooltip({ tip }: { tip: Tip | null }) {
 
 export function EquityChart({ metrics, capital }: { metrics: BacktestMetrics; capital: number }) {
   const pts = metrics.equity_curve.filter((p) => p.ts);
-  const { box, tip, setTip } = useChart(
+  const { box, tip, setTip, chart } = useChart(
     (c) => {
       const s = c.addAreaSeries({
         lineColor: "#f5b301",
@@ -103,7 +120,7 @@ export function EquityChart({ metrics, capital }: { metrics: BacktestMetrics; ca
     [metrics, capital],
   );
   return (
-    <ChartFrame title="Equity curve" subtitle={`Starting capital ₹${fmtPrice(capital)} · after costs`}>
+    <ChartFrame title="Equity curve" subtitle={`Starting capital ₹${fmtPrice(capital)} · after costs`} chart={chart}>
       <div ref={box} className="absolute inset-0" />
       <Tooltip tip={tip} />
       {pts.length === 0 && <Empty />}
@@ -112,7 +129,7 @@ export function EquityChart({ metrics, capital }: { metrics: BacktestMetrics; ca
 }
 
 export function DailyPnlChart({ metrics }: { metrics: BacktestMetrics }) {
-  const { box, tip, setTip } = useChart(
+  const { box, tip, setTip, chart } = useChart(
     (c) => {
       const s = c.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false, base: 0 });
       const byTime = new Map<number, number>();
@@ -132,15 +149,18 @@ export function DailyPnlChart({ metrics }: { metrics: BacktestMetrics }) {
     [metrics],
   );
   return (
-    <ChartFrame title="Daily P&L" subtitle="Bars above zero are profitable days · no-trade days shown as zero">
+    <ChartFrame title="Daily P&L" subtitle="Bars above zero are profitable days · no-trade days shown as zero" chart={chart}>
       <div ref={box} className="absolute inset-0" />
       <Tooltip tip={tip} />
     </ChartFrame>
   );
 }
 
-function ChartFrame({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+function ChartFrame({ title, subtitle, chart, children }: { title: string; subtitle: string; chart: React.RefObject<IChartApi | null>; children: React.ReactNode }) {
   const mx = useMaximize();
+  useEffect(() => {
+    chart.current?.applyOptions({ handleScale: { mouseWheel: mx.max }, handleScroll: { mouseWheel: mx.max } });
+  }, [mx.max, chart]);
   return (
     <section className={mx.max ? mx.frame : "rounded-lg border border-ink-800 bg-ink-900"}>
       <div className="flex items-start gap-2 px-3 pt-2.5">
@@ -148,6 +168,7 @@ function ChartFrame({ title, subtitle, children }: { title: string; subtitle: st
           <h3 className="text-sm font-semibold">{title}</h3>
           <p className="text-[11px] text-ink-400">{subtitle}</p>
         </div>
+        <ZoomButtons onIn={() => zoom(chart.current, 0.6)} onOut={() => zoom(chart.current, 1.6)} onReset={() => chart.current?.timeScale().fitContent()} />
         <MaximizeButton max={mx.max} onClick={mx.toggle} />
       </div>
       <div className={`relative ${mx.max ? "min-h-0 flex-1" : "h-56"}`}>{children}</div>
@@ -157,4 +178,21 @@ function ChartFrame({ title, subtitle, children }: { title: string; subtitle: st
 
 function Empty() {
   return <div className="absolute inset-0 grid place-items-center text-xs text-ink-400">No trades in this period</div>;
+}
+
+export function ZoomButtons({ onIn, onOut, onReset }: { onIn: () => void; onOut: () => void; onReset: () => void }) {
+  const b = "grid h-7 w-7 place-items-center text-ink-300 hover:bg-ink-800 hover:text-ink-100";
+  return (
+    <div role="group" aria-label="Zoom" className="flex overflow-hidden rounded-md border border-ink-700">
+      <button type="button" onClick={onIn} className={b} title="Zoom in" aria-label="Zoom in">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3M8 11h6M11 8v6" /></svg>
+      </button>
+      <button type="button" onClick={onOut} className={`${b} border-l border-ink-700`} title="Zoom out" aria-label="Zoom out">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3M8 11h6" /></svg>
+      </button>
+      <button type="button" onClick={onReset} className={`${b} border-l border-ink-700 px-2 text-[10px] font-medium`} style={{ width: "auto" }} title="Show everything (or double-click the time axis)">
+        All
+      </button>
+    </div>
+  );
 }

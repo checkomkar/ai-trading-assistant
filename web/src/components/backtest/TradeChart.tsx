@@ -57,6 +57,41 @@ interface Hover {
 
 const exitBar = (t: BacktestTrade) => t.exit_bar_time ?? t.exit_time;
 
+// Chart responses kept for this browser tab: a run never changes, so reopening the chart tab, switching back to a
+// timeframe or re-adding an indicator shows instantly instead of fetching again.
+const CACHE_SIZE = 24;
+const chartCache = new Map<string, Promise<ChartData>>();
+function fetchChart(url: string): Promise<ChartData> {
+  const hit = chartCache.get(url);
+  if (hit) {
+    chartCache.delete(url);
+    chartCache.set(url, hit); // most recently used last
+    return hit;
+  }
+  const p = getJSON<ChartData>(url).catch((e) => {
+    chartCache.delete(url); // do not keep failures
+    throw e;
+  });
+  chartCache.set(url, p);
+  while (chartCache.size > CACHE_SIZE) chartCache.delete(chartCache.keys().next().value as string);
+  return p;
+}
+
+/** The last bar starting at or before `t` (bars sorted by time), or 0. */
+function barAtOrBefore(times: number[], t: number): number {
+  let lo = 0;
+  let hi = times.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= t) {
+      best = times[mid];
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return best;
+}
+
 function compact(v: number) {
   const a = Math.abs(v);
   const s = a >= 1e5 ? `${(a / 1e5).toFixed(1)}L` : a >= 1e3 ? `${(a / 1e3).toFixed(1)}k` : a.toFixed(0);
@@ -163,7 +198,7 @@ export function TradeChart({
     if (fromDate) q.set("from_date", fromDate);
     else if (!daily) q.set("last_days", String(DAYS[tf ?? "5m"] ?? 60));
     if (extra) q.set("extra", extra);
-    getJSON<ChartData>(`/backtests/${runId}/chart?${q}`)
+    fetchChart(`/backtests/${runId}/chart?${q}`)
       .then((d) => alive && setData(d))
       .catch((e: Error) => alive && setError(e.message));
     return () => {
@@ -220,7 +255,7 @@ export function TradeChart({
       grid: { vertLines: { color: "#161b24" }, horzLines: { color: "#161b24" } },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: !daily, secondsVisible: false, rightOffset: 3 },
+      timeScale: { borderVisible: false, timeVisible: !daily, secondsVisible: false, rightOffset: 3, lockVisibleTimeRangeOnResize: true },
     });
     const cs = c.addCandlestickSeries({
       upColor: COLORS.up, downColor: COLORS.down, borderVisible: false, wickUpColor: COLORS.up, wickDownColor: COLORS.down,
@@ -313,9 +348,13 @@ export function TradeChart({
   useEffect(() => {
     const cs = candles.current;
     if (!cs || !data) return;
-    const have = new Set(data.bars.map((b) => b[0]));
+    const times = data.bars.map((b) => b[0]); // sorted
+    const have = new Set(times);
+    const first = times[0] ?? 0;
+    const last = times[times.length - 1] ?? 0;
     const ms: SeriesMarker<Time>[] = [];
     for (const t of trades) {
+      if (sec(exitBar(t)) < first || sec(t.entry_time) > last + 86_400) continue; // outside the loaded candles
       const sel = selected?.trade_id === t.trade_id;
       const long = t.direction === "LONG";
       if (have.has(sec(t.entry_time))) {
@@ -329,7 +368,7 @@ export function TradeChart({
         });
       }
       // On a coarser timeframe the exit minute is not a bar start; snap to the bar that contains it.
-      const ex = [...have].reduce((best, b) => (b <= sec(exitBar(t)) && b > best ? b : best), 0);
+      const ex = barAtOrBefore(times, sec(exitBar(t)));
       if (ex) {
         ms.push({
           time: T(ex),
