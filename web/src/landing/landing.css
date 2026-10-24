@@ -1,4 +1,4 @@
-/* Landing page (index.html). Plain CSS: the page is static HTML, enhanced by main.ts (GSAP + three.js). */
+/* Landing page (index.html). Plain CSS: the page is static HTML, enhanced by main.ts (GSAP). */
 :root {
   --ink-950: #0a0d12;
   --ink-900: #0f131a;
@@ -203,13 +203,35 @@ body.lp {
   padding: 120px var(--gutter) 90px;
   overflow: hidden;
 }
-.lp-canvas {
+/* hero background: a pre-drawn candlestick strip (public/hero-candles.svg, two identical tiles) sliding left by
+   half its width, so it loops without a seam. Only a transform animates: nothing is redrawn, nothing flickers. */
+.lp-chart {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
+  left: 0;
+  right: 0;
+  top: 52%;
+  height: clamp(180px, 34vh, 340px);
+  overflow: hidden;
   opacity: 0;
+  pointer-events: none;
+}
+.lp-chart img {
+  display: block;
+  height: 100%;
+  width: auto;
+  max-width: none;
+  animation: lpChart 90s linear infinite;
+  will-change: transform;
+}
+@keyframes lpChart {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lp-chart img {
+    animation: none;
+  }
 }
 .lp-hero-glow {
   position: absolute;
@@ -219,7 +241,7 @@ body.lp {
   pointer-events: none;
 }
 .lp-hero::after {
-  /* fade the 3D scene into the page */
+  /* fade the chart into the page */
   content: "";
   position: absolute;
   inset: auto 0 0 0;
@@ -1123,8 +1145,7 @@ body.lp {
 .lp-card-full {
   grid-column: 1 / -1 !important;
 }
-/* the chart stays a texture behind the copy and comes forward on the empty right (a plain overlay: a CSS mask on a
-   WebGL canvas makes some browsers flicker) */
+/* the chart stays a texture behind the copy and comes forward on the empty right */
 .lp-hero-shade {
   position: absolute;
   inset: 0;
@@ -1156,4 +1177,10 @@ body.lp {
 .lp-rules li:hover {
   border-color: var(--ink-700);
   transform: translateY(-3px);
+}
+/* a faint dot grid under the hero chart, for depth (static) */
+.lp-hero {
+  background-image: radial-gradient(rgba(107, 122, 144, 0.16) 1px, transparent 1.2px);
+  background-size: 26px 26px;
+  background-position: center bottom;
 }

@@ -58,14 +58,14 @@ const headline = document.querySelector<HTMLElement>("[data-split]");
 const words = headline ? splitWords(headline) : [];
 
 if (reduced) {
-  gsap.set("[data-reveal], [data-hero-fade], [data-hero-kicker], .lp-canvas", { opacity: 1 });
+  gsap.set("[data-reveal], [data-hero-fade], [data-hero-kicker], .lp-chart", { opacity: 1 });
 } else {
   const intro = gsap.timeline({ defaults: { ease: "expo.out" } });
   intro
     .from("[data-hero-kicker]", { y: 16, opacity: 0, duration: 0.9 })
     .from(words, { yPercent: 115, rotate: 4, duration: 1.3, stagger: 0.06 }, "-=0.6")
     .from("[data-hero-fade]", { y: 24, opacity: 0, duration: 1.1, stagger: 0.12 }, "-=0.9")
-    .to(".lp-canvas", { opacity: 1, duration: 2, ease: "power2.out" }, 0.2);
+    .to(".lp-chart", { opacity: 1, duration: 2, ease: "power2.out" }, 0.2);
 
   // sections rise in as they enter the viewport
   ScrollTrigger.batch("[data-reveal]", {
@@ -270,15 +270,4 @@ if (finePointer && !reduced) {
       ry(0);
     });
   });
-}
-
-// ---- the 3D scene loads after the page is usable, and only where WebGL works ----
-const canvas = document.querySelector<HTMLCanvasElement>("[data-scene]");
-if (canvas) {
-  const start = () =>
-    import("./scene")
-      .then((m) => m.mountScene(canvas, { reduced }))
-      .catch(() => canvas.remove());
-  if ("requestIdleCallback" in window) (window as Window & { requestIdleCallback: (cb: () => void) => void }).requestIdleCallback(start);
-  else setTimeout(start, 200);
 }
