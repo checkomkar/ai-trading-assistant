@@ -24,25 +24,28 @@ from trader.options import black_scholes as bs
 from trader.options.selection import choose_strike
 
 
-# NSE expiry conventions over time: (effective_from, cycle, weekday Mon=0). A rule applies to *trading days* from
-# `effective_from`, so each date is the day after the last expiry under the previous rule. Used to pick the contract a
-# strategy would have traded on a historical date. Rows before VERIFIED_RULES_FROM are from memory of the NSE circulars;
-# the expired-option downloader checks them against what Fyers lists and records corrections in
+# NSE expiry conventions over time: (effective_from, cycle, weekday Mon=0). A rule covers the *expiries* (as scheduled,
+# before a holiday moves them) from `effective_from` until the next rule starts, so a day near a switch can still
+# roll into the first expiry of the new rule and never into a contract the old rule would have listed after it
+# (NIFTY on Thu 28 Aug 2025 rolls to Tue 2 Sep, not to a Thursday 4 Sep that never existed). Used to pick the contract
+# a strategy would have traded on a historical date. Rows before VERIFIED_RULES_FROM are from memory of the NSE
+# circulars; the expired-option downloader checks them against what Fyers lists and records corrections in
 # data/fyers/expiry_map.json, which expiry_for() applies (`overrides`). Known simplification: Sep 2023 - Feb 2024 the
 # BANKNIFTY monthly contract expired on the last Thursday while weeklies were on Wednesdays.
 EXPIRY_RULES: dict[str, list[tuple[date, ExpiryCycle, int]]] = {
-    "NIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3),      # Thursday weeklies
-              (date(2025, 8, 29), ExpiryCycle.WEEKLY, 1)],    # Tuesday from 2 Sep 2025
-    "BANKNIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3),   # Thursday weeklies
-                  (date(2023, 9, 1), ExpiryCycle.WEEKLY, 2),   # Wednesday weeklies from 6 Sep 2023
+    "NIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3),      # Thursday weeklies, last one 28 Aug 2025
+              (date(2025, 9, 1), ExpiryCycle.WEEKLY, 1)],     # Tuesday from 2 Sep 2025
+    "BANKNIFTY": [(date(2000, 1, 1), ExpiryCycle.WEEKLY, 3),   # Thursday weeklies, last one 31 Aug 2023
+                  (date(2023, 9, 4), ExpiryCycle.WEEKLY, 2),   # Wednesday weeklies from 6 Sep 2023
                   (date(2024, 11, 14), ExpiryCycle.MONTHLY, 2),  # weeklies end after 13 Nov 2024; monthly, last Wednesday
-                  (date(2024, 12, 25), ExpiryCycle.MONTHLY, 3),  # monthly, last Thursday from Jan 2025
-                  (date(2025, 8, 29), ExpiryCycle.MONTHLY, 1)],  # monthly, last Tuesday from Sep 2025
+                  (date(2025, 1, 1), ExpiryCycle.MONTHLY, 3),  # monthly, last Thursday from Jan 2025
+                  (date(2025, 9, 1), ExpiryCycle.MONTHLY, 1)],  # monthly, last Tuesday from Sep 2025
 }
 VERIFIED_RULES_FROM = date(2025, 9, 1)
 
 
 def _rule(underlying: str, d: date) -> tuple[ExpiryCycle, int]:
+    """The rule an expiry scheduled on `d` falls under."""
     rules = [r for r in EXPIRY_RULES[underlying] if r[0] <= d]
     _, cycle, wd = rules[-1]
     return cycle, wd
@@ -53,25 +56,30 @@ def _last_weekday(y: int, m: int, wd: int) -> date:
     return last - timedelta(days=(last.weekday() - wd) % 7)
 
 
+def _scheduled(cycle: ExpiryCycle, wd: int, day: date) -> list[date]:
+    """Expiry dates a rule would schedule around `day` (from the week before, a few cycles ahead), before holidays."""
+    if cycle == ExpiryCycle.WEEKLY:
+        d = day + timedelta(days=(wd - day.weekday()) % 7) - timedelta(days=7)
+        return [d + timedelta(days=7 * i) for i in range(5)]
+    out, y, m = [], day.year, day.month
+    for _ in range(3):
+        out.append(_last_weekday(y, m, wd))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
 def expiry_for(underlying: str, day: date, cal: TradingCalendar, roll_on_expiry_day: bool = True,
                overrides: "dict[tuple[str, date], date | None] | None" = None) -> date:
-    """Nearest expiry on/after `day` under the rules in force then (holidays roll back a day).
+    """Nearest expiry on/after `day` (holidays roll back a day), each candidate taken from the rule covering it.
 
     `overrides` maps a rule-derived expiry to the date the exchange really used (from the expired-option
     downloader's probing, `contract_history.load_expiry_overrides`); a None value means no contract existed
     that week, so that candidate is dropped."""
-    cycle, wd = _rule(underlying, day)
+    rules = EXPIRY_RULES[underlying]
     candidates: list[date] = []
-    if cycle == ExpiryCycle.WEEKLY:
-        d = day + timedelta(days=(wd - day.weekday()) % 7) - timedelta(days=7)
-        for _ in range(4):
-            candidates.append(cal.roll_back_to_trading_day(d))
-            d += timedelta(days=7)
-    else:
-        y, m = day.year, day.month
-        for _ in range(3):
-            candidates.append(cal.roll_back_to_trading_day(_last_weekday(y, m, wd)))
-            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    for i, (since, cycle, wd) in enumerate(rules):
+        until = rules[i + 1][0] if i + 1 < len(rules) else date.max
+        candidates += [cal.roll_back_to_trading_day(d) for d in _scheduled(cycle, wd, day) if since <= d < until]
     if overrides:
         mapped = [overrides.get((underlying, c), c) for c in candidates]
         candidates = [c for c in mapped if c is not None]

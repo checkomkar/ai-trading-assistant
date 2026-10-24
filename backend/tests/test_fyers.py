@@ -198,6 +198,10 @@ def test_expired_response_by_column_name():
     c = expired.parse_response(resp, "NSE:NIFTY25MAR23000CE", "5m")
     assert c[0].close == 706 and c[0].oi == 5131225
     assert expired.parse_response({"s": "no_data", "candles": []}, "x", "5m") == []
+    # A contract that never existed (a guessed expiry): no data, so the downloader probes instead of stopping.
+    assert expired.parse_response({"s": "error", "code": -50, "message": "Invalid input"}, "x", "5m") == []
+    with pytest.raises(RuntimeError):
+        expired.parse_response({"s": "error", "code": -16, "message": "token expired"}, "x", "5m")
 
 
 def test_daily_quota(tmp_path):

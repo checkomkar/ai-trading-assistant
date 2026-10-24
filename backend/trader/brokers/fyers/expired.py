@@ -80,9 +80,14 @@ def request(symbol: str, timeframe: str, start: date, end: date) -> dict:
             "include_oi": "1", "include_greeks": "1"}
 
 
+_NO_SUCH_CONTRACT = re.compile(r"invalid (input|symbol)", re.I)
+
+
 def parse_response(resp: dict, token: str, timeframe: str) -> list[Candle]:
     if resp.get("s") == "no_data":
         return []
+    if resp.get("s") != "ok" and _NO_SUCH_CONTRACT.search(str(resp.get("message") or "")):
+        return []  # Fyers answers "Invalid input" for a contract that never existed: no data, not a failure
     if resp.get("s") != "ok":
         raise RuntimeError(f"expired data error: {resp.get('message') or resp}")
     cols = resp.get("columns") or ["timestamp", "open", "high", "low", "close", "volume"]

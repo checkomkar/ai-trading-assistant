@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -66,6 +66,20 @@ def test_historical_expiry_rules_follow_the_exchange_changes():
     assert expiry_for("BANKNIFTY", date(2023, 9, 1), cal) == date(2023, 9, 6)  # Wednesday weeklies
     assert expiry_for("BANKNIFTY", date(2024, 11, 14), cal) == date(2024, 11, 27)  # monthly only, last Wednesday
     assert expiry_for("BANKNIFTY", date(2024, 12, 26), cal) == date(2025, 1, 30)  # monthly, last Thursday
+
+
+def test_a_day_next_to_a_rule_change_rolls_into_the_new_rule_never_into_a_contract_that_did_not_exist():
+    cal = get_calendar()
+    # Thu 28 Aug 2025 was the last Thursday expiry: rolling on it must reach Tue 2 Sep, not a Thursday 4 Sep.
+    assert expiry_for("NIFTY", date(2025, 8, 28), cal) == date(2025, 9, 2)
+    assert expiry_for("NIFTY", date(2025, 8, 28), cal, roll_on_expiry_day=False) == date(2025, 8, 28)
+    assert expiry_for("NIFTY", date(2025, 8, 26), cal) == date(2025, 8, 28)  # no Tuesday expiry before September
+    assert expiry_for("BANKNIFTY", date(2023, 8, 31), cal) == date(2023, 9, 6)  # not Thu 7 Sep 2023
+    assert expiry_for("BANKNIFTY", date(2024, 11, 13), cal) == date(2024, 11, 27)  # weeklies ended that day
+    assert expiry_for("BANKNIFTY", date(2024, 12, 20), cal) == date(2024, 12, 24)  # Wed 25 Dec holiday, not Thu 26
+    assert expiry_for("BANKNIFTY", date(2025, 8, 28), cal) == date(2025, 9, 30)  # monthly, last Tuesday
+    seen = {expiry_for("NIFTY", date(2025, 8, 1) + timedelta(days=i), cal) for i in range(60)}
+    assert date(2025, 9, 4) not in seen and date(2025, 9, 2) in seen and date(2025, 8, 28) in seen
 
 
 # ---- B1.2 no prints --------------------------------------------------------------------------------------------------
