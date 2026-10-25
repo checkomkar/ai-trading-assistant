@@ -153,6 +153,16 @@ class Settings(BaseSettings):
     api_cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _comment_is_empty(cls, data: object) -> object:
+        # `KEY=          # some note` in .env: for an empty value, the .env reader hands back the note itself as the value
+        # (it became the model name, and would become an invite code or an encryption key). A value that is only a
+        # "# ..." comment means empty.
+        if isinstance(data, dict):
+            return {k: ("" if isinstance(v, str) and v.lstrip().startswith("# ") else v) for k, v in data.items()}
+        return data
+
     @field_validator("sim_seed", mode="before")
     @classmethod
     def _blank_is_none(cls, v: object) -> object:

@@ -8,7 +8,7 @@ set -euo pipefail
 IP=${1:?vm public ip}; KEY=${2:?ssh private key path}
 SSH="ssh -i $KEY -o StrictHostKeyChecking=accept-new ubuntu@$IP"
 [ -f .env ] || { echo "No .env at the repo root"; exit 1; }
-grep -q '^CREDENTIAL_KEY=.\+' .env || echo "WARNING: CREDENTIAL_KEY is empty in .env (saved broker keys will be refused)"
+grep -q '^CREDENTIAL_KEY=[^#[:space:]]' .env || echo "WARNING: CREDENTIAL_KEY is empty in .env (saved broker keys will be refused)"
 
 PLATFORM=${PLATFORM:-linux/amd64}  # the AMD Micro; linux/arm64 for Ampere A1
 docker build --platform "$PLATFORM" -t striktek-api:latest ./backend

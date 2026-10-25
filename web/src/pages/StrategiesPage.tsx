@@ -121,7 +121,10 @@ export function StrategiesPage() {
     run("translate", async () => {
       const t = await postJSON<Translation>("/strategies/translate", { text: input, base_spec: base ?? null });
       setTranslation(t);
-      if (!t.spec && t.questions.length > 0) setAsk({ input, base: base ?? null, t });
+      if (!t.spec && t.questions.length > 0) {
+        setOverlay(null); // close "Describe a strategy" so the questions are on top
+        setAsk({ input, base: base ?? null, t });
+      }
       if (t.spec) {
         setSpec(t.spec);
         setCurrent(null);
