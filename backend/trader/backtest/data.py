@@ -6,6 +6,9 @@ mixed: a run uses one source, and the report says which.
 
 from __future__ import annotations
 
+from array import array
+from bisect import bisect_left
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 
@@ -22,13 +25,84 @@ from trader.market_data.resample import SUPPORTED, minutes, resample
 SIM_PREFIX = "SIM:"
 
 
+class CandleSeries(Mapping):
+    """One contract's candles, sorted by time, held as plain number arrays (about 56 bytes a candle instead of ~300 for
+    Candle objects plus their datetimes). Reads like the dict it replaces, {bar ts: Candle}: `series.get(ts)` builds the
+    Candle on demand. A year of near-the-money 1m option candles fits in tens of MB instead of gigabytes."""
+
+    __slots__ = ("token", "timeframe", "_t", "_o", "_h", "_l", "_c", "_v", "_oi")
+
+    def __init__(self, token: str, timeframe: str) -> None:
+        self.token, self.timeframe = token, timeframe
+        self._t = array("q")  # unix seconds, ascending
+        self._o, self._h, self._l, self._c = array("d"), array("d"), array("d"), array("d")
+        self._v = array("q")
+        self._oi = array("q")  # -1 = not reported
+
+    @classmethod
+    def of(cls, candles: list[Candle], token: str, timeframe: str) -> "CandleSeries":
+        out = cls(token, timeframe)
+        for c in sorted(candles, key=lambda c: c.ts):
+            out.append(int(c.ts.timestamp()), c.open, c.high, c.low, c.close, c.volume or 0, c.oi)
+        return out
+
+    def append(self, t: int, o: float, h: float, l: float, c: float, v: int, oi: int | None) -> None:  # noqa: E741
+        if self._t and t <= self._t[-1]:
+            if t == self._t[-1]:
+                return  # a duplicate bucket: keep the first, as the dict this replaces did with sorted input
+            raise ValueError("CandleSeries.append needs ascending times")
+        self._t.append(t)
+        self._o.append(o)
+        self._h.append(h)
+        self._l.append(l)
+        self._c.append(c)
+        self._v.append(int(v or 0))
+        self._oi.append(-1 if oi is None else int(oi))
+
+    def _at(self, i: int) -> Candle:
+        oi = self._oi[i]
+        return Candle(self.token, self.timeframe, datetime.fromtimestamp(self._t[i], timezone.utc), self._o[i], self._h[i],
+                      self._l[i], self._c[i], self._v[i], closed=True, oi=None if oi < 0 else oi)
+
+    def _index(self, ts: datetime) -> int:
+        t = int(ts.timestamp())
+        i = bisect_left(self._t, t)
+        return i if i < len(self._t) and self._t[i] == t else -1
+
+    def __getitem__(self, ts: datetime) -> Candle:
+        i = self._index(ts)
+        if i < 0:
+            raise KeyError(ts)
+        return self._at(i)
+
+    def get(self, ts: datetime, default=None):  # noqa: ANN001, ANN201 - the Mapping signature
+        i = self._index(ts)
+        return default if i < 0 else self._at(i)
+
+    def __contains__(self, ts: object) -> bool:
+        return isinstance(ts, datetime) and self._index(ts) >= 0
+
+    def __iter__(self) -> Iterator[datetime]:
+        return (datetime.fromtimestamp(t, timezone.utc) for t in self._t)
+
+    def __len__(self) -> int:
+        return len(self._t)
+
+    def __getstate__(self) -> tuple:
+        return tuple(getattr(self, k) for k in self.__slots__)
+
+    def __setstate__(self, state: tuple) -> None:
+        for k, v in zip(self.__slots__, state):
+            setattr(self, k, v)
+
+
 @dataclass
 class BacktestData:
     source: str  # "real" | "simulated"
     bars: list[Candle]
     futures: dict[datetime, Candle]
     vix: dict[datetime, float]
-    options: dict[tuple[date, float, OptionType], dict[datetime, Candle]] = field(default_factory=dict)
+    options: dict[tuple[date, float, OptionType], Mapping[datetime, Candle]] = field(default_factory=dict)
     option_lot_sizes: dict[tuple[date, float, OptionType], int] = field(default_factory=dict)
     built_from: str | None = None  # stored timeframe the candles were resampled from
 
@@ -52,17 +126,22 @@ def _bounds(start: date, end: date) -> tuple[datetime, datetime]:
     return lo, hi
 
 
-async def _candles(s: AsyncSession, ids: list[int], tf: str, start: date, end: date) -> list[tuple[int, CandleRow]]:
-    if not ids:
-        return []
+_COLS = (CandleRow.instrument_id, CandleRow.ts, CandleRow.open, CandleRow.high, CandleRow.low, CandleRow.close,
+         CandleRow.volume, CandleRow.oi)
+
+
+def _candle_query(s: AsyncSession, ids: list[int], tf: str, start: date, end: date):  # noqa: ANN202
     lo, hi = _bounds(start, end)
     if _naive(s):  # SQLite stores UTC timestamps without an offset
         lo, hi = lo.replace(tzinfo=None), hi.replace(tzinfo=None)
-    rows = (await s.execute(
-        select(CandleRow)
-        .where(CandleRow.instrument_id.in_(ids), CandleRow.timeframe == tf, CandleRow.ts >= lo, CandleRow.ts <= hi)
-        .order_by(CandleRow.ts)
-    )).scalars().all()
+    return select(*_COLS).where(CandleRow.instrument_id.in_(ids), CandleRow.timeframe == tf, CandleRow.ts >= lo, CandleRow.ts <= hi)
+
+
+async def _candles(s: AsyncSession, ids: list[int], tf: str, start: date, end: date) -> list[tuple[int, object]]:
+    """(instrument id, row) by time. Plain column rows, not ORM objects: the session does not keep every row alive."""
+    if not ids:
+        return []
+    rows = (await s.execute(_candle_query(s, ids, tf, start, end).order_by(CandleRow.ts))).all()
     return [(r.instrument_id, r) for r in rows]
 
 
@@ -79,7 +158,7 @@ def in_session(ts: datetime) -> bool:
     return SESSION_START <= t < SESSION_END
 
 
-def _to_candle(token: str, tf: str, r: CandleRow) -> Candle:
+def _to_candle(token: str, tf: str, r) -> Candle:  # noqa: ANN001 - a CandleRow or a column row with the same names
     return Candle(token, tf, _utc(r.ts), r.open, r.high, r.low, r.close, r.volume or 0, closed=True, oi=r.oi)
 
 
@@ -224,15 +303,37 @@ async def load(s: AsyncSession, underlying: str, timeframe: str, start: date, en
         wanted = near_money(bars, underlying, get_calendar(), strike_pad, default_expiry_overrides())
         opts = {i.id: i for i in await instruments(underlying=underlying, instrument_type="OPT")
                 if (i.expiry, float(i.strike or 0)) in wanted}
-        raw: dict[int, list[Candle]] = {}
-        for iid, r in await _candles(s, list(opts), src_tf, start, end):
-            raw.setdefault(iid, []).append(_to_candle(opts[iid].token, src_tf, r))
-        for iid, cs in raw.items():
-            inst = opts[iid]
-            key = (inst.expiry, float(inst.strike), OptionType(inst.option_type))
-            data.options[key] = {c.ts: c for c in up(cs)}
-            data.option_lot_sizes[key] = inst.lot_size
+        await _load_options(s, data, opts, src_tf, start, end, up)
     return data
+
+
+async def _load_options(s: AsyncSession, data: BacktestData, opts: dict[int, InstrumentRow], src_tf: str,
+                        start: date, end: date, up) -> None:  # noqa: ANN001
+    """Stream option candles one contract at a time (the index orders them by contract, then time) and keep each as a
+    compact CandleSeries, so memory holds numbers, not millions of row and Candle objects."""
+    if not opts:
+        return
+    q = _candle_query(s, list(opts), src_tf, start, end).order_by(CandleRow.instrument_id, CandleRow.ts)
+    current: int | None = None
+    rows: list = []
+
+    def flush() -> None:
+        if current is None or not rows:
+            return
+        inst = opts[current]
+        key = (inst.expiry, float(inst.strike), OptionType(inst.option_type))
+        data.options[key] = CandleSeries.of(up([_to_candle(inst.token, src_tf, r) for r in rows]), inst.token, data_tf)
+        data.option_lot_sizes[key] = inst.lot_size
+
+    data_tf = data.bars[0].timeframe if data.bars else src_tf
+    result = await s.stream(q.execution_options(yield_per=20_000))
+    async for part in result.partitions(20_000):
+        for r in part:
+            if r.instrument_id != current:
+                flush()
+                current, rows = r.instrument_id, []
+            rows.append(r)
+    flush()
 
 
 def option_coverage(data: BacktestData, underlying: str, start: date, cal: TradingCalendar, roll_on_expiry_day: bool = True,

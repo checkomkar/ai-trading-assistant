@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -158,9 +158,12 @@ def test_new_candles_in_the_range_invalidate_the_stored_run(client, tmp_path):
         async with sm() as s, s.begin():
             inst = (await s.execute(select(InstrumentRow).where(InstrumentRow.symbol == "NIFTY",
                                                                 InstrumentRow.instrument_type == "INDEX"))).scalars().first()
-            last = (await s.execute(select(CandleRow).where(CandleRow.instrument_id == inst.id)
+            # the last stored candle inside the run's range (the live simulated feed adds today's, outside it)
+            in_range = datetime.combine(END, datetime.max.time())
+            last = (await s.execute(select(CandleRow).where(CandleRow.instrument_id == inst.id, CandleRow.ts <= in_range)
                                     .order_by(CandleRow.ts.desc()).limit(1))).scalars().first()
-            s.add(CandleRow(instrument_id=inst.id, timeframe="1m", ts=last.ts, open=1, high=1, low=1, close=1, volume=0))
+            s.add(CandleRow(instrument_id=inst.id, timeframe="1m", ts=last.ts - timedelta(minutes=1), open=1, high=1, low=1,
+                            close=1, volume=0))
 
     asyncio.run(add_bar())
     assert client.post("/backtests", json=body).json()["id"] != first["id"]
