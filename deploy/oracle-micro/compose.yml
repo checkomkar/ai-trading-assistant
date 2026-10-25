@@ -10,7 +10,7 @@ services:
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}  # set false in .env only while testing over plain http
       STORE_TICKS: "false"
     volumes: [apidata:/app/data]
-    mem_limit: 600m
+    mem_limit: ${API_MEM_LIMIT:-600m}  # ship.sh sets it: 600m on the 1 GB Micro, more on an A1
 
   web:
     image: striktek-web:latest

@@ -1,7 +1,7 @@
 # Deploying on Oracle Cloud Always Free (1 GB AMD Micro)
 
 Written 2026-10-22. The scripts here have not yet been run against a real VM; the images and compose stack they use were tested locally (`docs/deploy-portability.md`).
-This is the small-machine path: SQLite, no PostgreSQL, images built on your PC. When an Ampere A1 (ARM, up to 24 GB free) becomes available, use `docker-compose.prod.yml` instead.
+This is the small-machine path: SQLite, no PostgreSQL, images built on your PC. An Ampere A1 (ARM; the free allowance is 2 OCPU / 12 GB since June 2026) runs the same stack with more memory: see section 7.
 
 ## 1. Network (Oracle console)
 1. Give the instance a public IP: instance, Attached VNICs, primary VNIC, IPv4 Addresses, Edit, **Reserved public IP**.
@@ -49,3 +49,19 @@ Each user, the owner included, saves their own Fyers App ID and secret on the **
 account and symbol limits. Nothing is read from `.env`, and nothing of theirs is written to the shared database. Users with no broker see a "connect your broker"
 card; the operator without one sees the shared feed if `.env` configures it.
 On the 1 GB Micro keep `MAX_USER_FEEDS` small (the default is 4). `push-fyers-token.sh` is only for an operator using the shared `.env` feed.
+
+## 7. Ampere A1 (ARM, 2 OCPU / 12 GB free)
+The free A1 allowance was halved in 2026 to 2 OCPU and 12 GB (instances above it are terminated). It is still 12x the
+Micro's memory, enough for year-long 1m backtests and research.
+
+1. **Getting one.** Busy regions answer "Out of host capacity". What helps, in order:
+   - Upgrade the account to **Pay As You Go** (Billing, Upgrade). Always Free resources stay free and PAYG accounts get
+     capacity far more often. Set a budget alert first (Billing, Budgets, e.g. ₹100 with an email at 1%) so any charge is visible at once.
+   - Retry automatically: `deploy/oracle-a1/launch-a1.sh` (OCI CLI; its header lists the ids it needs). It cycles through
+     your availability domains every couple of minutes until one has room. Early morning IST often works.
+   - If 2 / 12 never comes, launch 1 OCPU / 6 GB and resize it later (Edit, Shape).
+2. **Image:** Canonical Ubuntu 24.04 **aarch64**. Then run `setup-vm.sh` as in section 2.
+3. **Ship:** `PLATFORM=linux/arm64 API_MEM_LIMIT=8g deploy/oracle-micro/ship.sh <ip> <key>` (same SQLite stack, ARM
+   images, 8 GB for the API). Building ARM images on a PC needs Docker Desktop (buildx/QEMU), which it has by default.
+4. **Data:** copy your market data across with `merge_market_data` or by restoring the archive
+   (`archive_market_data restore`), as for the Micro.
